@@ -87,6 +87,7 @@ test("exposes supported GPT 5.6 models with their Copilot context window", () =>
 
 test("formats GPT 5.6 models for Claude Code gateway discovery", () => {
   const entries = gatewayModelEntries([
+    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
     { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
     { id: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
     { id: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
@@ -102,17 +103,17 @@ test("formats GPT 5.6 models for Claude Code gateway discovery", () => {
       {
         id: "github-copilot/claude-gpt-5.6-sol",
         backend_id: "gpt-5.6-sol",
-        display_name: "GPT-5.6 Sol",
+        display_name: "GitHub Copilot · GPT-5.6 Sol",
       },
       {
         id: "github-copilot/claude-gpt-5.6-terra",
         backend_id: "gpt-5.6-terra",
-        display_name: "GPT-5.6 Terra",
+        display_name: "GitHub Copilot · GPT-5.6 Terra",
       },
       {
         id: "github-copilot/claude-gpt-5.6-luna",
         backend_id: "gpt-5.6-luna",
-        display_name: "GPT-5.6 Luna",
+        display_name: "GitHub Copilot · GPT-5.6 Luna",
       },
     ],
   );

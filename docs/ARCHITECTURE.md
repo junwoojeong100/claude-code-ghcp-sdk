@@ -74,7 +74,8 @@ Claude Code와 Copilot model ID의 version separator 차이도 변환합니다.
 GPT-5.6 model은 full ID를 사용합니다. Claude Code가 unknown model을 200k context로
 제한하지 않도록 catalog의 1,050,000 token context를 임시 settings에 전달합니다.
 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 `/v1/models` discovery를 활성화하고,
-endpoint에는 adapter가 지원하는 Claude 및 GPT-5.6 model만 반환합니다.
+endpoint에는 Claude family row와 중복되지 않는 GPT-5.6 model만 반환합니다. Display name은
+`GitHub Copilot · GPT-5.6 ...` 형식으로 backend를 명확히 표시합니다.
 
 ## 주요 파일
 

@@ -151,9 +151,9 @@ if ! node -e '
       console.error(error.message);
       process.exit(2);
     });
-' "http://127.0.0.1:$BRIDGE_PORT/v1/models" "$BRIDGE_TOKEN" "$FRONTEND_MODEL"; then
+' "http://127.0.0.1:$BRIDGE_PORT/v1/models?all=true" "$BRIDGE_TOKEN" "$GHCP_MODEL_VALUE"; then
   echo "GitHub Copilot model is unavailable: $GHCP_MODEL_VALUE" >&2
-  echo "Run \"$ROOT_DIR/bin/ghcp-models\" to list available Claude models." >&2
+  echo "Run \"$ROOT_DIR/bin/ghcp-models\" to list available adapter models." >&2
   exit 1
 fi
 

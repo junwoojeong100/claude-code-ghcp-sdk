@@ -77,6 +77,10 @@ Interactive session의 `/model` picker에도 허용된 Claude model과 GPT-5.6 S
 discovery는 Claude Code의 nonessential traffic이 비활성화된 환경에서는 실행되지 않으므로,
 그 경우에도 `--ghcp-model`로 직접 선택할 수 있습니다.
 
+Picker에서 Claude family는 `GitHub Copilot Claude ...`, GPT model은
+`GitHub Copilot · GPT-5.6 ...`로 표시됩니다. 중복을 줄이기 위해 discovery에는 GPT-5.6
+model만 노출합니다.
+
 ### 5. `claude` 명령으로 계속 사용
 
 Repository root에서 다음 명령을 한 번 실행합니다.

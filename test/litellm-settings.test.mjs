@@ -44,9 +44,17 @@ test("writes isolated LiteLLM settings with family aliases", () => {
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-test-only");
     assert.equal(settings.env.ANTHROPIC_MODEL, "corp-default");
     assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "corp-opus");
+    assert.equal(
+      settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME,
+      "LiteLLM · corp-opus",
+    );
     assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "corp-sonnet");
     assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "corp-haiku");
     assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "corp-default");
+    assert.equal(
+      settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME,
+      "LiteLLM · corp-default",
+    );
     assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });

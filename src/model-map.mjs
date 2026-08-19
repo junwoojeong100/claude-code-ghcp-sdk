@@ -128,14 +128,16 @@ export function adapterModels(models) {
 }
 
 export function gatewayModelEntries(models) {
-  return adapterModels(models).map((model) => ({
-    id: pickerModelFor(model.id),
-    backend_id: model.id,
-    display_name: model.name || model.id,
-    object: "model",
-    owned_by: "github-copilot",
-    capabilities: model.capabilities,
-  }));
+  return models
+    .filter((model) => ADDITIONAL_MODEL_CONTEXT_WINDOWS.has(model.id))
+    .map((model) => ({
+      id: pickerModelFor(model.id),
+      backend_id: model.id,
+      display_name: `GitHub Copilot · ${model.name || model.id}`,
+      object: "model",
+      owned_by: "github-copilot",
+      capabilities: model.capabilities,
+    }));
 }
 
 export function contextWindowTokensFor(model) {

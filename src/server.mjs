@@ -92,9 +92,17 @@ const server = http.createServer(async (req, res) => {
     req.method === "GET" &&
     (req.url === "/v1/models" || req.url?.startsWith("/v1/models?"))
   ) {
+    const requestUrl = new URL(req.url, `http://${host}:${port}`);
+    const includeAll = requestUrl.searchParams.get("all") === "true";
     json(res, 200, {
       object: "list",
-      data: gatewayModelEntries(manager.listModels()),
+      data: includeAll
+        ? manager.listModels().map((model) => ({
+            id: model.id,
+            object: "model",
+            owned_by: "github-copilot",
+          }))
+        : gatewayModelEntries(manager.listModels()),
     });
     return;
   }
