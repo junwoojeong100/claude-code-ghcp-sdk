@@ -61,6 +61,17 @@ npx copilot login
   -p "이 repository의 구조를 설명해줘"
 ```
 
+다음 GitHub Copilot GPT-5.6 model도 direct SDK 경로에서 사용할 수 있습니다.
+
+```bash
+./bin/claude-ghcp --ghcp-model gpt-5.6-sol
+./bin/claude-ghcp --ghcp-model gpt-5.6-terra
+./bin/claude-ghcp --ghcp-model gpt-5.6-luna
+```
+
+세 model은 Copilot catalog 기준 1,050,000 token context로 설정됩니다. 실제 사용 가능 여부는
+사용자와 organization의 Copilot model policy에 따라 달라집니다.
+
 ### 5. `claude` 명령으로 계속 사용
 
 Repository root에서 다음 명령을 한 번 실행합니다.
@@ -156,7 +167,7 @@ claude-litellm
 | 목적 | 명령 |
 |---|---|
 | GitHub Copilot SDK 직접 사용 | `claude` 또는 `claude-ghcp` |
-| 허용된 Copilot Claude model 조회 | `ghcp-models` |
+| 허용된 Copilot model 조회 | `ghcp-models` |
 | GHCP 환경 진단 | `ghcp-doctor` |
 | LiteLLM gateway 사용 | `claude-litellm` |
 | 기존 Claude Code provider 사용 | `claude-current` |
@@ -181,6 +192,9 @@ npm test
 
 # Direct GHCP SDK E2E: text + Claude Code Read tool
 npm run test:e2e
+
+# GPT-5.6 Sol, Terra, Luna text + Read tool
+npm run test:e2e:gpt-5.6
 
 # 실행 중인 local LiteLLM 대상 E2E
 npm run test:e2e:litellm

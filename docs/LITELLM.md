@@ -12,6 +12,10 @@ LiteLLM: Claude Code -> LiteLLM -> LiteLLM에 구성된 provider
 GitHub Copilot 제공 모델을 LiteLLM으로 사용하려면 LiteLLM model이
 `github_copilot/claude-*` backend로 구성돼 있어야 합니다.
 
+이 repository에서 GPT-5.6 Sol, Terra, Luna는 direct `claude-ghcp` 경로로 검증했습니다.
+LiteLLM의 Anthropic `/v1/messages`용 `github_copilot/` mapping은 Claude model을 대상으로
+하므로 세 GPT model은 direct SDK 경로를 사용합니다.
+
 ## 이미 운영 중인 LiteLLM 사용
 
 ### Gateway에서 받을 정보

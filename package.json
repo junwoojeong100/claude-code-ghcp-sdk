@@ -23,6 +23,7 @@
     "models": "node src/list-models.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "bash scripts/e2e.sh",
+    "test:e2e:gpt-5.6": "bash scripts/e2e-gpt-5.6.sh",
     "test:e2e:litellm": "bash scripts/e2e-litellm.sh"
   },
   "dependencies": {

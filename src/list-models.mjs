@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { CopilotClient } from "@github/copilot-sdk";
 
-import { claudeModels } from "./model-map.mjs";
+import { adapterModels } from "./model-map.mjs";
 
 const json = process.argv.includes("--json");
 const all = process.argv.includes("--all");
@@ -20,7 +20,7 @@ const client = new CopilotClient({
 try {
   await client.start();
   const models = await client.listModels();
-  const selected = all ? models : claudeModels(models);
+  const selected = all ? models : adapterModels(models);
 
   if (json) {
     console.log(JSON.stringify(selected, null, 2));

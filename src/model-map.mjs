@@ -11,11 +11,18 @@ const FAMILY_CANDIDATES = {
   haiku: ["claude-haiku-4.5"],
 };
 
+const ADDITIONAL_MODEL_CONTEXT_WINDOWS = new Map([
+  ["gpt-5.6-sol", 1_050_000],
+  ["gpt-5.6-terra", 1_050_000],
+  ["gpt-5.6-luna", 1_050_000],
+]);
+
 export class ModelUnavailableError extends Error {
   constructor(requested, availableIds) {
+    const supported = adapterModels(availableIds.map((id) => ({ id })));
     super(
       `GitHub Copilot model "${requested}" is unavailable. ` +
-        `Available Claude models: ${availableIds.filter((id) => id.startsWith("claude-")).join(", ") || "none"}.`,
+        `Available adapter models: ${supported.map((model) => model.id).join(", ") || "none"}.`,
     );
     this.name = "ModelUnavailableError";
   }
@@ -92,6 +99,14 @@ export function familyFrontendModels(availableIds, preferredModel) {
   };
 }
 
-export function claudeModels(models) {
-  return models.filter((model) => model.id.startsWith("claude-"));
+export function adapterModels(models) {
+  return models.filter(
+    (model) =>
+      model.id.startsWith("claude-") ||
+      ADDITIONAL_MODEL_CONTEXT_WINDOWS.has(model.id),
+  );
+}
+
+export function contextWindowTokensFor(model) {
+  return ADDITIONAL_MODEL_CONTEXT_WINDOWS.get(stripContextSuffix(model)) || null;
 }

@@ -66,8 +66,13 @@ Claude Code와 Copilot model ID의 version separator 차이도 변환합니다.
 | `claude-sonnet-4-6` | `claude-sonnet-4.6` |
 | `claude-opus-4-8` | `claude-opus-4.8` |
 | `claude-haiku-4-5` | `claude-haiku-4.5` |
+| `gpt-5.6-sol` | `gpt-5.6-sol` |
+| `gpt-5.6-terra` | `gpt-5.6-terra` |
+| `gpt-5.6-luna` | `gpt-5.6-luna` |
 
 `sonnet`, `opus`, `haiku`, `fable` alias는 현재 identity에 허용된 family model로 해석합니다.
+GPT-5.6 model은 full ID를 사용합니다. Claude Code가 unknown model을 200k context로
+제한하지 않도록 catalog의 1,050,000 token context를 임시 settings에 전달합니다.
 
 ## 주요 파일
 
@@ -129,6 +134,7 @@ Claude Code와 Copilot model ID의 version separator 차이도 변환합니다.
 
 - Direct SDK text response와 streaming
 - Direct SDK Claude Code native `Read` tool loop
+- GPT-5.6 Sol, Terra, Luna text response와 native `Read` tool loop
 - LiteLLM health, model discovery와 token counting
 - LiteLLM non-streaming/streaming Messages response
 - LiteLLM Claude Code native `Read` tool loop
@@ -139,6 +145,7 @@ Claude Code와 Copilot model ID의 version separator 차이도 변환합니다.
 ```bash
 npm test
 npm run test:e2e
+npm run test:e2e:gpt-5.6
 npm run test:e2e:litellm
 ```
 

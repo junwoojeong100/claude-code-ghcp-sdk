@@ -1,5 +1,7 @@
 import fs from "node:fs";
 
+import { contextWindowTokensFor } from "./model-map.mjs";
+
 const [outputPath, baseUrl, token, frontendModel] = process.argv.slice(2);
 if (!outputPath || !baseUrl || !token || !frontendModel) {
   console.error(
@@ -8,6 +10,7 @@ if (!outputPath || !baseUrl || !token || !frontendModel) {
   process.exit(2);
 }
 
+const contextWindowTokens = contextWindowTokensFor(frontendModel);
 const settings = {
   env: {
     ANTHROPIC_BASE_URL: baseUrl,
@@ -31,7 +34,10 @@ const settings = {
     ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: `GitHub Copilot ${frontendModel}`,
     ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Routed through GitHub Copilot SDK",
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    ...(contextWindowTokens
+      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindowTokens) }
+      : {}),
   }
 };
 
