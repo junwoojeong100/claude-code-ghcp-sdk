@@ -1,6 +1,34 @@
 # Architecture
 
-## 목표
+## 지원하는 두 경로
+
+이 repository는 서로 다른 두 model 경로를 제공합니다.
+
+### LiteLLM이 없는 경우
+
+```text
+Claude Code
+  -> local Anthropic-compatible bridge
+  -> @github/copilot-sdk
+  -> 사용자의 GitHub Copilot model
+```
+
+`claude` 또는 `claude-ghcp`가 이 경로를 사용합니다. 이 repository의 핵심 adapter이며
+사용자의 `copilot login` identity와 organization model policy를 따릅니다.
+
+### LiteLLM이 있는 경우
+
+```text
+Claude Code
+  -> LiteLLM /v1/messages
+  -> LiteLLM에 구성된 provider
+```
+
+`claude-litellm`이 이 경로를 사용합니다. 이 경우 요청은 local Node.js bridge나
+`@github/copilot-sdk`를 통과하지 않습니다. GitHub Copilot을 backend로 선택했다면
+LiteLLM의 `github_copilot/` provider와 별도 OAuth를 사용합니다.
+
+## Direct GHCP SDK 경로의 목표
 
 Claude Code가 다음 역할을 계속 담당합니다.
 
@@ -12,7 +40,7 @@ Claude Code가 다음 역할을 계속 담당합니다.
 
 GitHub Copilot SDK는 model backend 역할만 수행하도록 제한합니다.
 
-## Request flow
+## Direct GHCP SDK request flow
 
 1. Claude Code가 `/v1/messages`에 system prompt, conversation, tool schemas를 전송합니다.
 2. Bridge가 Claude Code model ID를 허용된 Copilot model ID로 변환합니다.
@@ -52,7 +80,7 @@ Claude Code와 Copilot은 version separator가 다를 수 있습니다.
 - Launcher가 매 실행마다 random bridge token을 생성합니다.
 - Claude Code는 token을 local bridge에만 보냅니다.
 - Bridge는 기존 `copilot login` OAuth state를 사용합니다.
-- Databricks credential은 bridge나 project 파일로 전달되지 않습니다.
+- 기존 Claude Code provider credential은 bridge나 project 파일로 전달되지 않습니다.
 
 ## Streaming
 

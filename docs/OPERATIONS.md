@@ -43,7 +43,7 @@ claude \
   -p "이 변경을 검토해줘"
 ```
 
-## Keep using Databricks
+## Keep using the existing provider
 
 ```bash
 claude-current

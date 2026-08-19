@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/bin/resolve-claude.sh"
+export PATH="$ROOT_DIR/node_modules/.bin:$PATH"
 
 # Command-line settings bypass Claude Code's rollout-based renderer selection.
 # Restore the fullscreen renderer used by the unwrapped Claude Code command.

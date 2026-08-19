@@ -18,7 +18,7 @@ LiteLLM gateway가 이미 있는가?
 | A. LiteLLM 없음 | Claude Code -> local GHCP SDK bridge -> Copilot | 불필요 | 필요 |
 | B. 기존 LiteLLM 있음 | Claude Code -> customer LiteLLM -> configured backend | 불필요 | 일반적으로 불필요 |
 | C. Local LiteLLM 설치 | Claude Code -> local LiteLLM -> Copilot | 필요 | LiteLLM용 별도 OAuth 필요 |
-| D. 기존 provider 유지 | Claude Code -> 기존 Azure Databricks | 불필요 | 불필요 |
+| D. 기존 provider 유지 | Claude Code -> 기존 settings의 provider | 불필요 | 불필요 |
 
 ## 공통 준비
 
@@ -41,14 +41,14 @@ exec zsh
 ### 필요한 것
 
 - GitHub Copilot 사용 권한
-- GitHub Copilot CLI
-- `copilot login` 완료
+- `npm install`로 설치되는 repository-local GitHub Copilot CLI
+- GitHub Copilot login 완료
 - 이 repository의 npm dependency
 
 ### 최초 설정
 
 ```bash
-copilot login
+npx copilot login
 ./bin/ghcp-doctor
 ./bin/ghcp-models
 ```
@@ -93,6 +93,10 @@ Client에는 이 repository의 `claude-litellm` launcher만 필요합니다. Gat
 Gateway는 `POST /v1/messages`와 `POST /v1/messages/count_tokens`를 지원해야 합니다.
 Base URL에는 `/v1`을 붙이지 않습니다.
 
+GitHub Copilot 제공 모델이 목적이라면 gateway 관리자는 Claude Code용 alias를
+`github_copilot/claude-*` model에 연결해야 합니다. 다른 provider에 연결된 alias는 이
+repository로 실행할 수 있지만 GitHub Copilot 모델을 사용하는 구성은 아닙니다.
+
 ### Client 설정
 
 ```bash
@@ -129,6 +133,9 @@ claude-litellm --litellm-model claude-haiku-4-5
 
 Gateway가 GitHub Copilot OAuth를 중앙에서 관리한다면 client의 `copilot login`은 필요하지
 않습니다. 실제 요구 credential은 gateway backend 구성에 따라 달라집니다.
+
+여러 사용자가 하나의 개인 Copilot OAuth를 공유하지 않도록 gateway의 identity 격리 방식을
+관리자가 별도로 설계해야 합니다.
 
 ## Case C: 이 machine에 Local LiteLLM gateway 설치
 
@@ -182,14 +189,15 @@ npm run test:e2e:litellm
 이 검증은 health, model discovery, token counting, text response, Claude Code native `Read`
 tool loop, 기존 Claude settings 불변을 확인합니다.
 
-## Case D: 기존 Azure Databricks provider 유지
+## Case D: 기존 Claude Code provider 유지
 
 ```bash
 claude-current
 ```
 
-이 명령은 GHCP SDK bridge와 LiteLLM을 모두 우회하고 기존 Claude Code settings를 그대로
-사용합니다.
+이 명령은 GHCP SDK bridge와 LiteLLM을 모두 우회하고 기존 Claude Code settings에 구성된
+provider를 그대로 사용합니다. 현재 검증 machine에서는 Azure Databricks가 구성돼 있지만
+다른 Anthropic-compatible provider에도 같은 원칙이 적용됩니다.
 
 ## 전환 명령 요약
 
@@ -198,7 +206,7 @@ claude-current
 | Direct GHCP SDK | `claude` 또는 `claude-ghcp` |
 | Existing/customer LiteLLM | `claude-litellm` |
 | Local LiteLLM | `npm run litellm:start`, 이후 `claude-litellm` |
-| 기존 Azure Databricks | `claude-current` |
+| 기존 Claude Code provider | `claude-current` |
 
 상세 LiteLLM 관리자 설정, model mapping, 운영 제한은
 [LiteLLM Gateway 연결](LITELLM.md)을 참고합니다.

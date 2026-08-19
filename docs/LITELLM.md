@@ -29,8 +29,8 @@ Claude Code
 |---|---|---|
 | 고객사가 이미 LiteLLM을 운영 | URL, virtual key, model alias만 설정 | [운영 중인 고객 gateway 사용](#운영-중인-고객-gateway-사용) |
 | 이 machine에서 LiteLLM까지 실행 | Local runtime 설치, OAuth, gateway 시작 | [Local gateway 최초 구성](#local-gateway-최초-구성) |
-| LiteLLM 없이 GHCP SDK 직접 사용 | `claude` 또는 `claude-ghcp` 실행 | [README](../README.md#빠른-시작) |
-| 원래 Azure Databricks 설정 사용 | `claude-current` 실행 | [Operations](OPERATIONS.md#keep-using-databricks) |
+| LiteLLM 없이 GHCP SDK 직접 사용 | `claude` 또는 `claude-ghcp` 실행 | [README](../README.md#빠른-시작-litellm-없이-github-copilot-sdk-사용) |
+| 원래 Claude Code provider 사용 | `claude-current` 실행 | [Operations](OPERATIONS.md#keep-using-the-existing-provider) |
 
 ## 운영 중인 고객 gateway 사용
 
