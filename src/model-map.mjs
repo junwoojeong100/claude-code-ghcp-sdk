@@ -17,6 +17,19 @@ const ADDITIONAL_MODEL_CONTEXT_WINDOWS = new Map([
   ["gpt-5.6-luna", 1_050_000],
 ]);
 
+const COPILOT_TO_FRONTEND_MODEL = new Map([
+  ["gpt-5.6-sol", "github-copilot/claude-gpt-5.6-sol"],
+  ["gpt-5.6-terra", "github-copilot/claude-gpt-5.6-terra"],
+  ["gpt-5.6-luna", "github-copilot/claude-gpt-5.6-luna"],
+]);
+
+const FRONTEND_TO_COPILOT_MODEL = new Map(
+  [...COPILOT_TO_FRONTEND_MODEL].map(([copilot, frontend]) => [
+    frontend,
+    copilot,
+  ]),
+);
+
 export class ModelUnavailableError extends Error {
   constructor(requested, availableIds) {
     const supported = adapterModels(availableIds.map((id) => ({ id })));
@@ -40,8 +53,15 @@ export function frontendModelFor(copilotModel) {
   );
 }
 
+export function pickerModelFor(copilotModel) {
+  const model = stripContextSuffix(copilotModel);
+  return COPILOT_TO_FRONTEND_MODEL.get(model) || frontendModelFor(model);
+}
+
 export function copilotModelForFrontend(frontendModel) {
   const model = stripContextSuffix(frontendModel);
+  const copilotModel = FRONTEND_TO_COPILOT_MODEL.get(model);
+  if (copilotModel) return copilotModel;
   return model.replace(
     /^(claude-(?:haiku|sonnet|opus))-(\d+)-(\d+)$/,
     "$1-$2.$3",
@@ -107,6 +127,19 @@ export function adapterModels(models) {
   );
 }
 
+export function gatewayModelEntries(models) {
+  return adapterModels(models).map((model) => ({
+    id: pickerModelFor(model.id),
+    backend_id: model.id,
+    display_name: model.name || model.id,
+    object: "model",
+    owned_by: "github-copilot",
+    capabilities: model.capabilities,
+  }));
+}
+
 export function contextWindowTokensFor(model) {
-  return ADDITIONAL_MODEL_CONTEXT_WINDOWS.get(stripContextSuffix(model)) || null;
+  const normalized = stripContextSuffix(model);
+  const copilotModel = FRONTEND_TO_COPILOT_MODEL.get(normalized) || normalized;
+  return ADDITIONAL_MODEL_CONTEXT_WINDOWS.get(copilotModel) || null;
 }

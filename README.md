@@ -72,6 +72,11 @@ npx copilot login
 세 model은 Copilot catalog 기준 1,050,000 token context로 설정됩니다. 실제 사용 가능 여부는
 사용자와 organization의 Copilot model policy에 따라 달라집니다.
 
+Interactive session의 `/model` picker에도 허용된 Claude model과 GPT-5.6 Sol, Terra, Luna가
+표시됩니다. Picker viewport 아래에 있으면 arrow key로 scroll합니다. Gateway model
+discovery는 Claude Code의 nonessential traffic이 비활성화된 환경에서는 실행되지 않으므로,
+그 경우에도 `--ghcp-model`로 직접 선택할 수 있습니다.
+
 ### 5. `claude` 명령으로 계속 사용
 
 Repository root에서 다음 명령을 한 번 실행합니다.

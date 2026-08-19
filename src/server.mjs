@@ -10,7 +10,10 @@ import {
   writeJsonMessage,
   writeSseError,
 } from "./anthropic.mjs";
-import { ModelUnavailableError } from "./model-map.mjs";
+import {
+  gatewayModelEntries,
+  ModelUnavailableError,
+} from "./model-map.mjs";
 import { SessionManager } from "./session-manager.mjs";
 
 const host = process.env.HOST || "127.0.0.1";
@@ -85,15 +88,13 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
-  if (req.method === "GET" && req.url === "/v1/models") {
+  if (
+    req.method === "GET" &&
+    (req.url === "/v1/models" || req.url?.startsWith("/v1/models?"))
+  ) {
     json(res, 200, {
       object: "list",
-      data: manager.listModels().map((model) => ({
-        id: model.id,
-        object: "model",
-        owned_by: "github-copilot",
-        capabilities: model.capabilities,
-      })),
+      data: gatewayModelEntries(manager.listModels()),
     });
     return;
   }

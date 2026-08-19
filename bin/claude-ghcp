@@ -143,13 +143,15 @@ if ! node -e '
       return response.json();
     })
     .then((body) => {
-      if (!body.data.some((model) => model.id === expected)) process.exit(1);
+      if (!body.data.some((model) =>
+        model.id === expected || model.backend_id === expected
+      )) process.exit(1);
     })
     .catch((error) => {
       console.error(error.message);
       process.exit(2);
     });
-' "http://127.0.0.1:$BRIDGE_PORT/v1/models" "$BRIDGE_TOKEN" "$GHCP_MODEL_VALUE"; then
+' "http://127.0.0.1:$BRIDGE_PORT/v1/models" "$BRIDGE_TOKEN" "$FRONTEND_MODEL"; then
   echo "GitHub Copilot model is unavailable: $GHCP_MODEL_VALUE" >&2
   echo "Run \"$ROOT_DIR/bin/ghcp-models\" to list available Claude models." >&2
   exit 1

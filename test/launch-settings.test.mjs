@@ -32,10 +32,17 @@ function writeSettings(model) {
 }
 
 test("sets the GPT 5.6 Copilot context window", () => {
-  for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+  for (const variant of ["sol", "terra", "luna"]) {
+    const model = `gpt-5.6-${variant}`;
     const settings = writeSettings(model);
     assert.equal(settings.env.ANTHROPIC_MODEL, model);
     assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "1050000");
+    assert.equal(settings.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, "1");
+    assert.equal(
+      settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+      undefined,
+    );
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, model);
   }
 });
 
