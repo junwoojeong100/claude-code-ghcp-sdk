@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/bin/resolve-claude.sh"
+
+# No provider variables are changed. Claude Code loads the existing user,
+# project, local, and managed settings exactly as it does today.
+CLAUDE_BIN="$(resolve_claude_code_bin "$ROOT_DIR")"
+exec "$CLAUDE_BIN" "$@"

@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/bin/resolve-claude.sh"
+
+# Keep the native fullscreen TUI when provider settings are supplied by file.
+if [[ -z "${CLAUDE_CODE_NO_FLICKER+x}" ]]; then
+  export CLAUDE_CODE_NO_FLICKER=1
+fi
+
+LITELLM_BASE_URL_VALUE="${LITELLM_BASE_URL:-}"
+LITELLM_MODEL_VALUE="${LITELLM_MODEL:-claude-sonnet-4-6}"
+CLAUDE_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage: claude-litellm [gateway options] [--] [claude options and prompt]
+
+Gateway options:
+  --litellm-base-url URL  LiteLLM proxy base URL (or LITELLM_BASE_URL)
+  --litellm-model MODEL   LiteLLM model alias (default: claude-sonnet-4-6)
+  -h, --help              Show this help
+
+Set LITELLM_API_KEY in the environment. The launcher writes provider settings
+to a mode-0600 temporary file and removes it when Claude Code exits.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --litellm-base-url)
+      [[ $# -ge 2 ]] || { echo "--litellm-base-url requires a value" >&2; exit 2; }
+      LITELLM_BASE_URL_VALUE="$2"
+      shift 2
+      ;;
+    --litellm-base-url=*)
+      LITELLM_BASE_URL_VALUE="${1#*=}"
+      shift
+      ;;
+    --litellm-model)
+      [[ $# -ge 2 ]] || { echo "--litellm-model requires a value" >&2; exit 2; }
+      LITELLM_MODEL_VALUE="$2"
+      shift 2
+      ;;
+    --litellm-model=*)
+      LITELLM_MODEL_VALUE="${1#*=}"
+      shift
+      ;;
+    --model|--model=*)
+      echo "Use --litellm-model so the gateway and Claude Code model stay aligned." >&2
+      exit 2
+      ;;
+    --settings|--settings=*)
+      echo "Custom --settings is not supported because it can disable LiteLLM routing." >&2
+      exit 2
+      ;;
+    --ghcp-model|--ghcp-model=*)
+      echo "--ghcp-model is only valid for the direct GHCP SDK launcher." >&2
+      exit 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      for argument in "$@"; do
+        case "$argument" in
+          --model|--model=*|--settings|--settings=*)
+            echo "Do not pass --model or --settings through --; use LiteLLM launcher options." >&2
+            exit 2
+            ;;
+        esac
+      done
+      CLAUDE_ARGS+=("$@")
+      break
+      ;;
+    *)
+      CLAUDE_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$LITELLM_BASE_URL_VALUE" ]] || {
+  echo "LITELLM_BASE_URL or --litellm-base-url is required." >&2
+  exit 1
+}
+[[ -n "${LITELLM_API_KEY:-}" ]] || {
+  echo "LITELLM_API_KEY is required. Use a scoped LiteLLM virtual key." >&2
+  exit 1
+}
+
+command -v node >/dev/null 2>&1 || {
+  echo "Required command not found: node" >&2
+  exit 1
+}
+CLAUDE_BIN="$(resolve_claude_code_bin "$ROOT_DIR")"
+
+RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-litellm.XXXXXX")"
+SETTINGS_FILE="$RUNTIME_DIR/settings.json"
+
+cleanup() {
+  rm -f "$SETTINGS_FILE"
+  rmdir "$RUNTIME_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+node "$ROOT_DIR/src/write-litellm-settings.mjs" \
+  "$SETTINGS_FILE" \
+  "$LITELLM_BASE_URL_VALUE" \
+  "$LITELLM_MODEL_VALUE"
+
+set +e
+if [[ ${#CLAUDE_ARGS[@]} -eq 0 ]]; then
+  "$CLAUDE_BIN" --settings "$SETTINGS_FILE" --model "$LITELLM_MODEL_VALUE"
+else
+  "$CLAUDE_BIN" \
+    --settings "$SETTINGS_FILE" \
+    --model "$LITELLM_MODEL_VALUE" \
+    "${CLAUDE_ARGS[@]}"
+fi
+STATUS=$?
+set -e
+exit "$STATUS"

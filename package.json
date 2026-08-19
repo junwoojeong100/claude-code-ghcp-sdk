@@ -1,0 +1,31 @@
+{
+  "name": "claude-code-ghcp-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run Claude Code with GitHub Copilot models through the GitHub Copilot SDK.",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "claude-ghcp": "bin/claude-ghcp",
+    "claude-litellm": "bin/claude-litellm",
+    "claude-current": "bin/claude-current",
+    "ghcp-doctor": "bin/ghcp-doctor",
+    "ghcp-models": "bin/ghcp-models"
+  },
+  "scripts": {
+    "bridge": "node src/server.mjs",
+    "current-provider": "node src/provider-detection.mjs",
+    "doctor": "node src/doctor.mjs",
+    "litellm:setup": "bash scripts/setup-litellm.sh",
+    "litellm:start": "bash scripts/start-litellm.sh",
+    "models": "node src/list-models.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "bash scripts/e2e.sh",
+    "test:e2e:litellm": "bash scripts/e2e-litellm.sh"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.10-preview.0"
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+.runtime/
+.playwright-mcp/
+*.log
+.DS_Store

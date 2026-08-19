@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/bin/resolve-claude.sh"
+
+# Command-line settings bypass Claude Code's rollout-based renderer selection.
+# Restore the fullscreen renderer used by the unwrapped Claude Code command.
+if [[ -z "${CLAUDE_CODE_NO_FLICKER+x}" ]]; then
+  export CLAUDE_CODE_NO_FLICKER=1
+fi
+
+GHCP_MODEL_VALUE="${GHCP_MODEL:-claude-sonnet-4.6}"
+BRIDGE_PORT="${GHCP_BRIDGE_PORT:-}"
+CLAUDE_ARGS=()
+
+usage() {
+  cat <<'EOF'
+Usage: claude-ghcp [bridge options] [--] [claude options and prompt]
+
+Bridge options:
+  --ghcp-model MODEL   GitHub Copilot model ID (default: claude-sonnet-4.6)
+  --bridge-port PORT   Fixed loopback port (default: choose a free port)
+  -h, --help           Show this help
+
+Use --ghcp-model instead of Claude Code's --model flag. The launcher maps the
+GitHub Copilot model to a Claude Code-compatible frontend model name.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --ghcp-model)
+      [[ $# -ge 2 ]] || { echo "--ghcp-model requires a value" >&2; exit 2; }
+      GHCP_MODEL_VALUE="$2"
+      shift 2
+      ;;
+    --ghcp-model=*)
+      GHCP_MODEL_VALUE="${1#*=}"
+      shift
+      ;;
+    --bridge-port)
+      [[ $# -ge 2 ]] || { echo "--bridge-port requires a value" >&2; exit 2; }
+      BRIDGE_PORT="$2"
+      shift 2
+      ;;
+    --bridge-port=*)
+      BRIDGE_PORT="${1#*=}"
+      shift
+      ;;
+    --model|--model=*)
+      echo "Use --ghcp-model; passing Claude Code --model would make the selected backend ambiguous." >&2
+      exit 2
+      ;;
+    --background|--bg)
+      echo "Claude Code background mode is not supported yet because the local bridge must remain running." >&2
+      exit 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      CLAUDE_ARGS+=("$@")
+      break
+      ;;
+    *)
+      CLAUDE_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+for command in node copilot curl; do
+  command -v "$command" >/dev/null 2>&1 || {
+    echo "Required command not found: $command" >&2
+    exit 1
+  }
+done
+
+CLAUDE_BIN="$(resolve_claude_code_bin "$ROOT_DIR")"
+
+if [[ ! -d "$ROOT_DIR/node_modules/@github/copilot-sdk" ]]; then
+  echo "Dependencies are missing. Run: npm install --prefix \"$ROOT_DIR\"" >&2
+  exit 1
+fi
+
+if [[ -z "$BRIDGE_PORT" ]]; then
+  BRIDGE_PORT="$(
+    node -e 'const net=require("node:net");const s=net.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});'
+  )"
+fi
+
+FRONTEND_MODEL="$(node "$ROOT_DIR/src/model-cli.mjs" frontend "$GHCP_MODEL_VALUE")"
+BRIDGE_TOKEN="$(node -e 'console.log(require("node:crypto").randomBytes(24).toString("hex"))')"
+RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-ghcp.XXXXXX")"
+SETTINGS_FILE="$RUNTIME_DIR/settings.json"
+BRIDGE_LOG="$RUNTIME_DIR/bridge.log"
+BRIDGE_PID=""
+
+cleanup() {
+  if [[ -n "$BRIDGE_PID" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
+    kill "$BRIDGE_PID" 2>/dev/null || true
+    wait "$BRIDGE_PID" 2>/dev/null || true
+  fi
+  rm -f "$SETTINGS_FILE"
+  rm -rf "$RUNTIME_DIR"
+}
+trap cleanup EXIT INT TERM
+
+BRIDGE_API_KEY="$BRIDGE_TOKEN" \
+GHCP_MODEL="$GHCP_MODEL_VALUE" \
+HOST=127.0.0.1 \
+PORT="$BRIDGE_PORT" \
+node "$ROOT_DIR/src/server.mjs" >"$BRIDGE_LOG" 2>&1 &
+BRIDGE_PID=$!
+
+for _ in {1..120}; do
+  if curl --silent --fail "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+    echo "The GHCP bridge exited during startup:" >&2
+    sed -n '1,120p' "$BRIDGE_LOG" >&2
+    exit 1
+  fi
+  sleep 0.25
+done
+
+curl --silent --fail "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null || {
+  echo "Timed out waiting for the GHCP bridge." >&2
+  sed -n '1,120p' "$BRIDGE_LOG" >&2
+  exit 1
+}
+
+if ! node -e '
+  const [url, token, expected] = process.argv.slice(1);
+  fetch(url, {headers: {"x-api-key": token}})
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then((body) => {
+      if (!body.data.some((model) => model.id === expected)) process.exit(1);
+    })
+    .catch((error) => {
+      console.error(error.message);
+      process.exit(2);
+    });
+' "http://127.0.0.1:$BRIDGE_PORT/v1/models" "$BRIDGE_TOKEN" "$GHCP_MODEL_VALUE"; then
+  echo "GitHub Copilot model is unavailable: $GHCP_MODEL_VALUE" >&2
+  echo "Run \"$ROOT_DIR/bin/ghcp-models\" to list available Claude models." >&2
+  exit 1
+fi
+
+node "$ROOT_DIR/src/write-launch-settings.mjs" \
+  "$SETTINGS_FILE" \
+  "http://127.0.0.1:$BRIDGE_PORT" \
+  "$BRIDGE_TOKEN" \
+  "$FRONTEND_MODEL"
+
+set +e
+if [[ ${#CLAUDE_ARGS[@]} -eq 0 ]]; then
+  "$CLAUDE_BIN" --settings "$SETTINGS_FILE" --model "$FRONTEND_MODEL"
+else
+  "$CLAUDE_BIN" --settings "$SETTINGS_FILE" --model "$FRONTEND_MODEL" "${CLAUDE_ARGS[@]}"
+fi
+STATUS=$?
+set -e
+exit "$STATUS"
