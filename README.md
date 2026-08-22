@@ -22,6 +22,21 @@ LiteLLM으로 연결합니다. 기존 permissions, hooks, MCP, skills도 계속 
 | LiteLLM client 또는 gateway 구성 | [LiteLLM 설정 가이드](docs/LITELLM.md) |
 | 구현, 보안 경계, 검증 범위 확인 | [아키텍처](docs/ARCHITECTURE.md) |
 
+## 가능 여부와 공식 지원 경계
+
+**Claude Code에서 GitHub Copilot 모델을 사용하는 것은 가능하지만, Copilot SDK를
+Claude Code의 model provider로 직접 등록하는 방식은 아닙니다.** Claude Code는
+`ANTHROPIC_BASE_URL`에 Anthropic Messages 형식으로 요청하고, Copilot SDK는 Copilot CLI
+server와 JSON-RPC로 통신합니다. 따라서 두 프로토콜 사이에서 message, SSE와 tool call을
+변환하는 이 저장소의 bridge가 필요합니다.
+
+Claude Code는 호환 API 형식의 LLM gateway 연결을 문서화하지만, Anthropic은 gateway를
+통한 non-Claude model routing을 지원하지 않는다고 명시합니다. GitHub Copilot SDK
+자체는 현재 GA이지만, 이 저장소는 필요한 API가 포함된
+`@github/copilot-sdk@1.0.10-preview.0`을 고정해 사용합니다. 따라서 이 조합은 기술적으로
+동작하는 비공식 integration이며, Anthropic 또는 GitHub의 공동 지원 대상이 아닙니다.
+자세한 변환 경계는 [아키텍처](docs/ARCHITECTURE.md#통합-가능-근거와-경계)를 참고합니다.
+
 ## Direct SDK 빠른 시작
 
 ```text
@@ -243,8 +258,10 @@ selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트
 | Reasoning effort, Ultracode `xhigh` routing | 단위 테스트와 로컬 프로토콜 확인 |
 | `Edit`, `Bash`, hooks, plugins, skills, 일반 MCP | Claude Code가 담당하며 전체 조합 E2E는 미수행 |
 | Image/document 변환 | 단위 테스트 확인; 실제 multimodal E2E는 미수행 |
-| Root/subagent 세션 분리 | 단위 테스트 확인 |
-| SDK resume | 구현됨; 자동 테스트에서 직접 검증하지 않음 |
+| Root/subagent 세션 분리 | 단위 테스트 확인; GPT-5.6 Sol → Explore → `Read` 흐름 수동 확인 |
+| SDK resume | conversation resume 구현; 진행 중인 tool call의 bridge 재시작 복구는 보장하지 않음 |
+| Token counting | `/count_tokens` 제공; tokenizer가 아닌 문자열 길이 기반 추정 |
+| Sampling과 생성 제어 | `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tool_choice` 미반영 |
 | MCP tool search (`tool_reference`) | 일반 설정에서는 비활성화; managed policy가 강제하는 환경은 미지원 |
 | `--json-schema` structured output | `output_config` schema translation 미구현 |
 | Remote Control | Custom `ANTHROPIC_BASE_URL`에서 Claude Code가 비활성화 |
@@ -281,6 +298,15 @@ E2E는 실제 GitHub Copilot AI Credits를 사용합니다. 실행 전후
 ## 지원 상태
 
 이 프로젝트는 검증된 working prototype이며 GitHub와 Anthropic이 공동 지원하는 공식
-integration이 아닙니다. Pin된 Copilot SDK는 preview release입니다.
+integration이 아닙니다. Copilot SDK upstream은 GA이지만 이 프로젝트가 pin한 package는
+preview release입니다.
 
 구현 범위, 보안, production 제약은 [아키텍처 문서](docs/ARCHITECTURE.md)를 참고합니다.
+
+| 사용 목적 | 권장 수준 |
+|---|---|
+| 개인 실험·연구 | 적합 |
+| Claude Code UI에서 Copilot 모델 사용 | 핵심 경로 사용 가능 |
+| 일반 코딩 작업 | 필요한 tool 조합을 E2E 확인한 뒤 사용 |
+| 업무 핵심·장시간 자동화 | 복구, 세션 정리와 기능별 검증을 보강한 뒤 사용 |
+| 공식 지원 또는 SLA가 필요한 환경 | 부적합 |

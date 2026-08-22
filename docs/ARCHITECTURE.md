@@ -32,6 +32,28 @@ Claude Code
 않습니다. GitHub Copilot backend는 LiteLLM의 `github_copilot/` provider와 별도 OAuth를
 사용합니다.
 
+## 통합 가능 근거와 경계
+
+이 저장소가 사용하는 Claude Code의 공식 연결점은 model SDK provider plugin이 아니라
+`ANTHROPIC_BASE_URL`이 가리키는 gateway의 Anthropic Messages API 형식입니다. 반면
+Copilot SDK는 HTTP Anthropic API를 제공하지 않고 Copilot CLI server와 JSON-RPC로
+통신합니다.
+
+따라서 이 통합은 다음 두 public contract 사이의 adapter입니다.
+
+| 경계 | 이 저장소의 처리 |
+|---|---|
+| Claude Code → gateway | `/v1/messages`, SSE, token counting, model discovery의 필요한 subset 구현 |
+| Bridge → Copilot | `@github/copilot-sdk` session, streaming event와 pending external-tool RPC 사용 |
+| Tool execution | Copilot 도구를 declaration-only로 등록하고 실제 실행은 Claude Code에 반환 |
+
+Claude Code 공식 문서는 지원 API 형식을 구현한 third-party gateway 연결을 허용하지만,
+Anthropic이 gateway를 통한 non-Claude model routing을 지원하지는 않는다고 명시합니다.
+Copilot SDK upstream은 GA이며 Copilot CLI와 같은 runtime을 programmatic하게 노출하지만,
+Claude Code integration을 제공하지는 않습니다. 이 저장소가 pin한
+`@github/copilot-sdk@1.0.10-preview.0`과 전체 조합은 별도의 비공식 compatibility
+layer입니다.
+
 ## 역할 분리
 
 Claude Code가 담당하는 기능:
@@ -180,12 +202,29 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 ## 알려진 제약
 
 - GitHub와 Anthropic이 공동 지원하는 공식 backend integration은 아닙니다.
-- Pin된 `@github/copilot-sdk`는 preview package이므로 public pending tool-call API도
-  향후 변경될 수 있습니다.
+- Copilot SDK upstream은 GA이지만 pin된 `@github/copilot-sdk` package는 preview이며,
+  사용 중인 public pending tool-call API도 향후 변경될 수 있습니다.
+- Bridge가 현재 해석하는 주요 request field는 model, system text, messages, tools,
+  attachments, `output_config.effort`와 stream 여부입니다. `max_tokens`, `temperature`,
+  `top_p`, `stop_sequences`, `tool_choice`와 `cache_control` 의미는 Copilot SDK 호출에
+  반영하지 않습니다.
+- Claude Code gateway contract는 새 header와 body field가 추가되는 open contract입니다.
+  이 bridge는 Anthropic upstream으로 그대로 forward하지 않고 Copilot SDK 형식으로
+  변환하므로, Claude Code의 새 capability는 자동으로 지원되지 않으며 release별 호환성
+  검토가 필요합니다.
 - Extended-thinking signature, encrypted reasoning content, reasoning summary, server
   tools, citations와 prompt-cache metadata는 완전하게 round-trip하지 않습니다.
-- Exact token counting, retry/idempotency, disconnect recovery와 context reconciliation은
-  production hardening이 필요합니다.
+- `/v1/messages/count_tokens`와 response usage의 input token은 tokenizer 결과가 아니라
+  JSON 문자열 길이를 4로 나눈 추정치입니다. Context 표시와 compact 판단이 실제 Copilot
+  model token 수와 달라질 수 있습니다.
+- Pending external-tool의 `toolCallId` → SDK `requestId` mapping은 bridge process memory에
+  있습니다. SDK conversation resume은 구현했지만 tool 실행 중 bridge가 종료되면 해당
+  mapping을 잃으므로 in-flight turn 복구를 보장하지 않습니다.
+- 실행 중인 bridge의 state map에는 eviction이 없고, SDK session도 disconnect 후
+  `COPILOT_HOME`에 보존되며 자동 삭제 정책을 구성하지 않았습니다. 장시간 세션과 반복
+  실행에는 memory·filesystem 정리 정책이 필요합니다.
+- Retry/idempotency, disconnect recovery와 context reconciliation은 production
+  hardening이 필요합니다.
 - `claude-ghcp`의 bridge lifecycle 때문에 Claude Code background mode는 지원하지 않습니다.
 - Custom `ANTHROPIC_BASE_URL`을 사용하는 Claude Code 제약에 따라 Remote Control은
   비활성화됩니다. Cloud/web session과 cloud ultrareview는 local bridge 경로 밖입니다.
@@ -225,6 +264,9 @@ E2E 스크립트는 실제 모델을 호출합니다.
 
 모든 E2E는 실제 GitHub Copilot AI Credits를 사용합니다.
 
+`Edit`, `Bash`, hooks/plugins/skills, 일반 MCP, 실제 multimodal, 장시간 subagent와
+bridge 재시작 중 in-flight tool 복구는 위 자동 E2E 범위에 포함되지 않습니다.
+
 ### 별도로 수행한 수동 검증
 
 다음 항목은 구현 과정에서 확인했지만 저장소의 명령만으로는 자동 재현되지 않습니다.
@@ -252,6 +294,7 @@ complete multi-agent Ultracode workflow는 자동 E2E 범위에 포함되지 않
 - [Copilot SDK authentication](https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/authenticate)
 - [GitHub Copilot supported models](https://docs.github.com/en/copilot/reference/ai-models/supported-models)
 - [Claude Code gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)
+- [Claude Code third-party gateway 지원 경계](https://code.claude.com/docs/en/llm-gateway)
 - [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect)
 - [Claude Code model과 effort 설정](https://code.claude.com/docs/en/model-config)
 - [Claude Code dynamic workflows](https://code.claude.com/docs/en/workflows)
