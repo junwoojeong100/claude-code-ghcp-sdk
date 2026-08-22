@@ -209,6 +209,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - `ultracode`에서 `xhigh`로의 변환과 model별 unsupported effort 조정
 - SDK session 생성과 `session.setModel()`을 통한 reasoning effort 변경
 - Claude Code root session과 subagent의 SDK session 분리
+- Forked subagent의 inherited history 복구와 `agentId`가 있는 pending tool-call handoff
 - Direct/LiteLLM 임시 settings의 gateway routing 값
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
 
@@ -235,6 +236,7 @@ E2E 스크립트는 실제 모델을 호출합니다.
 - Copilot catalog의 GPT-5.6 Sol, Terra, Luna context와
   `none`, `low`, `medium`, `high`, `xhigh`, `max` reasoning effort metadata
 - Direct SDK와 LiteLLM의 non-streaming/streaming Messages response
+- GPT-5.6 Sol root의 Agent 호출, Explore subagent의 `Read` tool loop와 부모 결과 전달
 
 Bridge에서 확인할 수 있는 범위는 reasoning effort가 Copilot SDK session configuration에
 전달되는 지점까지입니다. Provider 내부 reasoning token 사용량과 실제 GPT-5.6 모델의

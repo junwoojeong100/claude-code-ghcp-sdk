@@ -94,6 +94,29 @@ test("converts Claude tool results for the pending Copilot tool call", () => {
   assert.equal(input.toolResults[0].value.textResultForLlm, "done");
 });
 
+test("does not replay a historical tool result when history ends with assistant", () => {
+  const input = extractTurnInput({
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "parent-agent",
+            content: "Agent started.",
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Waiting for the agent." }],
+      },
+    ],
+  });
+
+  assert.equal(input.kind, "continuation");
+});
+
 test("renders Copilot tool requests as Anthropic tool_use blocks", () => {
   assert.deepEqual(
     anthropicContent({

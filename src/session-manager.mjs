@@ -13,6 +13,9 @@ import {
   resolveReasoningEffort,
 } from "./model-map.mjs";
 
+const CONTINUATION_PROMPT =
+  "Continue from the prior conversation and follow the current system instructions.";
+
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -193,9 +196,10 @@ export class SessionManager {
     };
 
     session.on("external_tool.requested", (event) => {
-      if (!event.agentId) {
-        state.pendingByToolCallId.set(event.data.toolCallId, event.data.requestId);
-      }
+      this.#rememberPendingRequest(state, event);
+    });
+    session.on("external_tool.completed", (event) => {
+      this.#forgetPendingRequest(state, event.data.requestId);
     });
 
     this.states.set(key, state);
@@ -206,7 +210,7 @@ export class SessionManager {
     await this.#applyReasoningEffort(state, reasoningEffort);
     const input = extractTurnInput(body);
 
-    if (input.kind === "tool-results") {
+    if (input.kind === "tool-results" && !state.fresh) {
       return this.#waitForTurn(state, async () => {
         await Promise.all(
           input.toolResults.map(async ({ toolUseId, value }) => {
@@ -221,21 +225,23 @@ export class SessionManager {
       }, onEvent);
     }
 
-    let prompt = input.prompt;
-    if (state.fresh && (body.messages?.length || 0) > 1) {
-      // A new SDK session needs any earlier history that Claude sent.
-      const prior = serializeConversation(body.messages.slice(0, -1));
-      prompt = `<prior_conversation>\n${prior}\n</prior_conversation>\n\n${prompt}`;
+    const messages = body.messages || [];
+    let prompt = input.kind === "prompt" ? input.prompt : CONTINUATION_PROMPT;
+    const attachments = input.kind === "prompt" ? input.attachments : [];
+    if (state.fresh && messages.length) {
+      // Forked agents can start with inherited history that ends in an assistant
+      // message or an already-completed parent tool result.
+      const priorMessages = input.kind === "prompt" ? messages.slice(0, -1) : messages;
+      if (priorMessages.length) {
+        const prior = serializeConversation(priorMessages);
+        prompt = `<prior_conversation>\n${prior}\n</prior_conversation>\n\n${prompt || CONTINUATION_PROMPT}`;
+      }
     }
     state.fresh = false;
 
     return this.#waitForTurn(
       state,
-      () =>
-        state.session.send({
-          prompt,
-          attachments: input.attachments,
-        }),
+      () => state.session.send({ prompt: prompt || CONTINUATION_PROMPT, attachments }),
       onEvent,
     );
   }
@@ -253,6 +259,7 @@ export class SessionManager {
   #waitForTurn(state, trigger, onEvent) {
     const messages = [];
     const subscriptions = [];
+    let pendingToolResponse = null;
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -274,16 +281,18 @@ export class SessionManager {
         messages.push(event.data);
         if (event.data.toolRequests?.length) {
           const combined = this.#combineMessages(messages);
-          void Promise.all(
+          pendingToolResponse = Promise.all(
             combined.toolRequests.map((request) =>
               this.#waitForPendingRequest(state, request.toolCallId),
             ),
-          )
-            .then(() => finish(null, combined))
+          ).then(() => combined);
+          void pendingToolResponse
+            .then((message) => finish(null, message))
             .catch((error) => finish(error));
         }
       };
       const onIdle = () => {
+        if (pendingToolResponse) return;
         finish(
           null,
           messages.length
@@ -321,6 +330,22 @@ export class SessionManager {
         0,
       ),
     };
+  }
+
+  #rememberPendingRequest(state, event) {
+    state.pendingByToolCallId.set(
+      event.data.toolCallId,
+      event.data.requestId,
+    );
+  }
+
+  #forgetPendingRequest(state, requestId) {
+    for (const [toolCallId, pendingRequestId] of state.pendingByToolCallId) {
+      if (pendingRequestId === requestId) {
+        state.pendingByToolCallId.delete(toolCallId);
+        return;
+      }
+    }
   }
 
   async #waitForPendingRequest(state, toolCallId) {

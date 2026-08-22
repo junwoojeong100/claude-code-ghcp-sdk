@@ -19,8 +19,8 @@ export function extractReasoningEffort(body) {
   return normalized === "ultracode" ? "xhigh" : normalized;
 }
 
-export function lastUserMessage(messages = []) {
-  return messages.findLast((message) => message?.role === "user");
+export function lastMessage(messages = []) {
+  return messages.at(-1);
 }
 
 function attachmentFromBlock(block, index) {
@@ -71,8 +71,12 @@ function toolResultValue(block) {
 }
 
 export function extractTurnInput(body) {
-  const message = lastUserMessage(body.messages);
-  const blocks = Array.isArray(message?.content) ? message.content : [];
+  const message = lastMessage(body.messages);
+  if (message?.role !== "user") {
+    return { kind: "continuation", attachments: [] };
+  }
+
+  const blocks = Array.isArray(message.content) ? message.content : [];
   const toolResults = blocks
     .filter((block) => block?.type === "tool_result")
     .map((block) => ({
@@ -90,7 +94,7 @@ export function extractTurnInput(body) {
 
   return {
     kind: "prompt",
-    prompt: extractText(message?.content),
+    prompt: extractText(message.content),
     attachments,
   };
 }

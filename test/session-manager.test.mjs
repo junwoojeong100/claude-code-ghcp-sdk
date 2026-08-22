@@ -7,9 +7,16 @@ class FakeSession {
   constructor() {
     this.handlers = new Map();
     this.setModelCalls = [];
+    this.sendCalls = [];
+    this.handledToolCalls = [];
+    this.sendImplementation = null;
+    this.handlePendingToolCallImplementation = null;
     this.rpc = {
       tools: {
-        handlePendingToolCall: async () => {},
+        handlePendingToolCall: async (request) => {
+          this.handledToolCalls.push(request);
+          await this.handlePendingToolCallImplementation?.(request);
+        },
       },
     };
   }
@@ -21,13 +28,18 @@ class FakeSession {
     return () => handlers.delete(handler);
   }
 
-  emit(type, data = {}) {
+  emit(type, data = {}, envelope = {}) {
     for (const handler of this.handlers.get(type) || []) {
-      handler({ type, data });
+      handler({ type, data, ...envelope });
     }
   }
 
-  async send() {
+  async send(input) {
+    this.sendCalls.push(input);
+    if (this.sendImplementation) {
+      await this.sendImplementation(input);
+      return;
+    }
     this.emit("assistant.message", {
       content: "ok",
       toolRequests: [],
@@ -221,6 +233,175 @@ test("uses separate Copilot sessions for the root and each subagent", async () =
 
     assert.equal(client.created.length, 2);
     assert.notEqual(client.created[0].sessionId, client.created[1].sessionId);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("starts a forked agent from history ending in an assistant message", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    client,
+  });
+  const body = {
+    ...request(),
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "parent-agent", name: "Agent", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "parent-agent",
+            content: "Agent started.",
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Waiting for the agent." }],
+      },
+    ],
+  };
+
+  await manager.start();
+  try {
+    await manager.execute(body, {
+      "x-claude-code-session-id": "session-1",
+      "x-claude-code-agent-id": "agent-1",
+    });
+
+    assert.equal(client.session.handledToolCalls.length, 0);
+    assert.equal(client.session.sendCalls.length, 1);
+    assert.match(client.session.sendCalls[0].prompt, /tool_result parent-agent/);
+    assert.match(
+      client.session.sendCalls[0].prompt,
+      /Continue from the prior conversation/,
+    );
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("recovers a fresh session from an inherited final tool result", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    client,
+  });
+  const body = {
+    ...request(),
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "parent-agent", name: "Agent", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "parent-agent",
+            content: "Agent started.",
+          },
+        ],
+      },
+    ],
+  };
+
+  await manager.start();
+  try {
+    await manager.execute(body, {
+      "x-claude-code-session-id": "session-1",
+      "x-claude-code-agent-id": "agent-1",
+    });
+
+    assert.equal(client.session.handledToolCalls.length, 0);
+    assert.equal(client.session.sendCalls.length, 1);
+    assert.match(client.session.sendCalls[0].prompt, /tool_result parent-agent/);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("returns a live tool result to its pending Copilot request", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+  let pendingRequested = false;
+
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "",
+      toolRequests: [
+        { toolCallId: "tool-1", name: "Read", arguments: { file_path: "/tmp/a" } },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    pendingRequested = true;
+    client.session.emit("external_tool.requested", {
+      requestId: "request-1",
+      toolCallId: "tool-1",
+      toolName: "Read",
+    }, { agentId: "copilot-agent-1" });
+  };
+  client.session.handlePendingToolCallImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "done",
+      toolRequests: [],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    await manager.execute(toolBody, headers);
+    assert.equal(pendingRequested, true);
+    const result = await manager.execute(
+      {
+        ...toolBody,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "tool-1", content: "file" },
+            ],
+          },
+        ],
+      },
+      headers,
+    );
+
+    assert.equal(client.session.handledToolCalls.length, 1);
+    assert.equal(client.session.handledToolCalls[0].requestId, "request-1");
+    assert.equal(result.message.content, "done");
   } finally {
     await manager.stop();
   }
