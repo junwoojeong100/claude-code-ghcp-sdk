@@ -10,7 +10,7 @@ if [[ -z "${CLAUDE_CODE_NO_FLICKER+x}" ]]; then
 fi
 
 LITELLM_BASE_URL_VALUE="${LITELLM_BASE_URL:-}"
-LITELLM_MODEL_VALUE="${LITELLM_MODEL:-claude-sonnet-4-6}"
+LITELLM_MODEL_VALUE="${LITELLM_MODEL:-claude-sonnet-5}"
 CLAUDE_ARGS=()
 
 usage() {
@@ -19,7 +19,7 @@ Usage: claude-litellm [gateway options] [--] [claude options and prompt]
 
 Gateway options:
   --litellm-base-url URL  LiteLLM proxy base URL (or LITELLM_BASE_URL)
-  --litellm-model MODEL   LiteLLM model alias (default: claude-sonnet-4-6)
+  --litellm-model MODEL   LiteLLM model alias (default: claude-sonnet-5)
   -h, --help              Show this help
 
 Set LITELLM_API_KEY in the environment. The launcher writes provider settings
@@ -112,15 +112,15 @@ node "$ROOT_DIR/src/write-litellm-settings.mjs" \
   "$LITELLM_BASE_URL_VALUE" \
   "$LITELLM_MODEL_VALUE"
 
-set +e
-if [[ ${#CLAUDE_ARGS[@]} -eq 0 ]]; then
-  "$CLAUDE_BIN" --settings "$SETTINGS_FILE" --model "$LITELLM_MODEL_VALUE"
-else
-  "$CLAUDE_BIN" \
-    --settings "$SETTINGS_FILE" \
-    --model "$LITELLM_MODEL_VALUE" \
-    "${CLAUDE_ARGS[@]}"
+CLAUDE_COMMAND=(
+  "$CLAUDE_BIN"
+  --settings "$SETTINGS_FILE"
+  --model "$LITELLM_MODEL_VALUE"
+)
+if ((${#CLAUDE_ARGS[@]})); then
+  CLAUDE_COMMAND+=("${CLAUDE_ARGS[@]}")
 fi
-STATUS=$?
-set -e
+
+STATUS=0
+"${CLAUDE_COMMAND[@]}" || STATUS=$?
 exit "$STATUS"

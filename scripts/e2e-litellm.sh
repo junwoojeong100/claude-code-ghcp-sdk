@@ -4,19 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETTINGS_PATH="${HOME}/.claude/settings.json"
 BASE_URL="${LITELLM_BASE_URL:-http://127.0.0.1:4000}"
-MODEL="${LITELLM_MODEL:-claude-sonnet-4-6}"
+MODEL="${LITELLM_MODEL:-claude-sonnet-5}"
 KEY_FILE="${LITELLM_KEY_FILE:-$ROOT_DIR/.runtime/litellm-master-key}"
 MARKER_PREFIX="CLAUDE_CODE_LITELLM"
 FIXTURE="$(mktemp "${TMPDIR:-/tmp}/claude-litellm-fixture.XXXXXX")"
-
-hash_file() {
-  node -e '
-    const fs=require("node:fs");
-    const crypto=require("node:crypto");
-    const value=fs.readFileSync(process.argv[1]);
-    console.log(crypto.createHash("sha256").update(value).digest("hex"));
-  ' "$1"
-}
 
 cleanup() {
   rm -f "$FIXTURE"
@@ -35,7 +26,9 @@ fi
 export LITELLM_BASE_URL="$BASE_URL"
 export LITELLM_MODEL="$MODEL"
 
-BEFORE_HASH="$(hash_file "$SETTINGS_PATH")"
+BEFORE_SETTINGS_STATE="$(
+  node "$ROOT_DIR/src/settings-file-state.mjs" "$SETTINGS_PATH"
+)"
 printf '%s_READ_TOOL_OK\n' "$MARKER_PREFIX" >"$FIXTURE"
 
 curl --silent --show-error --fail --max-time 20 \
@@ -88,9 +81,11 @@ TOOL_OUTPUT="$(
 )"
 grep -F "${MARKER_PREFIX}_READ_TOOL_OK" <<<"$TOOL_OUTPUT" >/dev/null
 
-AFTER_HASH="$(hash_file "$SETTINGS_PATH")"
-[[ "$BEFORE_HASH" == "$AFTER_HASH" ]] || {
-  echo "Claude user settings changed during the LiteLLM test." >&2
+AFTER_SETTINGS_STATE="$(
+  node "$ROOT_DIR/src/settings-file-state.mjs" "$SETTINGS_PATH"
+)"
+[[ "$BEFORE_SETTINGS_STATE" == "$AFTER_SETTINGS_STATE" ]] || {
+  echo "Claude user settings state changed during the LiteLLM test." >&2
   exit 1
 }
 

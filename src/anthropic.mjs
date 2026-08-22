@@ -11,8 +11,16 @@ export function extractSystem(system) {
   return extractText(system) || "You are a helpful coding assistant.";
 }
 
+export function extractReasoningEffort(body) {
+  const effort = body?.output_config?.effort;
+  if (typeof effort !== "string" || !effort.trim()) return null;
+
+  const normalized = effort.trim().toLowerCase();
+  return normalized === "ultracode" ? "xhigh" : normalized;
+}
+
 export function lastUserMessage(messages = []) {
-  return [...messages].reverse().find((message) => message?.role === "user");
+  return messages.findLast((message) => message?.role === "user");
 }
 
 function attachmentFromBlock(block, index) {
@@ -32,7 +40,10 @@ function attachmentFromBlock(block, index) {
 function toolResultValue(block) {
   const textParts = [];
   const binaryResultsForLlm = [];
-  const content = typeof block.content === "string" ? [{ type: "text", text: block.content }] : block.content;
+  const content =
+    typeof block.content === "string"
+      ? [{ type: "text", text: block.content }]
+      : block.content;
 
   for (const item of Array.isArray(content) ? content : []) {
     if (item?.type === "text" && typeof item.text === "string") {
@@ -74,7 +85,7 @@ export function extractTurnInput(body) {
   }
 
   const attachments = blocks
-    .map(attachmentFromBlock)
+    .map((block, index) => attachmentFromBlock(block, index))
     .filter(Boolean);
 
   return {
@@ -215,41 +226,23 @@ export class AnthropicSseStream {
         return;
       }
       block ||= this.#ensureToolBlock(data.toolCallId, data.toolName);
-      if (data.inputDelta) {
-        block.hasInputDelta = true;
-        event(this.res, "content_block_delta", {
-          type: "content_block_delta",
-          index: block.index,
-          delta: { type: "input_json_delta", partial_json: data.inputDelta },
-        });
-      }
+      this.#writeToolInputDelta(block, data.inputDelta);
     }
   }
 
   finish({ model, message }) {
     this.start(model);
 
-    if (message.content) {
-      const alreadyWritten = this.textBlock?.content || "";
-      const remaining = message.content.startsWith(alreadyWritten)
-        ? message.content.slice(alreadyWritten.length)
-        : alreadyWritten
-          ? ""
-          : message.content;
-      this.#writeTextDelta(remaining);
-    }
+    const streamedContent = this.textBlock?.content || "";
+    const remainingContent = message.content?.startsWith(streamedContent)
+      ? message.content.slice(streamedContent.length)
+      : "";
+    this.#writeTextDelta(remainingContent);
 
     for (const tool of message.toolRequests || []) {
       const block = this.#ensureToolBlock(tool.toolCallId, tool.name);
       if (!block.hasInputDelta) {
-        event(this.res, "content_block_delta", {
-          type: "content_block_delta",
-          index: block.index,
-          delta: {
-            type: "input_json_delta",
-            partial_json: JSON.stringify(tool.arguments || {}),
-          },
-        });
+        this.#writeToolInputDelta(block, JSON.stringify(tool.arguments || {}));
       }
     }
 
@@ -318,77 +311,20 @@ export class AnthropicSseStream {
     const pending = this.pendingToolDeltas.get(toolCallId) || [];
     this.pendingToolDeltas.delete(toolCallId);
     for (const inputDelta of pending) {
-      block.hasInputDelta = true;
-      event(this.res, "content_block_delta", {
-        type: "content_block_delta",
-        index: block.index,
-        delta: { type: "input_json_delta", partial_json: inputDelta },
-      });
+      this.#writeToolInputDelta(block, inputDelta);
     }
     return block;
   }
-}
 
-export function writeSseMessage(res, { id, model, message, inputTokens }) {
-  const content = anthropicContent(message);
-  const stopReason = message.toolRequests?.length ? "tool_use" : "end_turn";
-
-  event(res, "message_start", {
-    type: "message_start",
-    message: {
-      id,
-      type: "message",
-      role: "assistant",
-      model,
-      content: [],
-      stop_reason: null,
-      stop_sequence: null,
-      usage: { input_tokens: inputTokens, output_tokens: 0 },
-    },
-  });
-
-  content.forEach((block, index) => {
-    if (block.type === "text") {
-      event(res, "content_block_start", {
-        type: "content_block_start",
-        index,
-        content_block: { type: "text", text: "" },
-      });
-      event(res, "content_block_delta", {
-        type: "content_block_delta",
-        index,
-        delta: { type: "text_delta", text: block.text },
-      });
-    } else {
-      event(res, "content_block_start", {
-        type: "content_block_start",
-        index,
-        content_block: {
-          type: "tool_use",
-          id: block.id,
-          name: block.name,
-          input: {},
-        },
-      });
-      event(res, "content_block_delta", {
-        type: "content_block_delta",
-        index,
-        delta: {
-          type: "input_json_delta",
-          partial_json: JSON.stringify(block.input),
-        },
-      });
-    }
-    event(res, "content_block_stop", { type: "content_block_stop", index });
-  });
-
-  event(res, "message_delta", {
-    type: "message_delta",
-    delta: { stop_reason: stopReason, stop_sequence: null },
-    usage: { output_tokens: message.outputTokens || 0 },
-  });
-  event(res, "message_stop", { type: "message_stop" });
-  res.end();
+  #writeToolInputDelta(block, inputDelta) {
+    if (!inputDelta) return;
+    block.hasInputDelta = true;
+    event(this.res, "content_block_delta", {
+      type: "content_block_delta",
+      index: block.index,
+      delta: { type: "input_json_delta", partial_json: inputDelta },
+    });
+  }
 }
 
 export function writeSseError(res, error) {

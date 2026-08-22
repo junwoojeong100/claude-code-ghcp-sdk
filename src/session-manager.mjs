@@ -3,11 +3,15 @@ import { createHash } from "node:crypto";
 import { CopilotClient, defineTool } from "@github/copilot-sdk";
 
 import {
+  extractReasoningEffort,
   extractSystem,
   extractTurnInput,
   serializeConversation,
 } from "./anthropic.mjs";
-import { resolveCopilotModel } from "./model-map.mjs";
+import {
+  resolveCopilotModel,
+  resolveReasoningEffort,
+} from "./model-map.mjs";
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -48,12 +52,15 @@ export class SessionManager {
     preferredModel,
     logLevel = "error",
     turnTimeoutMs = 300_000,
+    client,
   }) {
-    this.client = new CopilotClient({
-      mode: "empty",
-      baseDirectory,
-      logLevel,
-    });
+    this.client =
+      client ??
+      new CopilotClient({
+        mode: "empty",
+        baseDirectory,
+        logLevel,
+      });
     this.preferredModel = preferredModel;
     this.turnTimeoutMs = turnTimeoutMs;
     this.models = [];
@@ -87,22 +94,43 @@ export class SessionManager {
     });
   }
 
+  resolveReasoningEffort(modelId, requested) {
+    const model = this.models.find((candidate) => candidate.id === modelId);
+    return resolveReasoningEffort({ requested, model });
+  }
+
   async execute(body, headers, callbacks = {}) {
-    const state = await this.#stateFor(body, headers);
+    const model = this.resolveModel(body.model);
+    const reasoningEffort = this.resolveReasoningEffort(
+      model,
+      extractReasoningEffort(body),
+    );
+    const state = await this.#getOrCreateState(body, headers, {
+      model,
+      reasoningEffort,
+    });
     callbacks.onReady?.({ model: state.model });
     const run = state.queue.then(() =>
-      this.#executeLocked(state, body, callbacks.onEvent),
+      this.#executeLocked(
+        state,
+        body,
+        reasoningEffort,
+        callbacks.onEvent,
+      ),
     );
     state.queue = run.catch(() => {});
     return run;
   }
 
-  async #stateFor(body, headers) {
-    const model = this.resolveModel(body.model);
+  async #getOrCreateState(body, headers, { model, reasoningEffort }) {
     const claudeSessionId = header(headers, "x-claude-code-session-id") || "default";
     const claudeAgentId = header(headers, "x-claude-code-agent-id") || "root";
-    const signature = toolSignature(body.tools);
-    const key = `${claudeSessionId}:${claudeAgentId}:${model}:${signature}`;
+    const systemMessage = extractSystem(body.system);
+    const toolSchemaSignature = toolSignature(body.tools);
+    const systemMessageSignature = hash(systemMessage).slice(0, 16);
+    const key =
+      `${claudeSessionId}:${claudeAgentId}:${model}:` +
+      `${toolSchemaSignature}:${systemMessageSignature}`;
 
     const existing = this.states.get(key);
     if (existing) return existing;
@@ -118,8 +146,9 @@ export class SessionManager {
       infiniteSessions: { enabled: false },
       systemMessage: {
         mode: "replace",
-        content: extractSystem(body.system),
+        content: systemMessage,
       },
+      ...(reasoningEffort ? { reasoningEffort } : {}),
     };
 
     let session;
@@ -142,19 +171,14 @@ export class SessionManager {
     }
 
     const state = {
-      key,
       model,
+      reasoningEffort,
       session,
-      resumed,
       fresh: !resumed,
       queue: Promise.resolve(),
       pendingByToolCallId: new Map(),
-      lastAssistantMessage: null,
     };
 
-    session.on("assistant.message", (event) => {
-      if (!event.agentId) state.lastAssistantMessage = event.data;
-    });
     session.on("external_tool.requested", (event) => {
       if (!event.agentId) {
         state.pendingByToolCallId.set(event.data.toolCallId, event.data.requestId);
@@ -165,7 +189,8 @@ export class SessionManager {
     return state;
   }
 
-  async #executeLocked(state, body, onEvent) {
+  async #executeLocked(state, body, reasoningEffort, onEvent) {
+    await this.#applyReasoningEffort(state, reasoningEffort);
     const input = extractTurnInput(body);
 
     if (input.kind === "tool-results") {
@@ -201,9 +226,19 @@ export class SessionManager {
     );
   }
 
+  async #applyReasoningEffort(state, reasoningEffort) {
+    if (reasoningEffort === state.reasoningEffort) return;
+
+    await state.session.setModel(
+      state.model,
+      reasoningEffort ? { reasoningEffort } : undefined,
+    );
+    state.reasoningEffort = reasoningEffort;
+  }
+
   #waitForTurn(state, trigger, onEvent) {
-    state.lastAssistantMessage = null;
     const messages = [];
+    const subscriptions = [];
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -215,22 +250,21 @@ export class SessionManager {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        offMessage();
-        offMessageDelta();
-        offToolCallDelta();
-        offIdle();
-        offError();
+        for (const unsubscribe of subscriptions) unsubscribe();
         if (error) reject(error);
         else resolve({ model: state.model, message });
       };
 
       const onMessage = (event) => {
         if (event.agentId) return;
-        state.lastAssistantMessage = event.data;
         messages.push(event.data);
         if (event.data.toolRequests?.length) {
           const combined = this.#combineMessages(messages);
-          void this.#waitForAllPending(state, combined.toolRequests)
+          void Promise.all(
+            combined.toolRequests.map((request) =>
+              this.#waitForPendingRequest(state, request.toolCallId),
+            ),
+          )
             .then(() => finish(null, combined))
             .catch((error) => finish(error));
         }
@@ -240,22 +274,24 @@ export class SessionManager {
           null,
           messages.length
             ? this.#combineMessages(messages)
-            : state.lastAssistantMessage || { content: "", toolRequests: [] },
+            : { content: "", toolRequests: [] },
         );
       };
       const onError = (event) => {
         finish(new Error(event.data?.message || "GitHub Copilot SDK session error."));
       };
 
-      const offMessage = state.session.on("assistant.message", onMessage);
-      const offMessageDelta = state.session.on("assistant.message_delta", (event) => {
-        onEvent?.(event);
-      });
-      const offToolCallDelta = state.session.on("assistant.tool_call_delta", (event) => {
-        onEvent?.(event);
-      });
-      const offIdle = state.session.on("session.idle", onIdle);
-      const offError = state.session.on("session.error", onError);
+      subscriptions.push(
+        state.session.on("assistant.message", onMessage),
+        state.session.on("assistant.message_delta", (event) => {
+          onEvent?.(event);
+        }),
+        state.session.on("assistant.tool_call_delta", (event) => {
+          onEvent?.(event);
+        }),
+        state.session.on("session.idle", onIdle),
+        state.session.on("session.error", onError),
+      );
 
       Promise.resolve(trigger()).catch((error) => finish(error));
     });
@@ -271,14 +307,6 @@ export class SessionManager {
         0,
       ),
     };
-  }
-
-  async #waitForAllPending(state, toolRequests) {
-    await Promise.all(
-      toolRequests.map((request) =>
-        this.#waitForPendingRequest(state, request.toolCallId),
-      ),
-    );
   }
 
   async #waitForPendingRequest(state, toolCallId) {

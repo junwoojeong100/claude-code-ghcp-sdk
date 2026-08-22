@@ -1,6 +1,4 @@
 import http from "node:http";
-import os from "node:os";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -10,19 +8,19 @@ import {
   writeJsonMessage,
   writeSseError,
 } from "./anthropic.mjs";
+import { resolveCopilotHome } from "./copilot-home.mjs";
 import {
   gatewayModelEntries,
   ModelUnavailableError,
+  ReasoningEffortUnavailableError,
 } from "./model-map.mjs";
 import { SessionManager } from "./session-manager.mjs";
 
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 4142);
 const apiKey = process.env.BRIDGE_API_KEY;
-const preferredModel = process.env.GHCP_MODEL || "claude-sonnet-4.6";
-const copilotHome = path.resolve(
-  (process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot")).replace(/^~/, os.homedir()),
-);
+const preferredModel = process.env.GHCP_MODEL || "claude-sonnet-5";
+const copilotHome = resolveCopilotHome(process.env.COPILOT_HOME);
 const logLevel = process.env.LOG_LEVEL || "error";
 const maxBodyBytes = Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024);
 
@@ -49,6 +47,13 @@ function json(res, status, value) {
   res.end(body);
 }
 
+function writeError(res, status, type, message) {
+  json(res, status, {
+    type: "error",
+    error: { type, message },
+  });
+}
+
 function authenticated(req) {
   if (!apiKey) return true;
   const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -68,12 +73,14 @@ async function readBody(req) {
 
 const server = http.createServer(async (req, res) => {
   const requestId = randomUUID();
+  const requestUrl = new URL(req.url || "/", `http://${host}:${port}`);
+  const requestPath = requestUrl.pathname;
 
-  if (req.method === "HEAD" && req.url?.startsWith("/api/hello")) {
+  if (req.method === "HEAD" && requestPath === "/api/hello") {
     res.writeHead(200).end();
     return;
   }
-  if (req.method === "GET" && req.url === "/health") {
+  if (req.method === "GET" && requestPath === "/health") {
     json(res, 200, {
       ok: true,
       preferredModel,
@@ -82,17 +89,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (!authenticated(req)) {
-    json(res, 401, {
-      type: "error",
-      error: { type: "authentication_error", message: "Invalid bridge credential." },
-    });
+    writeError(
+      res,
+      401,
+      "authentication_error",
+      "Invalid bridge credential.",
+    );
     return;
   }
-  if (
-    req.method === "GET" &&
-    (req.url === "/v1/models" || req.url?.startsWith("/v1/models?"))
-  ) {
-    const requestUrl = new URL(req.url, `http://${host}:${port}`);
+  if (req.method === "GET" && requestPath === "/v1/models") {
     const includeAll = requestUrl.searchParams.get("all") === "true";
     json(res, 200, {
       object: "list",
@@ -106,11 +111,11 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
-  if (req.method !== "POST") {
-    json(res, 404, {
-      type: "error",
-      error: { type: "not_found_error", message: "Not found." },
-    });
+  if (
+    req.method !== "POST" ||
+    !["/v1/messages", "/v1/messages/count_tokens"].includes(requestPath)
+  ) {
+    writeError(res, 404, "not_found_error", "Not found.");
     return;
   }
 
@@ -118,22 +123,12 @@ const server = http.createServer(async (req, res) => {
   try {
     body = await readBody(req);
   } catch (error) {
-    json(res, 400, {
-      type: "error",
-      error: { type: "invalid_request_error", message: error.message },
-    });
+    writeError(res, 400, "invalid_request_error", error.message);
     return;
   }
 
-  if (req.url?.startsWith("/v1/messages/count_tokens")) {
+  if (requestPath === "/v1/messages/count_tokens") {
     json(res, 200, { input_tokens: estimateTokens(body) });
-    return;
-  }
-  if (!req.url?.startsWith("/v1/messages")) {
-    json(res, 404, {
-      type: "error",
-      error: { type: "not_found_error", message: "Not found." },
-    });
     return;
   }
 
@@ -173,13 +168,15 @@ const server = http.createServer(async (req, res) => {
       writeSseError(res, error);
       return;
     }
-    json(res, error instanceof ModelUnavailableError ? 400 : 500, {
-      type: "error",
-      error: {
-        type: error instanceof ModelUnavailableError ? "invalid_request_error" : "api_error",
-        message: error.message,
-      },
-    });
+    const invalidRequest =
+      error instanceof ModelUnavailableError ||
+      error instanceof ReasoningEffortUnavailableError;
+    writeError(
+      res,
+      invalidRequest ? 400 : 500,
+      invalidRequest ? "invalid_request_error" : "api_error",
+      error.message,
+    );
   }
 });
 

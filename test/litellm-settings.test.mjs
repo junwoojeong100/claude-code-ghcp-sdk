@@ -11,6 +11,8 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { CLAUDE_PROVIDER_SELECTORS } from "../src/claude-gateway-env.mjs";
+
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("writes isolated LiteLLM settings with family aliases", () => {
@@ -50,11 +52,15 @@ test("writes isolated LiteLLM settings with family aliases", () => {
     );
     assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "corp-sonnet");
     assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "corp-haiku");
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "corp-default");
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
     assert.equal(
       settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME,
       "LiteLLM · corp-default",
     );
+    for (const name of CLAUDE_PROVIDER_SELECTORS) {
+      assert.equal(settings.env[name], "");
+    }
+    assert.equal(settings.env.ENABLE_TOOL_SEARCH, "");
     assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });

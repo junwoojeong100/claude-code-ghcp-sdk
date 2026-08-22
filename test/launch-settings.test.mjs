@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { CLAUDE_PROVIDER_SELECTORS } from "../src/claude-gateway-env.mjs";
+
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function writeSettings(model) {
@@ -43,10 +45,29 @@ test("sets the GPT 5.6 Copilot context window", () => {
       undefined,
     );
     assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, model);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+    for (const name of CLAUDE_PROVIDER_SELECTORS) {
+      assert.equal(settings.env[name], "");
+    }
+    assert.equal(settings.env.ENABLE_TOOL_SEARCH, "");
   }
 });
 
 test("does not override context limits for recognized Claude models", () => {
-  const settings = writeSettings("claude-sonnet-4-6");
+  const settings = writeSettings("claude-sonnet-5");
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+  assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+  assert.equal(
+    settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME,
+    "GitHub Copilot Claude Opus 5",
+  );
+  assert.equal(
+    settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME,
+    "GitHub Copilot Claude Sonnet 5",
+  );
+  assert.equal(
+    settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
+    "GitHub Copilot Claude Haiku 4.5",
+  );
 });

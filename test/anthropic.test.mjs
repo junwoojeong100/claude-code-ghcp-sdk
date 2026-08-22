@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   AnthropicSseStream,
   anthropicContent,
+  extractReasoningEffort,
   extractSystem,
   extractTurnInput,
   serializeConversation,
@@ -32,6 +33,18 @@ test("extracts Claude Code system text blocks", () => {
     ]),
     "first\nsecond",
   );
+});
+
+test("extracts Claude Code effort and normalizes ultracode to xhigh", () => {
+  assert.equal(
+    extractReasoningEffort({ output_config: { effort: "xhigh" } }),
+    "xhigh",
+  );
+  assert.equal(
+    extractReasoningEffort({ output_config: { effort: "ultracode" } }),
+    "xhigh",
+  );
+  assert.equal(extractReasoningEffort({ output_config: {} }), null);
 });
 
 test("extracts prompt and base64 attachments", () => {

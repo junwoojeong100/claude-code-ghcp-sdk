@@ -11,33 +11,60 @@ const FAMILY_CANDIDATES = {
   haiku: ["claude-haiku-4.5"],
 };
 
-const ADDITIONAL_MODEL_CONTEXT_WINDOWS = new Map([
-  ["gpt-5.6-sol", 1_050_000],
-  ["gpt-5.6-terra", 1_050_000],
-  ["gpt-5.6-luna", 1_050_000],
+const GPT_56_CONTEXT_WINDOW_TOKENS = 1_050_000;
+const ONE_MILLION_CONTEXT_TOKENS = 1_000_000;
+const COPILOT_PICKER_PREFIX = "github-copilot/claude-";
+const REASONING_EFFORT_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+const CLAUDE_CODE_BUILT_IN_MODELS = new Set([
+  "claude-opus-5",
+  "claude-opus-4.8",
+  "claude-sonnet-5",
+  "claude-sonnet-4.6",
+  "claude-haiku-4.5",
 ]);
-
-const COPILOT_TO_FRONTEND_MODEL = new Map([
-  ["gpt-5.6-sol", "github-copilot/claude-gpt-5.6-sol"],
-  ["gpt-5.6-terra", "github-copilot/claude-gpt-5.6-terra"],
-  ["gpt-5.6-luna", "github-copilot/claude-gpt-5.6-luna"],
-]);
-
-const FRONTEND_TO_COPILOT_MODEL = new Map(
-  [...COPILOT_TO_FRONTEND_MODEL].map(([copilot, frontend]) => [
-    frontend,
-    copilot,
+const MODEL_CONTEXT_WINDOW_TOKENS = new Map(
+  ["sol", "terra", "luna"].map((variant) => [
+    `gpt-5.6-${variant}`,
+    GPT_56_CONTEXT_WINDOW_TOKENS,
   ]),
 );
 
+function isAdapterModelId(modelId) {
+  return typeof modelId === "string" && modelId.length > 0;
+}
+
+function isVisibleAdapterModelId(modelId) {
+  return isAdapterModelId(modelId) && !modelId.startsWith("claude-fable-");
+}
+
 export class ModelUnavailableError extends Error {
   constructor(requested, availableIds) {
-    const supported = adapterModels(availableIds.map((id) => ({ id })));
+    const supportedIds = [
+      ...new Set(availableIds.filter(isVisibleAdapterModelId)),
+    ];
     super(
       `GitHub Copilot model "${requested}" is unavailable. ` +
-        `Available adapter models: ${supported.map((model) => model.id).join(", ") || "none"}.`,
+        `Available adapter models: ${supportedIds.join(", ") || "none"}.`,
     );
     this.name = "ModelUnavailableError";
+  }
+}
+
+export class ReasoningEffortUnavailableError extends Error {
+  constructor(requested, modelId, supported) {
+    super(
+      `GitHub Copilot model "${modelId}" does not support reasoning effort "${requested}". ` +
+        `Supported reasoning efforts: ${supported.join(", ") || "none"}.`,
+    );
+    this.name = "ReasoningEffortUnavailableError";
   }
 }
 
@@ -55,13 +82,17 @@ export function frontendModelFor(copilotModel) {
 
 export function pickerModelFor(copilotModel) {
   const model = stripContextSuffix(copilotModel);
-  return COPILOT_TO_FRONTEND_MODEL.get(model) || frontendModelFor(model);
+  if (model.startsWith(COPILOT_PICKER_PREFIX)) return model;
+  return model.startsWith("claude-")
+    ? frontendModelFor(model)
+    : `${COPILOT_PICKER_PREFIX}${model}`;
 }
 
 export function copilotModelForFrontend(frontendModel) {
   const model = stripContextSuffix(frontendModel);
-  const copilotModel = FRONTEND_TO_COPILOT_MODEL.get(model);
-  if (copilotModel) return copilotModel;
+  if (model.startsWith(COPILOT_PICKER_PREFIX)) {
+    return model.slice(COPILOT_PICKER_PREFIX.length);
+  }
   return model.replace(
     /^(claude-(?:haiku|sonnet|opus))-(\d+)-(\d+)$/,
     "$1-$2.$3",
@@ -70,15 +101,11 @@ export function copilotModelForFrontend(frontendModel) {
 
 function familyFor(model) {
   const value = stripContextSuffix(model).toLowerCase();
-  if (value === "fable" || value.includes("fable")) return "fable";
-  if (value === "opus" || value.includes("opus")) return "opus";
-  if (value === "sonnet" || value.includes("sonnet")) return "sonnet";
-  if (value === "haiku" || value.includes("haiku")) return "haiku";
+  if (value.includes("fable")) return "fable";
+  if (value.includes("opus")) return "opus";
+  if (value.includes("sonnet")) return "sonnet";
+  if (value.includes("haiku")) return "haiku";
   return null;
-}
-
-function firstAvailable(candidates, available) {
-  return candidates.find((candidate) => available.has(candidate));
 }
 
 export function resolveCopilotModel({
@@ -96,7 +123,9 @@ export function resolveCopilotModel({
 
   const family = familyFor(raw);
   if (family) {
-    const familyMatch = firstAvailable(FAMILY_CANDIDATES[family], available);
+    const familyMatch = FAMILY_CANDIDATES[family].find((candidate) =>
+      available.has(candidate),
+    );
     if (familyMatch) return familyMatch;
   }
 
@@ -105,35 +134,78 @@ export function resolveCopilotModel({
   throw new ModelUnavailableError(requested, availableIds);
 }
 
-export function familyFrontendModels(availableIds, preferredModel) {
-  const available = new Set(availableIds);
-  const pick = (family) =>
-    firstAvailable(FAMILY_CANDIDATES[family], available) ||
-    (preferredModel && available.has(preferredModel) ? preferredModel : null);
+export function resolveReasoningEffort({ requested, model }) {
+  if (!requested) return null;
 
-  return {
-    fable: frontendModelFor(pick("fable") || preferredModel),
-    opus: frontendModelFor(pick("opus") || preferredModel),
-    sonnet: frontendModelFor(pick("sonnet") || preferredModel),
-    haiku: frontendModelFor(pick("haiku") || preferredModel),
-  };
-}
+  const supported = [
+    ...new Set(
+      [
+        ...(model?.supportedReasoningEfforts || []),
+        ...(model?.capabilities?.supportedReasoningEfforts || []),
+      ],
+    ),
+  ];
+  const configurable =
+    model?.capabilities?.supports?.reasoningEffort ?? supported.length > 0;
 
-export function adapterModels(models) {
-  return models.filter(
-    (model) =>
-      model.id.startsWith("claude-") ||
-      ADDITIONAL_MODEL_CONTEXT_WINDOWS.has(model.id),
+  if (!configurable) return null;
+  if (!supported.length || supported.includes(requested)) return requested;
+
+  const requestedIndex = REASONING_EFFORT_LEVELS.indexOf(requested);
+  if (requestedIndex < 0) {
+    throw new ReasoningEffortUnavailableError(
+      requested,
+      model?.id || "unknown",
+      supported,
+    );
+  }
+
+  const orderedSupported = REASONING_EFFORT_LEVELS.filter((effort) =>
+    supported.includes(effort),
+  );
+  return (
+    orderedSupported.findLast(
+      (effort) => REASONING_EFFORT_LEVELS.indexOf(effort) <= requestedIndex,
+    ) ??
+    orderedSupported[0] ??
+    null
   );
 }
 
+export function adapterModels(models) {
+  const seen = new Set();
+  return models.filter((model) => {
+    if (!isVisibleAdapterModelId(model.id) || seen.has(model.id)) return false;
+    seen.add(model.id);
+    return true;
+  });
+}
+
+function gatewayPickerId(model) {
+  const pickerId = pickerModelFor(model.id);
+  const contextWindowTokens =
+    model.capabilities?.limits?.max_context_window_tokens;
+  const nativeMillionContext = /^claude-(?:opus|sonnet)-5$/.test(model.id);
+
+  return contextWindowTokens >= ONE_MILLION_CONTEXT_TOKENS &&
+    !nativeMillionContext
+    ? `${pickerId}[1m]`
+    : pickerId;
+}
+
+function gatewayDisplayName(model) {
+  const name = model.name || model.id;
+  const label = name === model.id ? name : `${name} (${model.id})`;
+  return `GitHub Copilot · ${label}`;
+}
+
 export function gatewayModelEntries(models) {
-  return models
-    .filter((model) => ADDITIONAL_MODEL_CONTEXT_WINDOWS.has(model.id))
+  return adapterModels(models)
+    .filter((model) => !CLAUDE_CODE_BUILT_IN_MODELS.has(model.id))
     .map((model) => ({
-      id: pickerModelFor(model.id),
+      id: gatewayPickerId(model),
       backend_id: model.id,
-      display_name: `GitHub Copilot · ${model.name || model.id}`,
+      display_name: gatewayDisplayName(model),
       object: "model",
       owned_by: "github-copilot",
       capabilities: model.capabilities,
@@ -141,7 +213,6 @@ export function gatewayModelEntries(models) {
 }
 
 export function contextWindowTokensFor(model) {
-  const normalized = stripContextSuffix(model);
-  const copilotModel = FRONTEND_TO_COPILOT_MODEL.get(normalized) || normalized;
-  return ADDITIONAL_MODEL_CONTEXT_WINDOWS.get(copilotModel) || null;
+  const copilotModel = copilotModelForFrontend(model);
+  return MODEL_CONTEXT_WINDOW_TOKENS.get(copilotModel) ?? null;
 }

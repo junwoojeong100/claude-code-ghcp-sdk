@@ -7,22 +7,15 @@ MODEL="${GHCP_E2E_MODEL:-claude-haiku-4.5}"
 MARKER="CLAUDE_CODE_GHCP_SDK_E2E_OK"
 FIXTURE="$(mktemp "${TMPDIR:-/tmp}/claude-ghcp-fixture.XXXXXX")"
 
-hash_file() {
-  node -e '
-    const fs=require("node:fs");
-    const crypto=require("node:crypto");
-    const value=fs.readFileSync(process.argv[1]);
-    console.log(crypto.createHash("sha256").update(value).digest("hex"));
-  ' "$1"
-}
-
 cleanup() {
   rm -f "$FIXTURE"
 }
 trap cleanup EXIT
 
 printf '%s\n' "$MARKER" >"$FIXTURE"
-BEFORE_HASH="$(hash_file "$SETTINGS_PATH")"
+BEFORE_SETTINGS_STATE="$(
+  node "$ROOT_DIR/src/settings-file-state.mjs" "$SETTINGS_PATH"
+)"
 
 TEXT_OUTPUT="$(
   "$ROOT_DIR/bin/claude-ghcp" \
@@ -46,9 +39,11 @@ TOOL_OUTPUT="$(
 )"
 grep -F "$MARKER" <<<"$TOOL_OUTPUT" >/dev/null
 
-AFTER_HASH="$(hash_file "$SETTINGS_PATH")"
-[[ "$BEFORE_HASH" == "$AFTER_HASH" ]] || {
-  echo "Claude user settings changed during the test." >&2
+AFTER_SETTINGS_STATE="$(
+  node "$ROOT_DIR/src/settings-file-state.mjs" "$SETTINGS_PATH"
+)"
+[[ "$BEFORE_SETTINGS_STATE" == "$AFTER_SETTINGS_STATE" ]] || {
+  echo "Claude user settings state changed during the test." >&2
   exit 1
 }
 

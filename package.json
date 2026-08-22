@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Run Claude Code with GitHub Copilot models through the GitHub Copilot SDK.",
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "bin": {
     "claude-ghcp": "bin/claude-ghcp",

@@ -15,10 +15,12 @@ export function detectProvider(settingsPath = path.join(os.homedir(), ".claude",
   const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
   const env = settings.env || {};
   const host = hostFromUrl(env.ANTHROPIC_BASE_URL);
-  const provider =
-    host?.endsWith(".azuredatabricks.net") ? "azure-databricks" :
-    host ? "custom-anthropic-compatible" :
-    "default-or-managed";
+  let provider = "default-or-managed";
+  if (host?.endsWith(".azuredatabricks.net")) {
+    provider = "azure-databricks";
+  } else if (host) {
+    provider = "custom-anthropic-compatible";
+  }
 
   return {
     settingsPath,

@@ -23,6 +23,24 @@ test("claude command exposes the GHCP launcher", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^Usage: claude-ghcp /);
+  assert.match(result.stdout, /default: claude-sonnet-5/);
+});
+
+test("claude-ghcp rejects arguments that can bypass bridge routing", () => {
+  const cases = [
+    ["--settings", "/tmp/other-settings.json"],
+    ["--", "--settings", "/tmp/other-settings.json"],
+    ["--", "--model", "claude-sonnet-5"],
+    ["--", "--background"],
+  ];
+
+  for (const args of cases) {
+    const result = spawnSync(path.join(rootDir, "bin", "claude-ghcp"), args, {
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 2, `${args.join(" ")}\n${result.stderr}`);
+  }
 });
 
 test("claude-litellm exposes a separate gateway launcher", () => {
@@ -34,6 +52,7 @@ test("claude-litellm exposes a separate gateway launcher", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^Usage: claude-litellm /);
+  assert.match(result.stdout, /default: claude-sonnet-5/);
 });
 
 test("claude-litellm passes temporary gateway settings to upstream Claude", () => {
@@ -67,7 +86,7 @@ test("claude-litellm passes temporary gateway settings to upstream Claude", () =
   try {
     const result = spawnSync(
       path.join(rootDir, "bin", "claude-litellm"),
-      ["--litellm-model", "corp-sonnet", "-p", "hello"],
+      [],
       {
         encoding: "utf8",
         env: {
@@ -78,6 +97,7 @@ test("claude-litellm passes temporary gateway settings to upstream Claude", () =
           HOME: fixtureDir,
           LITELLM_API_KEY: "sk-test-only",
           LITELLM_BASE_URL: "https://litellm.example.com",
+          LITELLM_MODEL: "",
           PATH: `${path.join(rootDir, "bin")}:${fixtureDir}:${process.env.PATH}`,
         },
       },
@@ -88,7 +108,9 @@ test("claude-litellm passes temporary gateway settings to upstream Claude", () =
     const settings = JSON.parse(readFileSync(capturedSettings, "utf8"));
     assert.equal(settings.env.ANTHROPIC_BASE_URL, "https://litellm.example.com");
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-test-only");
-    assert.equal(settings.env.ANTHROPIC_MODEL, "corp-sonnet");
+    assert.equal(settings.env.ANTHROPIC_MODEL, "claude-sonnet-5");
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
     const temporarySettingsPath = readFileSync(capturedSettingsPath, "utf8");
     assert.equal(existsSync(temporarySettingsPath), false);
     assert.equal(readFileSync(userSettingsPath, "utf8"), userSettings);

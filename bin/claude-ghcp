@@ -11,7 +11,7 @@ if [[ -z "${CLAUDE_CODE_NO_FLICKER+x}" ]]; then
   export CLAUDE_CODE_NO_FLICKER=1
 fi
 
-GHCP_MODEL_VALUE="${GHCP_MODEL:-claude-sonnet-4.6}"
+GHCP_MODEL_VALUE="${GHCP_MODEL:-claude-sonnet-5}"
 BRIDGE_PORT="${GHCP_BRIDGE_PORT:-}"
 CLAUDE_ARGS=()
 
@@ -20,7 +20,7 @@ usage() {
 Usage: claude-ghcp [bridge options] [--] [claude options and prompt]
 
 Bridge options:
-  --ghcp-model MODEL   GitHub Copilot model ID (default: claude-sonnet-4.6)
+  --ghcp-model MODEL   GitHub Copilot model ID (default: claude-sonnet-5)
   --bridge-port PORT   Fixed loopback port (default: choose a free port)
   -h, --help           Show this help
 
@@ -53,6 +53,10 @@ while (($#)); do
       echo "Use --ghcp-model; passing Claude Code --model would make the selected backend ambiguous." >&2
       exit 2
       ;;
+    --settings|--settings=*)
+      echo "Custom --settings is not supported because it can disable GHCP routing." >&2
+      exit 2
+      ;;
     --background|--bg)
       echo "Claude Code background mode is not supported yet because the local bridge must remain running." >&2
       exit 2
@@ -63,6 +67,14 @@ while (($#)); do
       ;;
     --)
       shift
+      for argument in "$@"; do
+        case "$argument" in
+          --model|--model=*|--settings|--settings=*|--background|--bg)
+            echo "Do not pass --model, --settings, or background mode through --; use GHCP launcher options." >&2
+            exit 2
+            ;;
+        esac
+      done
       CLAUDE_ARGS+=("$@")
       break
       ;;
@@ -163,12 +175,15 @@ node "$ROOT_DIR/src/write-launch-settings.mjs" \
   "$BRIDGE_TOKEN" \
   "$FRONTEND_MODEL"
 
-set +e
-if [[ ${#CLAUDE_ARGS[@]} -eq 0 ]]; then
-  "$CLAUDE_BIN" --settings "$SETTINGS_FILE" --model "$FRONTEND_MODEL"
-else
-  "$CLAUDE_BIN" --settings "$SETTINGS_FILE" --model "$FRONTEND_MODEL" "${CLAUDE_ARGS[@]}"
+CLAUDE_COMMAND=(
+  "$CLAUDE_BIN"
+  --settings "$SETTINGS_FILE"
+  --model "$FRONTEND_MODEL"
+)
+if ((${#CLAUDE_ARGS[@]})); then
+  CLAUDE_COMMAND+=("${CLAUDE_ARGS[@]}")
 fi
-STATUS=$?
-set -e
+
+STATUS=0
+"${CLAUDE_COMMAND[@]}" || STATUS=$?
 exit "$STATUS"
