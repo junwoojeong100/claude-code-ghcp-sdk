@@ -1,12 +1,12 @@
-# 아키텍처
+# Architecture
 
-이 문서는 maintainer를 위한 구현·검증 설명입니다. 설치와 실행은
-[README](../README.md), LiteLLM 운영은 [LiteLLM 가이드](LITELLM.md)를 따릅니다.
+> **Language / 언어:** English | [한국어](ARCHITECTURE_KO.md)
 
-핵심 원칙은 하나입니다. Claude Code가 UI, 세션, 도구 실행을 담당하고 이 저장소는
-모델 backend 연결만 바꿉니다.
+This document is an implementation and validation reference for maintainers. For installation and running, see the [README](../README.md); for LiteLLM operation, see the [LiteLLM Guide](LITELLM.md).
 
-## 시스템 구성
+The core principle is singular: Claude Code owns the UI, session, and tool execution; this repository only swaps the model backend connection.
+
+## System Overview
 
 ### Direct GitHub Copilot SDK
 
@@ -17,83 +17,70 @@ Claude Code
   -> GitHub Copilot model
 ```
 
-`claude`와 `claude-ghcp`가 사용합니다. `copilot login` 계정과 조직의 모델 정책을
-그대로 따릅니다.
+Used by `claude` and `claude-ghcp`. Respects the `copilot login` account and the organization's model policy.
 
 ### LiteLLM
 
 ```text
 Claude Code
   -> LiteLLM /v1/messages
-  -> LiteLLM에 구성된 provider
+  -> provider configured in LiteLLM
 ```
 
-`claude-litellm`이 사용합니다. 로컬 Node.js bridge와 `@github/copilot-sdk`를 통과하지
-않습니다. GitHub Copilot backend는 LiteLLM의 `github_copilot/` provider와 별도 OAuth를
-사용합니다.
+Used by `claude-litellm`. Does not pass through the local Node.js bridge or `@github/copilot-sdk`. The GitHub Copilot backend uses LiteLLM's `github_copilot/` provider with a separate OAuth flow.
 
-## 통합 가능 근거와 경계
+## Integration Rationale and Boundaries
 
-이 저장소가 사용하는 Claude Code의 공식 연결점은 model SDK provider plugin이 아니라
-`ANTHROPIC_BASE_URL`이 가리키는 gateway의 Anthropic Messages API 형식입니다. 반면
-Copilot SDK는 HTTP Anthropic API를 제공하지 않고 Copilot CLI server와 JSON-RPC로
-통신합니다.
+The official Claude Code integration point this repository uses is not a model SDK provider plugin but the Anthropic Messages API format exposed by a gateway at `ANTHROPIC_BASE_URL`. The Copilot SDK, however, does not provide an HTTP Anthropic API; it communicates with the Copilot CLI server over JSON-RPC.
 
-따라서 이 통합은 다음 두 public contract 사이의 adapter입니다.
+This integration is therefore an adapter between the following two public contracts:
 
-| 경계 | 이 저장소의 처리 |
+| Boundary | What this repository handles |
 |---|---|
-| Claude Code → gateway | `/v1/messages`, SSE, token counting, model discovery의 필요한 subset 구현 |
-| Bridge → Copilot | `@github/copilot-sdk` session, streaming event와 pending external-tool RPC 사용 |
-| Tool execution | Copilot 도구를 declaration-only로 등록하고 실제 실행은 Claude Code에 반환 |
+| Claude Code → gateway | Implements the required subset of `/v1/messages`, SSE, token counting, and model discovery |
+| Bridge → Copilot | Uses `@github/copilot-sdk` sessions, streaming events, and the pending external-tool RPC |
+| Tool execution | Registers Copilot tools as declaration-only and returns actual execution to Claude Code |
 
-Claude Code 공식 문서는 지원 API 형식을 구현한 third-party gateway 연결을 허용하지만,
-Anthropic이 gateway를 통한 non-Claude model routing을 지원하지는 않는다고 명시합니다.
-Copilot SDK upstream은 GA이며 Copilot CLI와 같은 runtime을 programmatic하게 노출하지만,
-Claude Code integration을 제공하지는 않습니다. 이 저장소가 pin한
-`@github/copilot-sdk@1.0.10-preview.0`과 전체 조합은 별도의 비공식 compatibility
-layer입니다.
+Claude Code's official documentation permits connecting to third-party gateways that implement the supported API format, but Anthropic explicitly states it does not support routing non-Claude models through a gateway. The Copilot SDK upstream is GA and programmatically exposes the same runtime as the Copilot CLI, but does not provide a Claude Code integration. The pinned `@github/copilot-sdk@1.0.10-preview.0` and the overall combination form a separate, unofficial compatibility layer.
 
-## 역할 분리
+## Role Separation
 
-Claude Code가 담당하는 기능:
+Features handled by Claude Code:
 
-- Terminal UI와 conversation
+- Terminal UI and conversation
 - Permissions
 - Hooks, plugins, skills, MCP
-- 로컬 파일, shell, edit 등의 tool 실행
+- Tool execution (local files, shell, edits, etc.)
 - User-facing session lifecycle
 
-Direct 경로의 GitHub Copilot SDK와 bridge는 모델 backend 연결만 담당합니다.
+The GitHub Copilot SDK and bridge on the Direct path handle only the model backend connection.
 
-## Direct SDK 요청 흐름
+## Direct SDK Request Flow
 
-1. Claude Code가 `/v1/messages`에 system prompt, conversation, tool schema를 전송합니다.
-2. Bridge가 Claude Code 모델 ID를 Copilot 모델 ID로 변환합니다.
-3. `output_config.effort`를 모델의 `supportedReasoningEfforts`와 대조합니다.
-4. Copilot SDK session을 `mode: "empty"`와 선택된 `reasoningEffort`로 생성합니다.
-5. Claude Code system prompt와 tool declaration을 SDK session에 등록합니다.
-6. Copilot 모델의 tool 요청을 Anthropic `tool_use` block으로 반환합니다.
-7. Claude Code가 tool을 실행하고 `tool_result`를 다음 요청에 보냅니다.
-8. Bridge가 `handlePendingToolCall`로 결과를 SDK session에 전달합니다.
-9. 최종 응답을 Anthropic Messages 형식으로 Claude Code에 반환합니다.
+1. Claude Code sends the system prompt, conversation, and tool schema to `/v1/messages`.
+2. The bridge translates the Claude Code model ID to a Copilot model ID.
+3. `output_config.effort` is compared against the model's `supportedReasoningEfforts`.
+4. A Copilot SDK session is created with `mode: "empty"` and the selected `reasoningEffort`.
+5. The Claude Code system prompt and tool declarations are registered with the SDK session.
+6. Tool requests from the Copilot model are returned as Anthropic `tool_use` blocks.
+7. Claude Code executes the tool and sends the `tool_result` in the next request.
+8. The bridge delivers the result to the SDK session via `handlePendingToolCall`.
+9. The final response is returned to Claude Code in Anthropic Messages format.
 
-## 세션과 모델 매핑
+## Session and Model Mapping
 
-### 세션 분리
+### Session Isolation
 
-Bridge는 다음 Claude Code header로 root session과 subagent를 분리합니다.
+The bridge separates root sessions and subagents using the following Claude Code headers:
 
 - `x-claude-code-session-id`
 - `x-claude-code-agent-id`
 
-Copilot SDK session ID는 Claude session, agent, resolved model, tool schema signature,
-system prompt signature로 결정됩니다. Bridge를 다시 시작하면 기존 session의 resume을
-시도합니다.
+The Copilot SDK session ID is determined by the Claude session, agent, resolved model, tool schema signature, and system prompt signature. When the bridge is restarted, it attempts to resume existing sessions.
 
-### 모델 ID 변환
+### Model ID Translation
 
-Claude Code와 Copilot 모델 ID의 version separator 차이를 변환합니다.
+Translates the version-separator difference between Claude Code and Copilot model IDs.
 
 | Claude Code frontend | GitHub Copilot |
 |---|---|
@@ -105,57 +92,44 @@ Claude Code와 Copilot 모델 ID의 version separator 차이를 변환합니다.
 | `gpt-5.6-terra` | `gpt-5.6-terra` |
 | `gpt-5.6-luna` | `gpt-5.6-luna` |
 
-`sonnet`, `opus`, `haiku` alias는 현재 계정에서 허용된 family 모델로 해석합니다.
-GPT-5.6 모델은 full ID를 사용합니다.
+The `sonnet`, `opus`, and `haiku` aliases resolve to the permitted family model for the current account. GPT-5.6 models use their full ID.
 
-### 모델 discovery와 context
+### Model Discovery and Context
 
-실행 스크립트는 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 `/v1/models` discovery를
-활성화합니다. Endpoint는 Copilot SDK `listModels()` 결과를 backend ID 기준으로 중복
-제거해 반환합니다.
+The launch scripts enable `/v1/models` discovery via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`. The endpoint returns the results of `listModels()` from the Copilot SDK, deduplicated by backend ID.
 
-- Claude Code 2.1.239가 기본 제공하는 Opus 5/4.8, Sonnet 5/4.6, Haiku 4.5는 중복 표시하지
-  않습니다.
-- Fable은 목록에서 제외합니다.
-- 나머지 Claude 모델은 dot version을 hyphen version으로 바꿉니다.
-- Claude가 아닌 모델은 discovery filter를 통과하도록
-  `github-copilot/claude-<copilot-model-id>` 형식으로 반환합니다.
-- 1M 이상 context를 선언한 non-native 모델에는 `[1m]` suffix를 붙입니다.
-- Display name에는 정확한 backend 모델 ID를 포함합니다.
+- Opus 5/4.8, Sonnet 5/4.6, and Haiku 4.5 already bundled with Claude Code 2.1.239 are not shown as duplicates.
+- Fable is excluded from the list.
+- Other Claude models have their dot-version converted to hyphen-version.
+- Non-Claude models are returned in the format `github-copilot/claude-<copilot-model-id>` to pass the discovery filter.
+- Non-native models that declare a context of 1M or more receive a `[1m]` suffix.
+- Display names include the exact backend model ID.
 
-Bridge는 picker ID의 prefix와 suffix를 제거해 원래 Copilot 모델 ID를 복원합니다.
-Claude Code가 unknown 모델을 200k context로 제한하지 않도록 catalog의 1,050,000 token
-context도 임시 settings에 전달합니다.
+The bridge removes the prefix and suffix from picker IDs to recover the original Copilot model ID. To prevent Claude Code from capping unknown models at 200k context, the catalog's 1,050,000-token context is also written to the temporary settings.
 
-### Reasoning effort
+### Reasoning Effort
 
-`/effort`와 `--effort`는 Anthropic Messages의 `output_config.effort`로 전달됩니다.
-Bridge는 모델 metadata와 비교해 지원하지 않는 값을 가장 가까운 하위 level로 조정합니다.
-Reasoning effort를 지원하지 않는 모델에는 override를 전달하지 않습니다.
+`/effort` and `--effort` are forwarded as `output_config.effort` in the Anthropic Messages request. The bridge compares the value against model metadata and adjusts unsupported values down to the nearest supported level. No override is forwarded to models that do not support reasoning effort.
 
-Session 생성과 resume에는 선택된 `reasoningEffort`를 지정합니다. 같은 Claude session에서
-effort가 바뀌거나 기본값으로 reset되면 SDK `session.setModel()`로 conversation을 유지한
-채 다음 turn부터 변경합니다. `ultracode`는 `xhigh`로 정규화하며, workflow orchestration과
-tool 실행은 Claude Code가 담당합니다.
+Sessions are created and resumed with the selected `reasoningEffort`. If the effort changes or resets to the default within the same Claude session, `session.setModel()` is called to change it from the next turn while preserving the conversation. `ultracode` is normalized to `xhigh`; workflow orchestration and tool execution remain with Claude Code.
 
-## 주요 파일
+## Key Files
 
-| 파일 | 역할 |
+| File | Role |
 |---|---|
-| `bin/claude-ghcp` | Direct bridge lifecycle과 임시 settings 관리 |
-| `bin/claude-litellm` | 외부 LiteLLM용 임시 settings 관리 |
-| `bin/claude-current` | 기존 Claude Code provider pass-through |
+| `bin/claude-ghcp` | Direct bridge lifecycle and temporary settings management |
+| `bin/claude-litellm` | Temporary settings management for external LiteLLM |
+| `bin/claude-current` | Pass-through to the original Claude Code provider |
 | `src/server.mjs` | Loopback Anthropic Messages HTTP/SSE server |
-| `src/session-manager.mjs` | Copilot SDK session과 tool handoff |
-| `src/anthropic.mjs` | Messages request/response 변환 |
-| `src/model-map.mjs` | Claude Code와 Copilot model ID 변환 |
-| `src/write-launch-settings.mjs` | Direct 경로의 mode `0600` settings 생성 |
-| `src/write-litellm-settings.mjs` | LiteLLM 경로의 mode `0600` settings 생성 |
+| `src/session-manager.mjs` | Copilot SDK session and tool handoff |
+| `src/anthropic.mjs` | Messages request/response translation |
+| `src/model-map.mjs` | Claude Code and Copilot model ID translation |
+| `src/write-launch-settings.mjs` | Generates mode `0600` settings for the Direct path |
+| `src/write-litellm-settings.mjs` | Generates mode `0600` settings for the LiteLLM path |
 
-## Bridge가 구현한 호환 기능
+## Bridge-Implemented Features
 
-다음 목록은 구현 범위이며 E2E 검증 목록이 아닙니다. 자동·수동 검증 범위는
-[검증 범위](#검증-범위)에서 구분합니다.
+The following list describes the implementation scope, not the E2E validation scope. Automated and manual validation boundaries are defined in [Validation Scope](#validation-scope).
 
 - `POST /v1/messages`
 - Streaming SSE
@@ -166,125 +140,89 @@ tool 실행은 Claude Code가 담당합니다.
 - Dynamic JSON Schema tools
 - Parallel tool-result submission
 - Tool errors
-- Model별 reasoning effort 전달과 session 중 effort 변경
-- Model alias와 version conversion
-- Claude Code root/subagent session 분리
+- Per-model reasoning effort forwarding and mid-session effort changes
+- Model alias and version conversion
+- Claude Code root/subagent session isolation
 - SDK session resume
 
-## 설정, 네트워크와 로그
+## Configuration, Network, and Logging
 
-### 설정 우선순위
+### Configuration Priority
 
-- 기존 user/project/local/managed Claude settings는 계속 불러옵니다.
-- Command-line settings는 base URL, 인증 token, 선택 모델과 family mapping 등 routing에
-  필요한 값만 override합니다. Direct 경로는 모델 discovery와 custom model context도
-  설정합니다.
-- User/project/shell의 Claude cloud-provider selector는 빈 값으로 덮어써 요청이 설정된
-  endpoint를 우회하지 않게 합니다.
-- User/project/shell의 `ENABLE_TOOL_SEARCH`도 빈 값으로 덮어씁니다. Direct bridge는 일반
-  MCP tool schema는 전달하지만 `tool_reference` protocol은 구현하지 않았기 때문입니다.
-- Managed settings는 위 command-line settings보다 우선합니다. 따라서 조직 정책이
-  provider selector나 MCP tool search를 강제하면 실행 스크립트는 이를 우회하지 않습니다.
+- Existing user, project, local, and managed Claude settings continue to be loaded.
+- Command-line settings override only the values needed for routing: base URL, authentication token, selected model, and family mapping. The Direct path also configures model discovery and custom model context.
+- The Claude cloud-provider selector in user, project, or shell settings is overwritten with an empty value to prevent requests from bypassing the configured endpoint.
+- `ENABLE_TOOL_SEARCH` in user, project, or shell settings is also overwritten with an empty value, because the Direct bridge forwards general MCP tool schemas but has not implemented the `tool_reference` protocol.
+- Managed settings take precedence over these command-line settings. Therefore, if an organization policy enforces a provider selector or MCP tool search, the launch scripts do not override it.
 
-### 네트워크와 credential
+### Network and Credentials
 
-- Direct 실행 스크립트는 bridge를 `127.0.0.1`에만 bind합니다.
-- Direct 실행 스크립트는 실행마다 임의의 bridge token을 생성하고 종료 시 삭제합니다.
-- Bridge는 Copilot CLI 로그인 정보를 사용합니다. Anthropic credential을 읽거나
-  프로젝트로 복사하지 않습니다.
+- The Direct launch script binds the bridge to `127.0.0.1` only.
+- The Direct launch script generates a random bridge token on each run and deletes it on exit.
+- The bridge uses the Copilot CLI login credentials. It does not read or copy Anthropic credentials into the project.
 
-### 로그
+### Logging
 
-Bridge는 request body, prompt, tool argument, tool result, credential을 직접 log하지
-않습니다. 기본 log는 startup metadata와 SDK 또는 bridge error로 제한하며 실행
-스크립트가 만든 임시 log는 종료 시 삭제합니다.
+The bridge does not directly log request bodies, prompts, tool arguments, tool results, or credentials. Default logging is limited to startup metadata and SDK or bridge errors. Temporary log files created by the launch scripts are deleted on exit.
 
-## 알려진 제약
+## Known Constraints
 
-- GitHub와 Anthropic이 공동 지원하는 공식 backend integration은 아닙니다.
-- Copilot SDK upstream은 GA이지만 pin된 `@github/copilot-sdk` package는 preview이며,
-  사용 중인 public pending tool-call API도 향후 변경될 수 있습니다.
-- Bridge가 현재 해석하는 주요 request field는 model, system text, messages, tools,
-  attachments, `output_config.effort`와 stream 여부입니다. `max_tokens`, `temperature`,
-  `top_p`, `stop_sequences`, `tool_choice`와 `cache_control` 의미는 Copilot SDK 호출에
-  반영하지 않습니다.
-- Claude Code gateway contract는 새 header와 body field가 추가되는 open contract입니다.
-  이 bridge는 Anthropic upstream으로 그대로 forward하지 않고 Copilot SDK 형식으로
-  변환하므로, Claude Code의 새 capability는 자동으로 지원되지 않으며 release별 호환성
-  검토가 필요합니다.
-- Extended-thinking signature, encrypted reasoning content, reasoning summary, server
-  tools, citations와 prompt-cache metadata는 완전하게 round-trip하지 않습니다.
-- `/v1/messages/count_tokens`와 response usage의 input token은 tokenizer 결과가 아니라
-  JSON 문자열 길이를 4로 나눈 추정치입니다. Context 표시와 compact 판단이 실제 Copilot
-  model token 수와 달라질 수 있습니다.
-- Pending external-tool의 `toolCallId` → SDK `requestId` mapping은 bridge process memory에
-  있습니다. SDK conversation resume은 구현했지만 tool 실행 중 bridge가 종료되면 해당
-  mapping을 잃으므로 in-flight turn 복구를 보장하지 않습니다.
-- 실행 중인 bridge의 state map에는 eviction이 없고, SDK session도 disconnect 후
-  `COPILOT_HOME`에 보존되며 자동 삭제 정책을 구성하지 않았습니다. 장시간 세션과 반복
-  실행에는 memory·filesystem 정리 정책이 필요합니다.
-- Retry/idempotency, disconnect recovery와 context reconciliation은 production
-  hardening이 필요합니다.
-- `claude-ghcp`의 bridge lifecycle 때문에 Claude Code background mode는 지원하지 않습니다.
-- Custom `ANTHROPIC_BASE_URL`을 사용하는 Claude Code 제약에 따라 Remote Control은
-  비활성화됩니다. Cloud/web session과 cloud ultrareview는 local bridge 경로 밖입니다.
-- Structured output의 `output_config` schema translation과 MCP `tool_reference`는
-  구현하지 않았습니다.
-- 원격·공유 배포에는 TLS, user authentication, authorization와 tenant-isolated
-  Copilot identity/session storage가 필요합니다.
-- Prompt와 source code는 GitHub Copilot model service로 전송됩니다. 사용 전 enterprise
-  policy, content exclusion과 data retention 조건을 확인해야 합니다.
-- 모델 사용량은 GitHub Copilot AI Credits와 plan policy를 따릅니다.
+- This is not an official backend integration jointly supported by GitHub and Anthropic.
+- The Copilot SDK upstream is GA, but the pinned `@github/copilot-sdk` package is a preview release, and the public pending tool-call API it uses may change in the future.
+- The primary request fields the bridge currently interprets are: model, system text, messages, tools, attachments, `output_config.effort`, and whether streaming is enabled. The semantics of `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tool_choice`, and `cache_control` are not reflected in Copilot SDK calls.
+- The Claude Code gateway contract is an open contract to which new headers and body fields may be added. Because this bridge translates to Copilot SDK format rather than forwarding to an Anthropic upstream unchanged, new Claude Code capabilities are not automatically supported and require per-release compatibility review.
+- Extended-thinking signatures, encrypted reasoning content, reasoning summaries, server tools, citations, and prompt-cache metadata do not round-trip completely.
+- The input token count in `/v1/messages/count_tokens` and response usage is an estimate derived by dividing the JSON string length by 4, not a tokenizer result. Context display and compaction decisions may differ from the actual token count for the Copilot model.
+- The `toolCallId` → SDK `requestId` mapping for pending external tools lives in the bridge process memory. SDK conversation resume is implemented, but if the bridge exits while a tool call is in flight, that mapping is lost and recovery of the in-flight turn is not guaranteed.
+- There is no eviction policy for the bridge's in-memory state map, and SDK sessions are preserved in `COPILOT_HOME` after disconnection without an automatic cleanup policy. Long-running sessions and repeated executions require memory and filesystem cleanup policies.
+- Retry/idempotency, disconnect recovery, and context reconciliation require production hardening.
+- Claude Code background mode is not supported due to the `claude-ghcp` bridge lifecycle.
+- Remote Control is disabled by the Claude Code constraint that applies when a custom `ANTHROPIC_BASE_URL` is used. Cloud/web sessions and cloud ultrareview are outside the local bridge path.
+- `output_config` schema translation for structured output and MCP `tool_reference` are not implemented.
+- Remote or shared deployments require TLS, user authentication, authorization, and tenant-isolated Copilot identity/session storage.
+- Prompts and source code are sent to the GitHub Copilot model service. Review your enterprise policy, content exclusion settings, and data retention conditions before use.
+- Model usage is subject to GitHub Copilot AI Credits and plan policy.
 
-## 검증 범위
+## Validation Scope
 
-### 자동으로 재현되는 검증
+### Automated Reproducible Validation
 
-`npm test`는 AI Credit을 사용하지 않고 다음 동작을 확인합니다.
+`npm test` verifies the following behavior without consuming GitHub Copilot AI Credits:
 
-- Anthropic Messages text, attachment, tool result와 SSE 변환
-- Claude/Copilot model ID와 family alias 변환
-- GPT-5.6 context override와 gateway discovery row
-- `ultracode`에서 `xhigh`로의 변환과 model별 unsupported effort 조정
-- SDK session 생성과 `session.setModel()`을 통한 reasoning effort 변경
-- Claude Code root session과 subagent의 SDK session 분리
-- Forked subagent의 inherited history 복구와 `agentId`가 있는 pending tool-call handoff
-- Direct/LiteLLM 임시 settings의 gateway routing 값
-- LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
+- Anthropic Messages text, attachment, and tool-result translation and SSE conversion
+- Claude/Copilot model ID and family alias translation
+- GPT-5.6 context override and gateway discovery row
+- `ultracode` → `xhigh` normalization and per-model unsupported-effort adjustment
+- SDK session creation and reasoning-effort changes via `session.setModel()`
+- Claude Code root session and subagent SDK session isolation
+- Inherited history recovery for forked subagents and pending tool-call handoff with `agentId`
+- Gateway routing values in the Direct/LiteLLM temporary settings
+- Mode `0600`, argument handling, and provider detection for LiteLLM settings
 
-E2E 스크립트는 실제 모델을 호출합니다.
+E2E scripts call real models:
 
-- `npm run test:e2e`: 기본 `claude-haiku-4.5`의 Direct SDK text response, Claude Code
-  native `Read` tool loop와 user settings 파일 존재 여부 및 content hash 불변.
-  `GHCP_E2E_MODEL`로 model 변경 가능
-- `npm run test:e2e:gpt-5.6`: GPT-5.6 Sol, Terra, Luna 각각의 text response, `Read` tool
-  loop와 user settings 파일 존재 여부 및 content hash 불변
-- `npm run test:e2e:litellm`: LiteLLM health, model discovery, token counting, text response,
-  Claude Code native `Read` tool loop와 user settings 파일 존재 여부 및 content hash 불변
+- `npm run test:e2e`: Direct SDK text response for the default `claude-haiku-4.5`, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash. The model can be changed with `GHCP_E2E_MODEL`.
+- `npm run test:e2e:gpt-5.6`: Text response, `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash for each of GPT-5.6 Sol, Terra, and Luna.
+- `npm run test:e2e:litellm`: LiteLLM health check, model discovery, token counting, text response, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash.
 
-모든 E2E는 실제 GitHub Copilot AI Credits를 사용합니다.
+All E2E tests consume real GitHub Copilot AI Credits.
 
-`Edit`, `Bash`, hooks/plugins/skills, 일반 MCP, 실제 multimodal, 장시간 subagent와
-bridge 재시작 중 in-flight tool 복구는 위 자동 E2E 범위에 포함되지 않습니다.
+`Edit`, `Bash`, hooks/plugins/skills, general MCP, real multimodal, long-running subagents, and in-flight tool recovery across bridge restarts are not included in the automated E2E scope.
 
-### 별도로 수행한 수동 검증
+### Additional Manual Validation
 
-다음 항목은 구현 과정에서 확인했지만 저장소의 명령만으로는 자동 재현되지 않습니다.
+The following items were verified during development but are not automatically reproducible using only the repository's commands:
 
-- 실제 Claude Code 2.1.235를 로컬 fake Anthropic gateway에 연결
-- `--effort ultracode` request의 `output_config.effort: "ultracode"`와
-  `thinking.type: "adaptive"`
-- Ultracode request의 workflow, subagent와 task 관리 tool schema
-- Copilot catalog의 GPT-5.6 Sol, Terra, Luna context와
-  `none`, `low`, `medium`, `high`, `xhigh`, `max` reasoning effort metadata
-- Direct SDK와 LiteLLM의 non-streaming/streaming Messages response
-- GPT-5.6 Sol root의 Agent 호출, Explore subagent의 `Read` tool loop와 부모 결과 전달
+- Connected real Claude Code 2.1.235 to a local fake Anthropic gateway
+- `output_config.effort: "ultracode"` and `thinking.type: "adaptive"` in an `--effort ultracode` request
+- Workflow, subagent, and task-management tool schemas in an Ultracode request
+- GPT-5.6 Sol, Terra, and Luna context from the Copilot catalog, and `none`, `low`, `medium`, `high`, `xhigh`, `max` reasoning effort metadata
+- Non-streaming and streaming Messages responses for both Direct SDK and LiteLLM
+- GPT-5.6 Sol root calling an Agent, Explore subagent's `Read` tool loop, and result forwarding to the parent
 
-Bridge에서 확인할 수 있는 범위는 reasoning effort가 Copilot SDK session configuration에
-전달되는 지점까지입니다. Provider 내부 reasoning token 사용량과 실제 GPT-5.6 모델의
-complete multi-agent Ultracode workflow는 자동 E2E 범위에 포함되지 않습니다.
+The bridge's observable scope ends where reasoning effort is delivered to the Copilot SDK session configuration. Provider-internal reasoning token usage and a complete multi-agent Ultracode workflow on a real GPT-5.6 model are not included in the automated E2E scope.
 
-## 참고 자료
+## References
 
 - [GitHub Copilot SDK](https://github.com/github/copilot-sdk)
 - [Copilot SDK multi-tenancy and `mode: empty`](https://docs.github.com/en/copilot/how-tos/copilot-sdk/setup/multi-tenancy)
@@ -294,11 +232,10 @@ complete multi-agent Ultracode workflow는 자동 E2E 범위에 포함되지 않
 - [Copilot SDK authentication](https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/authenticate)
 - [GitHub Copilot supported models](https://docs.github.com/en/copilot/reference/ai-models/supported-models)
 - [Claude Code gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)
-- [Claude Code third-party gateway 지원 경계](https://code.claude.com/docs/en/llm-gateway)
+- [Claude Code third-party gateway support boundary](https://code.claude.com/docs/en/llm-gateway)
 - [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect)
-- [Claude Code model과 effort 설정](https://code.claude.com/docs/en/model-config)
+- [Claude Code model and effort configuration](https://code.claude.com/docs/en/model-config)
 - [Claude Code dynamic workflows](https://code.claude.com/docs/en/workflows)
 - [Claude Code settings](https://code.claude.com/docs/en/settings)
 
-Direct 경로는 undocumented Copilot HTTP endpoint가 아닌 public GitHub Copilot SDK를
-사용합니다.
+The Direct path uses the public GitHub Copilot SDK, not an undocumented Copilot HTTP endpoint.

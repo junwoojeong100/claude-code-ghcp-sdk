@@ -1,59 +1,57 @@
-# LiteLLM 설정 가이드
+# LiteLLM Setup Guide
 
-이 문서는 LiteLLM client 연결, 로컬 gateway 설치, 공유 gateway 운영을 설명합니다.
-Direct SDK만 사용하려면 [README](../README.md#direct-sdk-빠른-시작)를 따릅니다.
+> **Language / 언어:** English | [한국어](LITELLM_KO.md)
 
-## 구성 선택
+This document covers LiteLLM client connection, local gateway installation, and shared gateway operation. If you only need the Direct SDK, follow the [README](../README.md#direct-sdk-quick-start).
 
-LiteLLM은 Direct GitHub Copilot SDK와 별도 경로입니다.
+## Choosing a Configuration
+
+LiteLLM is a separate path from the Direct GitHub Copilot SDK.
 
 ```text
-Direct:  Claude Code -> 로컬 bridge -> @github/copilot-sdk -> Copilot model
-LiteLLM: Claude Code -> LiteLLM -> LiteLLM에 구성된 provider
+Direct:  Claude Code -> local bridge -> @github/copilot-sdk -> Copilot model
+LiteLLM: Claude Code -> LiteLLM -> provider configured in LiteLLM
 ```
 
-GitHub Copilot 제공 모델을 LiteLLM으로 사용하려면 LiteLLM model이
-`github_copilot/claude-*` backend로 구성돼 있어야 합니다.
+To use GitHub Copilot models through LiteLLM, the LiteLLM model must be configured with a `github_copilot/claude-*` backend.
 
-이 저장소의 LiteLLM mapping과 E2E는 Claude Sonnet 5만 검증했습니다. GPT-5.6 Sol, Terra,
-Luna를 사용하려면 검증된 Direct `claude-ghcp` 경로를 선택합니다.
+The LiteLLM mapping and E2E in this repository have been verified only for Claude Sonnet 5. To use GPT-5.6 Sol, Terra, or Luna, choose the verified Direct `claude-ghcp` path instead.
 
-사용 환경에 맞는 절차 하나만 수행합니다.
+Follow only one of the procedures below for your environment:
 
-| 상황 | 진행할 절차 |
+| Situation | Procedure |
 |---|---|
-| 조직이나 팀의 gateway가 있음 | [기존 gateway에 연결](#기존-litellm-gateway에-연결) |
-| 이 컴퓨터에 개인용 gateway가 필요함 | [로컬 gateway 설치](#로컬-litellm-설치) |
+| Your organization or team has an existing gateway | [Connect to an existing gateway](#connecting-to-an-existing-litellm-gateway) |
+| You need a personal gateway on this machine | [Install a local gateway](#installing-a-local-litellm-instance) |
 
-## 공통 준비
+## Common Prerequisites
 
-- macOS 또는 Linux
-- Bash와 `curl`
+- macOS or Linux
+- Bash and `curl`
 - Claude Code
-- Node.js `^20.19.0` 또는 `>=22.12.0`
+- Node.js `^20.19.0` or `>=22.12.0`
 - Git
 
-두 절차 모두 이 저장소의 `claude-litellm` 실행 스크립트를 사용합니다.
+Both procedures use the `claude-litellm` launch script from this repository.
 
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
 cd claude-code-ghcp-sdk
 ```
 
-이후 모든 명령은 별도 안내가 없으면 저장소 루트에서 실행합니다.
+All subsequent commands are run from the repository root unless otherwise noted.
 
-## 기존 LiteLLM gateway에 연결
+## Connecting to an Existing LiteLLM Gateway
 
-이 절차에는 gateway 설치, Python, `uv`, `npm install`, 로컬 Copilot OAuth가 필요하지
-않습니다.
+This procedure does not require gateway installation, Python, `uv`, `npm install`, or local Copilot OAuth.
 
-### 1. 연결 정보 확인
+### 1. Gather Connection Details
 
-- Anthropic-compatible base URL
-- 사용자 또는 팀 범위의 virtual key
-- Claude Code에 공개된 model alias
+- An Anthropic-compatible base URL
+- A virtual key scoped to the user or team
+- A model alias exposed to Claude Code
 
-### 2. 환경 변수 설정
+### 2. Set Environment Variables
 
 ```bash
 export LITELLM_BASE_URL="https://litellm.example.com"
@@ -61,68 +59,67 @@ export LITELLM_API_KEY="<scoped-virtual-key>"
 export LITELLM_MODEL="claude-sonnet-5"
 ```
 
-Base URL 끝에는 `/v1`을 붙이지 않습니다. 공유 gateway에서는 master key가 아닌 scoped
-virtual key를 사용합니다. Key를 저장소나 셸 설정 파일에 저장하지 않습니다.
+Do not append `/v1` to the base URL. Use a scoped virtual key rather than the master key on a shared gateway. Do not save the key to the repository or a shell configuration file.
 
-### 3. 연결 확인
+### 3. Verify the Connection
 
 ```bash
 curl --silent --show-error --fail \
-  -H "Authorization: Bearer $LITELLM_API_KEY" \
+  -H "Authorization: $LITELLM_API_KEY" \
   "$LITELLM_BASE_URL/health/liveliness"
 
 curl --silent --show-error --fail \
-  -H "Authorization: Bearer $LITELLM_API_KEY" \
+  -H "Authorization: $LITELLM_API_KEY" \
   "$LITELLM_BASE_URL/v1/models"
 ```
 
-`/v1/models` 응답에 `LITELLM_MODEL`과 같은 alias가 있어야 합니다.
+The `/v1/models` response must include an alias that matches `LITELLM_MODEL`.
 
-### 4. Claude Code 실행
+### 4. Run Claude Code
 
 ```bash
 ./bin/claude-litellm
 ```
 
-다른 모델을 사용하려면 `/v1/models` 응답에 있는 alias를 지정합니다.
+To use a different model, specify an alias from the `/v1/models` response:
 
 ```bash
 ./bin/claude-litellm --litellm-model "<gateway-model-alias>"
 ```
 
-`bin`이 PATH에 있다면 `./bin/`을 생략할 수 있습니다.
+If `bin` is in your PATH, the `./bin/` prefix can be omitted.
 
-## 로컬 LiteLLM 설치
+## Installing a Local LiteLLM Instance
 
-개인용 gateway를 현재 컴퓨터에서 실행하는 절차입니다.
+This procedure runs a personal gateway on the current machine.
 
-### 추가 준비 사항
+### Additional Prerequisites
 
-- `uv`와 Python 3.13
-- GitHub Copilot 사용 권한
+- `uv` and Python 3.13
+- GitHub Copilot access
 
-### 1. Runtime 설치
+### 1. Install the Runtime
 
 ```bash
 npm run litellm:setup
 ```
 
-Git 추적에서 제외된 `.runtime/` 디렉터리에 다음 항목을 생성합니다.
+Creates the following items in the `.runtime/` directory (excluded from Git tracking):
 
 - LiteLLM `v1.97.0` source
 - Python virtual environment
 - FastAPI `0.139.0` pin
-- 권한이 `0600`인 임의의 로컬 master key
+- A random local master key with `0600` permissions
 
-### 2. Gateway 실행
+### 2. Start the Gateway
 
 ```bash
 npm run litellm:start
 ```
 
-`Application startup complete`가 출력된 터미널은 계속 실행해 둡니다.
+Keep the terminal that prints `Application startup complete` running.
 
-### 3. 다른 터미널에서 Claude Code 실행
+### 3. Run Claude Code in a Second Terminal
 
 ```bash
 cd <clone-path>/claude-code-ghcp-sdk
@@ -133,28 +130,25 @@ export LITELLM_MODEL="claude-sonnet-5"
 ./bin/claude-litellm
 ```
 
-로컬 단일 사용자 구성에서는 setup이 생성한 master key를 client key로 사용합니다.
+In a local single-user configuration, the master key generated by setup is used as the client key.
 
-저장된 LiteLLM Copilot token이 없으면 첫 모델 요청 때 gateway 터미널에 GitHub device
-code가 표시됩니다. 60초 안에 승인합니다. 이 인증은 Copilot CLI의 `copilot login`과
-별개이며 기본 저장 위치는 `~/.config/litellm/github_copilot`입니다.
+If no saved LiteLLM Copilot token is found, a GitHub device code is shown in the gateway terminal on the first model request. Approve it within 60 seconds. This authentication is separate from the `copilot login` of the Copilot CLI, and the default storage location is `~/.config/litellm/github_copilot`.
 
-### 4. 선택: E2E 실행
+### 4. Optional: Run End-to-End Tests
 
 ```bash
 npm run test:e2e:litellm
 ```
 
-실제 GitHub Copilot AI Credits를 사용합니다. 검증 범위는
-[아키텍처 문서의 검증 범위](ARCHITECTURE.md#검증-범위)를 참고합니다.
+This consumes real GitHub Copilot AI Credits. For the validation scope, see the [Validation Scope in the Architecture document](ARCHITECTURE.md#validation-scope).
 
-## Gateway 관리자 설정
+## Gateway Administrator Setup
 
-공유 gateway를 운영하지 않는다면 이 절은 건너뜁니다.
+Skip this section if you are not operating a shared gateway.
 
-### GitHub Copilot backend mapping
+### GitHub Copilot Backend Mapping
 
-검증된 최소 구성은 `examples/litellm-github-copilot.yaml`에 있습니다.
+The verified minimal configuration is in `examples/litellm-github-copilot.yaml`:
 
 ```yaml
 model_list:
@@ -166,15 +160,13 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 ```
 
-Client에는 `claude-sonnet-5` alias를 공개하고 backend는
-`github_copilot/claude-sonnet-5`를 연결합니다.
+The `claude-sonnet-5` alias is exposed to clients; the backend is connected to `github_copilot/claude-sonnet-5`.
 
-다른 provider는 `litellm_params.model`을 해당 provider model ID로 변경합니다. Client
-사용법은 같지만 GitHub Copilot 모델을 사용하는 구성은 아닙니다.
+For other providers, change `litellm_params.model` to the corresponding provider model ID. Client usage is the same, but the configuration does not use GitHub Copilot models.
 
-### 선택: Model family mapping
+### Optional: Model Family Mapping
 
-Gateway가 family별 alias를 제공하면 다음 값을 설정합니다.
+If the gateway provides family-level aliases, set the following:
 
 ```bash
 export LITELLM_OPUS_MODEL="corp-claude-opus"
@@ -182,72 +174,66 @@ export LITELLM_SONNET_MODEL="corp-claude-sonnet"
 export LITELLM_HAIKU_MODEL="corp-claude-haiku"
 ```
 
-설정하지 않은 family는 `LITELLM_MODEL`로 routing합니다.
+Families without a configured alias are routed via `LITELLM_MODEL`.
 
-1M context가 지원되면 실행 옵션에 suffix를 사용합니다.
+If 1M context is supported, use the suffix in the launch option:
 
 ```bash
 ./bin/claude-litellm --litellm-model 'claude-sonnet-5[1m]'
 ```
 
-LiteLLM의 `model_name`에는 `[1m]`을 넣지 않습니다.
+Do not include `[1m]` in LiteLLM's `model_name`.
 
-### 인증과 multi-user 운영
+### Authentication and Multi-User Operation
 
-권장 enterprise 구성은 다음과 같습니다.
+The recommended enterprise configuration is as follows:
 
-| 구간 | 인증 |
+| Segment | Authentication |
 |---|---|
-| 사용자 -> LiteLLM | 사용자별 virtual key, JWT 또는 SSO |
-| LiteLLM -> provider | Secret manager에 저장된 provider credential |
+| User → LiteLLM | Per-user virtual key, JWT, or SSO |
+| LiteLLM → provider | Provider credentials stored in a secret manager |
 
-GitHub Copilot OAuth는 사용자 seat와 policy에 연결됩니다. 한 사용자의 OAuth를 여러
-사용자와 공유하지 마십시오. Per-user OAuth gateway, 사용자별 LiteLLM instance 또는
-Direct SDK를 사용합니다.
+GitHub Copilot OAuth is tied to a user's seat and policy. Do not share one user's OAuth credentials with multiple users. Use a per-user OAuth gateway, a per-user LiteLLM instance, or the Direct SDK instead.
 
-공유 gateway에서는 로컬 setup의 master key를 배포하지 말고 사용자별 virtual key를
-발급합니다.
+On a shared gateway, do not deploy the master key from the local setup — issue per-user virtual keys instead.
 
-## 알려진 제약
+## Known Constraints
 
-- 이 저장소의 LiteLLM `1.97.0` 로컬 setup은 FastAPI `0.140.13`과 `0.141.1`에서
-  `get_flat_dependant` import 오류가 확인돼 검증된 `0.139.0`을 pin합니다.
-- GitHub Copilot 모델은 LiteLLM built-in cost map에 없을 수 있습니다. Dashboard 비용이
-  0이거나 부정확하면 GitHub Copilot AI Credits를 기준으로 확인합니다.
-- GitHub Copilot backend의 server-side web search는 native 지원이 아닙니다.
-- Provider별 tool use, thinking, prompt caching과 multimodal 호환성은 LiteLLM compatibility
-  matrix와 고객 환경에서 확인해야 합니다.
+- The `1.97.0` local LiteLLM setup in this repository pins FastAPI `0.139.0` because `get_flat_dependant` import errors were observed with FastAPI `0.140.13` and `0.141.1`.
+- GitHub Copilot models may not appear in LiteLLM's built-in cost map. If the dashboard cost is zero or inaccurate, verify usage against GitHub Copilot AI Credits.
+- Server-side web search on the GitHub Copilot backend is not natively supported.
+- Tool use, thinking, prompt caching, and multimodal compatibility per provider must be verified against the LiteLLM compatibility matrix and your own environment.
 
-## 문제 해결
+## Troubleshooting
 
-### `401` 또는 `403`
+### `401` or `403`
 
-- `LITELLM_API_KEY`가 scoped virtual key인지 확인합니다.
-- 로컬 GitHub Copilot backend는 LiteLLM device OAuth가 완료됐는지 확인합니다.
-- Organization policy에서 model이 허용됐는지 확인합니다.
+- Verify that `LITELLM_API_KEY` is a scoped virtual key.
+- For the local GitHub Copilot backend, verify that the LiteLLM device OAuth flow has been completed.
+- Verify that the model is permitted by your organization policy.
 
 ### `model not found`
 
-- `LITELLM_MODEL`이 `/v1/models`에 표시되는지 확인합니다.
-- Claude Code alias와 LiteLLM `model_name`이 정확히 같은지 확인합니다.
-- Copilot backend ID의 dot version과 client alias의 hyphen version을 구분합니다.
+- Verify that `LITELLM_MODEL` appears in the `/v1/models` response.
+- Verify that the Claude Code alias exactly matches the LiteLLM `model_name`.
+- Distinguish between dot-version Copilot backend IDs and hyphen-version client aliases.
 
-### Gateway가 응답하지 않음
+### Gateway Not Responding
 
 ```bash
 npm run litellm:start
 ```
 
-Port `4000`이 이미 사용 중이면 다른 port로 시작하고 client에도 같은 값을 설정합니다.
+If port `4000` is already in use, start on a different port and set the same value in the client:
 
 ```bash
 LITELLM_PORT=4001 npm run litellm:start
 export LITELLM_BASE_URL="http://127.0.0.1:4001"
 ```
 
-로컬 gateway의 기본 bind address는 `127.0.0.1`입니다.
+The default bind address for the local gateway is `127.0.0.1`.
 
-## 공식 문서
+## Official Documentation
 
 - [LiteLLM Claude Code quickstart](https://docs.litellm.ai/docs/tutorials/claude_responses_api)
 - [LiteLLM Anthropic Messages endpoint](https://docs.litellm.ai/docs/anthropic_unified)

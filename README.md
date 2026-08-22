@@ -1,64 +1,53 @@
 # Claude Code with GitHub Copilot Models
 
-Claude Code의 UI와 도구 실행은 그대로 두고, 모델 호출만 GitHub Copilot SDK 또는
-LiteLLM으로 연결합니다. 기존 permissions, hooks, MCP, skills도 계속 사용합니다.
+> **Language / 언어:** English | [한국어](README_KO.md)
 
-## 실행 경로 선택
+An Anthropic Messages API bridge that routes Claude Code's model calls to GitHub Copilot models via the GitHub Copilot SDK or LiteLLM. Claude Code's UI, tool execution, permissions, hooks, MCP, and skills remain unchanged.
 
-| 상황 | 경로 | 실행 명령 |
+## Path Selection
+
+| Situation | Path | Command |
 |---|---|---|
-| 내 GitHub Copilot 계정과 조직의 모델 정책을 그대로 사용 | **Direct SDK** | `./bin/claude-ghcp` |
-| 기존 gateway, virtual key 또는 다른 provider를 사용 | **LiteLLM** | `./bin/claude-litellm` |
+| Use your GitHub Copilot account and organization model policy as-is | **Direct SDK** | `./bin/claude-ghcp` |
+| Use an existing gateway, virtual key, or a different provider | **LiteLLM** | `./bin/claude-litellm` |
 
-**대부분의 사용자는 Direct SDK를 선택하면 됩니다.** 조직에서 이미 LiteLLM gateway를
-운영하거나 다른 provider가 필요할 때만 LiteLLM을 선택합니다. 두 경로를 함께 설정할
-필요는 없습니다.
+**Most users should choose the Direct SDK path.** Choose LiteLLM only when your organization already operates a LiteLLM gateway or requires a different provider. There is no need to configure both paths.
 
-## 문서 안내
+## Documentation
 
-| 목적 | 문서 |
+| Purpose | Document |
 |---|---|
-| 처음 설치하고 실행 | 이 README의 [Direct SDK 빠른 시작](#direct-sdk-빠른-시작) |
-| LiteLLM client 또는 gateway 구성 | [LiteLLM 설정 가이드](docs/LITELLM.md) |
-| 구현, 보안 경계, 검증 범위 확인 | [아키텍처](docs/ARCHITECTURE.md) |
+| Initial installation and first run | This README's [Direct SDK Quick Start](#direct-sdk-quick-start) |
+| Configure a LiteLLM client or gateway | [LiteLLM Setup Guide](docs/LITELLM.md) |
+| Review implementation, security boundaries, and validation scope | [Architecture](docs/ARCHITECTURE.md) |
 
-## 가능 여부와 공식 지원 경계
+## Availability and Official Support Boundary
 
-**Claude Code에서 GitHub Copilot 모델을 사용하는 것은 가능하지만, Copilot SDK를
-Claude Code의 model provider로 직접 등록하는 방식은 아닙니다.** Claude Code는
-`ANTHROPIC_BASE_URL`에 Anthropic Messages 형식으로 요청하고, Copilot SDK는 Copilot CLI
-server와 JSON-RPC로 통신합니다. 따라서 두 프로토콜 사이에서 message, SSE와 tool call을
-변환하는 이 저장소의 bridge가 필요합니다.
+**Using GitHub Copilot models from Claude Code is possible, but not by registering the Copilot SDK as a model provider plugin inside Claude Code.** Claude Code sends requests in Anthropic Messages format to `ANTHROPIC_BASE_URL`, while the Copilot SDK communicates with the Copilot CLI server over JSON-RPC. This repository's bridge is therefore required to translate messages, SSE, and tool calls between the two protocols.
 
-Claude Code는 호환 API 형식의 LLM gateway 연결을 문서화하지만, Anthropic은 gateway를
-통한 non-Claude model routing을 지원하지 않는다고 명시합니다. GitHub Copilot SDK
-자체는 현재 GA이지만, 이 저장소는 필요한 API가 포함된
-`@github/copilot-sdk@1.0.10-preview.0`을 고정해 사용합니다. 따라서 이 조합은 기술적으로
-동작하는 비공식 integration이며, Anthropic 또는 GitHub의 공동 지원 대상이 아닙니다.
-자세한 변환 경계는 [아키텍처](docs/ARCHITECTURE.md#통합-가능-근거와-경계)를 참고합니다.
+Claude Code documents connecting to third-party gateways that implement the supported API format, but Anthropic explicitly states it does not support routing non-Claude models through a gateway. The GitHub Copilot SDK itself is currently GA, but this repository pins `@github/copilot-sdk@1.0.10-preview.0`, which includes the required APIs. This combination is therefore a technically working unofficial integration and is not jointly supported by Anthropic or GitHub. For detailed translation boundaries, see [Architecture](docs/ARCHITECTURE.md#integration-rationale-and-boundaries).
 
-## Direct SDK 빠른 시작
+## Direct SDK Quick Start
 
 ```text
 Claude Code
-  -> 이 저장소의 로컬 bridge
+  -> this repository's local bridge
   -> @github/copilot-sdk
-  -> GitHub Copilot 모델
+  -> GitHub Copilot model
 ```
 
-### 준비 사항
+### Prerequisites
 
-- macOS 또는 Linux
-- Claude Code의 `claude` 명령
-- Node.js `^20.19.0` 또는 `>=22.12.0`
+- macOS or Linux
+- Claude Code's `claude` command
+- Node.js `^20.19.0` or `>=22.12.0`
 - Git
-- GitHub Copilot 사용 권한
-- 조직의 Copilot 모델 정책에서 허용된 모델
+- GitHub Copilot access
+- A model permitted by your organization's Copilot model policy
 
-Windows 기본 셸은 지원하지 않습니다. Ultracode를 사용하려면 Claude Code 2.1.203
-이상이 필요합니다.
+The Windows default shell is not supported. Ultracode requires Claude Code 2.1.203 or later.
 
-### 1. 설치
+### 1. Installation
 
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
@@ -66,39 +55,39 @@ cd claude-code-ghcp-sdk
 npm install
 ```
 
-### 2. GitHub Copilot 로그인
+### 2. GitHub Copilot Sign-in
 
 ```bash
 npx copilot login
 ```
 
-별도의 Anthropic API key는 필요하지 않습니다.
+No separate Anthropic API key is required.
 
-### 3. 환경과 모델 확인
+### 3. Verify Environment and Models
 
 ```bash
 ./bin/ghcp-doctor
 ./bin/ghcp-models
 ```
 
-두 명령이 성공하고 `ghcp-models` 출력에 사용할 모델이 표시되는지 확인합니다.
+Confirm that both commands succeed and that the model you intend to use appears in the `ghcp-models` output.
 
-### 4. Claude Code 실행
+### 4. Run Claude Code
 
 ```bash
-# 기본 모델: GitHub Copilot의 Claude Sonnet 5
+# Default model: GitHub Copilot's Claude Sonnet 5
 ./bin/claude-ghcp
 
-# 다른 모델 선택
+# Select a different model
 ./bin/claude-ghcp --ghcp-model claude-haiku-4.5
 
-# 비대화형 프롬프트
+# Non-interactive prompt
 ./bin/claude-ghcp \
   --ghcp-model claude-haiku-4.5 \
-  -p "이 저장소의 구조를 설명해줘"
+  -p "Describe the structure of this repository"
 ```
 
-계정과 조직 정책에서 허용한다면 다음 GPT-5.6 모델도 사용할 수 있습니다.
+If permitted by your account and organization policy, the following GPT-5.6 models are also available:
 
 ```bash
 ./bin/claude-ghcp --ghcp-model gpt-5.6-sol
@@ -106,50 +95,49 @@ npx copilot login
 ./bin/claude-ghcp --ghcp-model gpt-5.6-luna
 ```
 
-세 모델은 Copilot catalog 기준 1,050,000 토큰 컨텍스트로 설정됩니다.
+All three models are configured with a 1,050,000-token context as listed in the Copilot catalog.
 
-### 5. 선택: `claude` 명령을 PATH에 추가
+### 5. Optional: Add `claude` to PATH
 
-어느 디렉터리에서나 실행하려면 저장소 루트에서 `bin`을 PATH에 추가합니다. Zsh 예시:
+To run from any directory, add the repository's `bin` directory to your PATH from the repository root. Example for Zsh:
 
 ```bash
 echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc
 exec zsh
 ```
 
-다른 셸에서는 같은 값을 해당 셸의 설정 파일에 추가합니다.
+For other shells, add the same value to the appropriate shell configuration file.
 
-설정을 확인합니다.
+Verify the configuration:
 
 ```bash
 command -v claude
 # <clone-path>/claude-code-ghcp-sdk/bin/claude
 ```
 
-이후 `claude`는 이 저장소의 Direct SDK 실행 스크립트를 사용합니다.
+After this, `claude` will use the Direct SDK launch script from this repository.
 
 ```bash
 claude
 claude --ghcp-model claude-haiku-4.5
 ```
 
-기본 모델 변경:
+To change the default model:
 
 ```bash
 export GHCP_MODEL=claude-haiku-4.5
 claude
 ```
 
-기존 Claude Code provider로 실행:
+To run with the original Claude Code provider:
 
 ```bash
 claude-current
 ```
 
-### 모델과 reasoning effort
+### Models and Reasoning Effort
 
-현재 계정에서 사용할 수 있는 모델과 지원 기능을 확인한 뒤 reasoning effort를
-지정할 수 있습니다.
+Check the models available to your account and their supported features before specifying a reasoning effort.
 
 ```bash
 ./bin/ghcp-models --json
@@ -158,38 +146,30 @@ claude-current
 ./bin/claude-ghcp --ghcp-model gpt-5.6-sol --effort ultracode
 ```
 
-`/effort`와 `--effort`는 Copilot SDK로 전달됩니다. 선택한 모델이 해당 값을 지원하지
-않으면 가장 가까운 하위 레벨로 조정합니다. Reasoning effort를 지원하지 않는 모델에는
-값을 전달하지 않습니다. GPT-5.6 Sol, Terra, Luna는 현재 `none`, `low`, `medium`,
-`high`, `xhigh`, `max`를 지원합니다.
+`/effort` and `--effort` are forwarded to the Copilot SDK. If the selected model does not support the specified value, it is adjusted down to the nearest supported level. No value is forwarded to models that do not support reasoning effort. GPT-5.6 Sol, Terra, and Luna currently support `none`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
-Ultracode는 `xhigh` 지원 모델에서만 사용할 수 있으며 일반 호출보다 AI Credit을 더
-사용할 수 있습니다. `/model` picker와 effort 변환 방식은
-[아키텍처 문서](docs/ARCHITECTURE.md#모델-discovery와-context)를 참고합니다.
+Ultracode is available only on models that support `xhigh` and may consume more GitHub Copilot AI Credits than a standard call. For details on the `/model` picker and effort translation, see the [Architecture document](docs/ARCHITECTURE.md#model-discovery-and-context).
 
-일반 세션에서는 subagent와 dynamic workflow를 사용할 수 있습니다. 로컬 bridge를 계속
-실행해야 하므로 `claude-ghcp --background`와 agent view는 지원하지 않습니다.
+Standard sessions support subagents and dynamic workflows. `claude-ghcp --background` and the agent view are not supported because the local bridge must remain running.
 
-## LiteLLM 빠른 시작
+## LiteLLM Quick Start
 
-LiteLLM은 로컬 Node.js bridge와 `@github/copilot-sdk`를 사용하지 않는 별도
-경로입니다.
+LiteLLM is a separate path that does not use the local Node.js bridge or `@github/copilot-sdk`.
 
 ```text
 Claude Code
   -> LiteLLM /v1/messages
-  -> LiteLLM에 구성된 provider
+  -> provider configured in LiteLLM
 ```
 
-기존 LiteLLM gateway에 연결할 때는 저장소만 복제합니다. `npm install`과
-`copilot login`은 필요하지 않습니다.
+When connecting to an existing LiteLLM gateway, only clone the repository — `npm install` and `copilot login` are not required.
 
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
 cd claude-code-ghcp-sdk
 ```
 
-관리자가 제공한 base URL, scoped virtual key, model alias를 설정합니다.
+Set the base URL, scoped virtual key, and model alias provided by your administrator:
 
 ```bash
 export LITELLM_BASE_URL="https://litellm.example.com"
@@ -199,84 +179,70 @@ export LITELLM_MODEL="claude-sonnet-5"
 ./bin/claude-litellm
 ```
 
-GitHub Copilot 모델을 사용하려면 model alias가 `github_copilot/claude-*` backend에
-연결돼 있어야 합니다. 다른 provider에 연결된 alias는 GitHub Copilot을 사용하지
-않습니다.
+To use GitHub Copilot models, the model alias must be connected to a `github_copilot/claude-*` backend. Aliases connected to other providers do not use GitHub Copilot.
 
-로컬 gateway 설치, GitHub device OAuth, model mapping, multi-user 인증과 문제 해결은
-[LiteLLM 가이드](docs/LITELLM.md)를 따릅니다.
+For local gateway installation, GitHub device OAuth, model mapping, multi-user authentication, and troubleshooting, follow the [LiteLLM Guide](docs/LITELLM.md).
 
-## 명령 요약
+## Command Reference
 
-| 목적 | 명령 |
+| Purpose | Command |
 |---|---|
-| GitHub Copilot SDK 직접 사용 | `./bin/claude` 또는 `./bin/claude-ghcp` |
-| 허용된 Copilot 모델 조회 | `./bin/ghcp-models` |
-| GHCP 환경 진단 | `./bin/ghcp-doctor` |
-| LiteLLM gateway 사용 | `./bin/claude-litellm` |
-| 기존 Claude Code provider 사용 | `./bin/claude-current` |
+| Use the GitHub Copilot SDK directly | `./bin/claude` or `./bin/claude-ghcp` |
+| List permitted Copilot models | `./bin/ghcp-models` |
+| Diagnose the GHCP environment | `./bin/ghcp-doctor` |
+| Use the LiteLLM gateway | `./bin/claude-litellm` |
+| Use the original Claude Code provider | `./bin/claude-current` |
 
-`claude-ghcp`에서는 `--model` 대신 `--ghcp-model`을 사용합니다. 나머지 Claude Code
-옵션과 프롬프트는 그대로 전달됩니다. `bin`을 PATH에 추가했다면 `./bin/`을 생략할 수
-있습니다.
+Use `--ghcp-model` instead of `--model` with `claude-ghcp`. All other Claude Code options and prompts are passed through unchanged. If `bin` is in your PATH, the `./bin/` prefix can be omitted.
 
-### 설정 입력
+### Configuration Inputs
 
-실행 옵션이 환경 변수보다 우선합니다. 이 저장소는 `.env` 파일을 자동으로 읽지
-않으므로 값을 현재 셸에서 `export`하거나 명령 앞에 지정합니다. `.env.example`은 사용
-가능한 환경 변수의 참고 목록입니다.
+Command-line options take precedence over environment variables. This repository does not automatically load `.env` files; `export` values in your current shell or specify them before the command. `.env.example` is a reference list of available environment variables.
 
-| 경로 | 필수 설정 | 선택 설정 |
+| Path | Required | Optional |
 |---|---|---|
-| Direct SDK | 없음 | `--ghcp-model` / `GHCP_MODEL`, `--bridge-port` / `GHCP_BRIDGE_PORT` |
+| Direct SDK | none | `--ghcp-model` / `GHCP_MODEL`, `--bridge-port` / `GHCP_BRIDGE_PORT` |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_API_KEY` | `--litellm-model` / `LITELLM_MODEL` |
 
-## 설정과 지원 범위
+## Configuration and Support Scope
 
-### 설정 보존
+### Settings Preservation
 
-실행 스크립트는 `~/.claude/settings.json`을 수정하지 않습니다. 권한이 `0600`인 임시
-settings 파일에는 gateway routing에 필요한 값만 기록합니다. 기존 theme, permissions,
-hooks, plugins, skills, MCP, project settings는 계속 불러옵니다.
+The launch scripts do not modify `~/.claude/settings.json`. A temporary settings file with `0600` permissions records only the values needed for gateway routing. Existing theme, permissions, hooks, plugins, skills, MCP, and project settings continue to be loaded.
 
-종료할 때 Direct 경로는 로컬 bridge와 임시 credential/settings를 삭제하고, LiteLLM
-경로는 임시 settings를 삭제합니다.
+On exit, the Direct path removes the local bridge and the temporary credentials and settings; the LiteLLM path removes the temporary settings.
 
-Managed settings는 실행 스크립트의 임시 settings보다 우선합니다. 조직 정책이 provider
-selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트는 이를 우회하지
-않습니다.
+Managed settings take precedence over the temporary settings written by the launch scripts. If an organization policy enforces a provider selector, `availableModels`, or MCP tool search, the launch scripts do not override it.
 
-### 지원 범위
+### Support Scope
 
-다음 표는 Direct SDK 경로의 현재 상태입니다.
+The table below shows the current status for the Direct SDK path.
 
-| 기능 | 상태 |
+| Feature | Status |
 |---|---|
-| Terminal UI, permissions, user/project settings | Claude Code가 담당 |
-| Text, native `Read` tool | 실제 모델 E2E 확인 |
-| SSE, Anthropic Messages 변환 | 단위 테스트 확인 |
-| Reasoning effort, Ultracode `xhigh` routing | 단위 테스트와 로컬 프로토콜 확인 |
-| `Edit`, `Bash`, hooks, plugins, skills, 일반 MCP | Claude Code가 담당하며 전체 조합 E2E는 미수행 |
-| Image/document 변환 | 단위 테스트 확인; 실제 multimodal E2E는 미수행 |
-| Root/subagent 세션 분리 | 단위 테스트 확인; GPT-5.6 Sol → Explore → `Read` 흐름 수동 확인 |
-| SDK resume | conversation resume 구현; 진행 중인 tool call의 bridge 재시작 복구는 보장하지 않음 |
-| Token counting | `/count_tokens` 제공; tokenizer가 아닌 문자열 길이 기반 추정 |
-| Sampling과 생성 제어 | `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tool_choice` 미반영 |
-| MCP tool search (`tool_reference`) | 일반 설정에서는 비활성화; managed policy가 강제하는 환경은 미지원 |
-| `--json-schema` structured output | `output_config` schema translation 미구현 |
-| Remote Control | Custom `ANTHROPIC_BASE_URL`에서 Claude Code가 비활성화 |
-| `--background`/agent view | 로컬 bridge lifecycle 때문에 미지원 |
-| Claude web/cloud, `--cloud`, `--teleport`, cloud ultrareview | 로컬 실행 경로 밖이므로 GHCP bridge를 사용하지 않음 |
-| Reasoning text/signature, citations, prompt-cache metadata | 완전한 round-trip은 미지원 |
+| Terminal UI, permissions, user/project settings | Handled by Claude Code |
+| Text, native `Read` tool | Verified end-to-end with a real model |
+| SSE, Anthropic Messages translation | Verified by unit tests |
+| Reasoning effort, Ultracode `xhigh` routing | Verified by unit tests and local protocol checks |
+| `Edit`, `Bash`, hooks, plugins, skills, general MCP | Handled by Claude Code; full combination E2E not performed |
+| Image/document translation | Verified by unit tests; real multimodal E2E not performed |
+| Root/subagent session isolation | Verified by unit tests; GPT-5.6 Sol → Explore → `Read` flow verified manually |
+| SDK resume | Conversation resume implemented; recovery of in-flight tool calls across bridge restarts is not guaranteed |
+| Token counting | `/count_tokens` provided; estimate based on string length, not a tokenizer |
+| Sampling and generation controls | `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tool_choice` not applied |
+| MCP tool search (`tool_reference`) | Disabled in general configuration; environments where managed policy enforces it are not supported |
+| `--json-schema` structured output | `output_config` schema translation not implemented |
+| Remote Control | Disabled by Claude Code when a custom `ANTHROPIC_BASE_URL` is set |
+| `--background`/agent view | Not supported due to local bridge lifecycle |
+| Claude web/cloud, `--cloud`, `--teleport`, cloud ultrareview | Outside the local execution path; the GHCP bridge is not used |
+| Reasoning text/signature, citations, prompt-cache metadata | Full round-trip not supported |
 
-VS Code나 JetBrains의 통합 터미널에서 실행 스크립트를 직접 실행하면 같은 경로를
-사용합니다. IDE extension, Claude Desktop, cloud session이 시작한 Claude Code 프로세스에는
-자동으로 적용되지 않습니다.
+Running the launch scripts directly from the integrated terminal in VS Code or JetBrains uses the same path. The scripts are not automatically applied to Claude Code processes started by IDE extensions, Claude Desktop, or cloud sessions.
 
-## 검증
+## Validation
 
 ```bash
-# 단위 테스트
+# Unit tests
 npm test
 
 # Direct SDK E2E: text + Read tool
@@ -285,28 +251,24 @@ npm run test:e2e
 # GPT-5.6 Sol, Terra, Luna E2E
 npm run test:e2e:gpt-5.6
 
-# 실행 중인 로컬 LiteLLM E2E
+# Running local LiteLLM E2E
 npm run test:e2e:litellm
 ```
 
-E2E는 실제 GitHub Copilot AI Credits를 사용합니다. 실행 전후
-`~/.claude/settings.json`의 존재 여부나 content hash가 달라지면 실패합니다.
+E2E tests consume real GitHub Copilot AI Credits. Tests fail if the existence or content hash of `~/.claude/settings.json` changes before and after the run.
 
-각 명령이 확인하는 정확한 범위는
-[아키텍처 문서의 검증 범위](docs/ARCHITECTURE.md#검증-범위)를 참고합니다.
+For the exact scope each command validates, see the [Validation Scope in the Architecture document](docs/ARCHITECTURE.md#validation-scope).
 
-## 지원 상태
+## Support Status
 
-이 프로젝트는 검증된 working prototype이며 GitHub와 Anthropic이 공동 지원하는 공식
-integration이 아닙니다. Copilot SDK upstream은 GA이지만 이 프로젝트가 pin한 package는
-preview release입니다.
+This project is a verified working prototype and is not an officially supported integration jointly maintained by GitHub and Anthropic. The Copilot SDK upstream is GA, but the package pinned by this project is a preview release.
 
-구현 범위, 보안, production 제약은 [아키텍처 문서](docs/ARCHITECTURE.md)를 참고합니다.
+For implementation scope, security, and production constraints, see the [Architecture document](docs/ARCHITECTURE.md).
 
-| 사용 목적 | 권장 수준 |
+| Use case | Recommendation |
 |---|---|
-| 개인 실험·연구 | 적합 |
-| Claude Code UI에서 Copilot 모델 사용 | 핵심 경로 사용 가능 |
-| 일반 코딩 작업 | 필요한 tool 조합을 E2E 확인한 뒤 사용 |
-| 업무 핵심·장시간 자동화 | 복구, 세션 정리와 기능별 검증을 보강한 뒤 사용 |
-| 공식 지원 또는 SLA가 필요한 환경 | 부적합 |
+| Personal experimentation and research | Suitable |
+| Using Copilot models from the Claude Code UI | Core path is functional |
+| General coding tasks | Use after verifying the required tool combinations end-to-end |
+| Mission-critical or long-running automation | Use after strengthening recovery, session cleanup, and per-feature validation |
+| Environments requiring official support or an SLA | Not suitable |
