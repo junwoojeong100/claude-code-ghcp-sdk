@@ -67,16 +67,14 @@ virtual key를 사용합니다. Key를 저장소나 셸 설정 파일에 저장�
 ### 3. 연결 확인
 
 ```bash
-curl --fail \
+curl --silent --show-error --fail \
   -H "Authorization: Bearer $LITELLM_API_KEY" \
   "$LITELLM_BASE_URL/health/liveliness"
 
-curl --fail \
+curl --silent --show-error --fail \
   -H "Authorization: Bearer $LITELLM_API_KEY" \
   "$LITELLM_BASE_URL/v1/models"
 ```
-
-위 `******`는 실제 실행 시 `Bearer $LITELLM_API_KEY`로 바꿉니다.
 
 `/v1/models` 응답에 `LITELLM_MODEL`과 같은 alias가 있어야 합니다.
 

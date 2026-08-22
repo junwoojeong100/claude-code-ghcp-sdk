@@ -11,8 +11,27 @@ function hostFromUrl(value) {
   }
 }
 
-export function detectProvider(settingsPath = path.join(os.homedir(), ".claude", "settings.json")) {
-  const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+function readSettings(settingsPath) {
+  try {
+    return {
+      exists: true,
+      settings: JSON.parse(fs.readFileSync(settingsPath, "utf8")),
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { exists: false, settings: {} };
+    }
+    throw error;
+  }
+}
+
+export function detectProvider(
+  settingsPath = path.join(os.homedir(), ".claude", "settings.json"),
+) {
+  const {
+    exists: settingsExists,
+    settings,
+  } = readSettings(settingsPath);
   const env = settings.env || {};
   const host = hostFromUrl(env.ANTHROPIC_BASE_URL);
   let provider = "default-or-managed";
@@ -24,6 +43,7 @@ export function detectProvider(settingsPath = path.join(os.homedir(), ".claude",
 
   return {
     settingsPath,
+    settingsExists,
     provider,
     baseUrlHost: host,
     model: settings.model || null,

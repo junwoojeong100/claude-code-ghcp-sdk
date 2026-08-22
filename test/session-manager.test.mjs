@@ -201,3 +201,27 @@ test("uses a separate Copilot session when the system prompt changes", async () 
     await manager.stop();
   }
 });
+
+test("uses separate Copilot sessions for the root and each subagent", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    client,
+  });
+  const rootHeaders = { "x-claude-code-session-id": "session-1" };
+
+  await manager.start();
+  try {
+    await manager.execute(request(), rootHeaders);
+    await manager.execute(request(), {
+      ...rootHeaders,
+      "x-claude-code-agent-id": "agent-1",
+    });
+
+    assert.equal(client.created.length, 2);
+    assert.notEqual(client.created[0].sessionId, client.created[1].sessionId);
+  } finally {
+    await manager.stop();
+  }
+});

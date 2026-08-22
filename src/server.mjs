@@ -16,16 +16,41 @@ import {
 } from "./model-map.mjs";
 import { SessionManager } from "./session-manager.mjs";
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const MESSAGES_PATH = "/v1/messages";
+const TOKEN_COUNT_PATH = "/v1/messages/count_tokens";
+const MESSAGE_PATHS = new Set([MESSAGES_PATH, TOKEN_COUNT_PATH]);
+
+function readPositiveIntegerEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
 const host = process.env.HOST || "127.0.0.1";
-const port = Number(process.env.PORT || 4142);
+const port = readPositiveIntegerEnv("PORT", 4142);
 const apiKey = process.env.BRIDGE_API_KEY;
 const preferredModel = process.env.GHCP_MODEL || "claude-sonnet-5";
 const copilotHome = resolveCopilotHome(process.env.COPILOT_HOME);
 const logLevel = process.env.LOG_LEVEL || "error";
-const maxBodyBytes = Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024);
+const maxBodyBytes = readPositiveIntegerEnv(
+  "MAX_BODY_BYTES",
+  25 * 1024 * 1024,
+);
 
-if (!["127.0.0.1", "::1", "localhost"].includes(host) && process.env.ALLOW_NON_LOOPBACK !== "1") {
+if (
+  !LOOPBACK_HOSTS.has(host) &&
+  process.env.ALLOW_NON_LOOPBACK !== "1"
+) {
   throw new Error("The bridge only binds to loopback unless ALLOW_NON_LOOPBACK=1 is set.");
+}
+if (port > 65_535) {
+  throw new Error("PORT must be between 1 and 65535.");
 }
 if (!apiKey && process.env.BRIDGE_ALLOW_UNAUTHENTICATED !== "1") {
   throw new Error("BRIDGE_API_KEY is required.");
@@ -38,7 +63,7 @@ const manager = new SessionManager({
 });
 await manager.start();
 
-function json(res, status, value) {
+function writeJson(res, status, value) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
     "content-type": "application/json",
@@ -47,14 +72,14 @@ function json(res, status, value) {
   res.end(body);
 }
 
-function writeError(res, status, type, message) {
-  json(res, status, {
+function writeApiError(res, status, type, message) {
+  writeJson(res, status, {
     type: "error",
     error: { type, message },
   });
 }
 
-function authenticated(req) {
+function isAuthenticated(req) {
   if (!apiKey) return true;
   const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "");
   return bearer === apiKey || req.headers["x-api-key"] === apiKey;
@@ -73,7 +98,8 @@ async function readBody(req) {
 
 const server = http.createServer(async (req, res) => {
   const requestId = randomUUID();
-  const requestUrl = new URL(req.url || "/", `http://${host}:${port}`);
+  // Only the path and query matter; a neutral base also works for an IPv6 bind host.
+  const requestUrl = new URL(req.url || "/", "http://localhost");
   const requestPath = requestUrl.pathname;
 
   if (req.method === "HEAD" && requestPath === "/api/hello") {
@@ -81,15 +107,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && requestPath === "/health") {
-    json(res, 200, {
+    writeJson(res, 200, {
       ok: true,
       preferredModel,
       modelCount: manager.listModels().length,
     });
     return;
   }
-  if (!authenticated(req)) {
-    writeError(
+  if (!isAuthenticated(req)) {
+    writeApiError(
       res,
       401,
       "authentication_error",
@@ -99,7 +125,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "GET" && requestPath === "/v1/models") {
     const includeAll = requestUrl.searchParams.get("all") === "true";
-    json(res, 200, {
+    writeJson(res, 200, {
       object: "list",
       data: includeAll
         ? manager.listModels().map((model) => ({
@@ -113,9 +139,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (
     req.method !== "POST" ||
-    !["/v1/messages", "/v1/messages/count_tokens"].includes(requestPath)
+    !MESSAGE_PATHS.has(requestPath)
   ) {
-    writeError(res, 404, "not_found_error", "Not found.");
+    writeApiError(res, 404, "not_found_error", "Not found.");
     return;
   }
 
@@ -123,12 +149,12 @@ const server = http.createServer(async (req, res) => {
   try {
     body = await readBody(req);
   } catch (error) {
-    writeError(res, 400, "invalid_request_error", error.message);
+    writeApiError(res, 400, "invalid_request_error", error.message);
     return;
   }
 
-  if (requestPath === "/v1/messages/count_tokens") {
-    json(res, 200, { input_tokens: estimateTokens(body) });
+  if (requestPath === TOKEN_COUNT_PATH) {
+    writeJson(res, 200, { input_tokens: estimateTokens(body) });
     return;
   }
 
@@ -171,7 +197,7 @@ const server = http.createServer(async (req, res) => {
     const invalidRequest =
       error instanceof ModelUnavailableError ||
       error instanceof ReasoningEffortUnavailableError;
-    writeError(
+    writeApiError(
       res,
       invalidRequest ? 400 : 500,
       invalidRequest ? "invalid_request_error" : "api_error",

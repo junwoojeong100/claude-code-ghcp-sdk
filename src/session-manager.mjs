@@ -29,7 +29,7 @@ function toolSignature(tools = []) {
   ).slice(0, 16);
 }
 
-function makeTools(tools = []) {
+function createSdkTools(tools = []) {
   return tools.map((tool) =>
     defineTool(tool.name, {
       description: tool.description,
@@ -41,9 +41,24 @@ function makeTools(tools = []) {
   );
 }
 
-function header(headers, name) {
+function firstHeaderValue(headers, name) {
   const value = headers[name] ?? headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
+}
+
+function createStateKey({ headers, model, systemMessage, tools }) {
+  const claudeSessionId =
+    firstHeaderValue(headers, "x-claude-code-session-id") || "default";
+  const claudeAgentId =
+    firstHeaderValue(headers, "x-claude-code-agent-id") || "root";
+
+  return [
+    claudeSessionId,
+    claudeAgentId,
+    model,
+    toolSignature(tools),
+    hash(systemMessage).slice(0, 16),
+  ].join(":");
 }
 
 export class SessionManager {
@@ -99,7 +114,7 @@ export class SessionManager {
     return resolveReasoningEffort({ requested, model });
   }
 
-  async execute(body, headers, callbacks = {}) {
+  async execute(body, headers, { onReady, onEvent } = {}) {
     const model = this.resolveModel(body.model);
     const reasoningEffort = this.resolveReasoningEffort(
       model,
@@ -109,35 +124,30 @@ export class SessionManager {
       model,
       reasoningEffort,
     });
-    callbacks.onReady?.({ model: state.model });
+    onReady?.({ model: state.model });
     const run = state.queue.then(() =>
-      this.#executeLocked(
-        state,
-        body,
-        reasoningEffort,
-        callbacks.onEvent,
-      ),
+      this.#executeLocked(state, body, reasoningEffort, onEvent),
     );
+    // A rejected turn must not prevent later requests from using this session.
     state.queue = run.catch(() => {});
     return run;
   }
 
   async #getOrCreateState(body, headers, { model, reasoningEffort }) {
-    const claudeSessionId = header(headers, "x-claude-code-session-id") || "default";
-    const claudeAgentId = header(headers, "x-claude-code-agent-id") || "root";
     const systemMessage = extractSystem(body.system);
-    const toolSchemaSignature = toolSignature(body.tools);
-    const systemMessageSignature = hash(systemMessage).slice(0, 16);
-    const key =
-      `${claudeSessionId}:${claudeAgentId}:${model}:` +
-      `${toolSchemaSignature}:${systemMessageSignature}`;
+    const key = createStateKey({
+      headers,
+      model,
+      systemMessage,
+      tools: body.tools,
+    });
 
     const existing = this.states.get(key);
     if (existing) return existing;
 
-    const tools = makeTools(body.tools);
+    const tools = createSdkTools(body.tools);
     const sessionId = `claude-ghcp-${hash(key).slice(0, 32)}`;
-    const common = {
+    const sessionOptions = {
       model,
       availableTools: tools.map((tool) => `custom:${tool.name}`),
       tools,
@@ -156,7 +166,7 @@ export class SessionManager {
     if (this.knownSessionIds.has(sessionId)) {
       try {
         session = await this.client.resumeSession(sessionId, {
-          ...common,
+          ...sessionOptions,
           continuePendingWork: true,
         });
         resumed = true;
@@ -166,7 +176,10 @@ export class SessionManager {
     }
 
     if (!session) {
-      session = await this.client.createSession({ sessionId, ...common });
+      session = await this.client.createSession({
+        sessionId,
+        ...sessionOptions,
+      });
       this.knownSessionIds.add(sessionId);
     }
 
@@ -210,6 +223,7 @@ export class SessionManager {
 
     let prompt = input.prompt;
     if (state.fresh && (body.messages?.length || 0) > 1) {
+      // A new SDK session needs any earlier history that Claude sent.
       const prior = serializeConversation(body.messages.slice(0, -1));
       prompt = `<prior_conversation>\n${prior}\n</prior_conversation>\n\n${prompt}`;
     }

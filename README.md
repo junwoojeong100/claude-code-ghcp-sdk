@@ -14,6 +14,14 @@ LiteLLM으로 연결합니다. 기존 permissions, hooks, MCP, skills도 계속 
 운영하거나 다른 provider가 필요할 때만 LiteLLM을 선택합니다. 두 경로를 함께 설정할
 필요는 없습니다.
 
+## 문서 안내
+
+| 목적 | 문서 |
+|---|---|
+| 처음 설치하고 실행 | 이 README의 [Direct SDK 빠른 시작](#direct-sdk-빠른-시작) |
+| LiteLLM client 또는 gateway 구성 | [LiteLLM 설정 가이드](docs/LITELLM.md) |
+| 구현, 보안 경계, 검증 범위 확인 | [아키텍처](docs/ARCHITECTURE.md) |
+
 ## Direct SDK 빠른 시작
 
 ```text
@@ -197,6 +205,17 @@ GitHub Copilot 모델을 사용하려면 model alias가 `github_copilot/claude-*
 옵션과 프롬프트는 그대로 전달됩니다. `bin`을 PATH에 추가했다면 `./bin/`을 생략할 수
 있습니다.
 
+### 설정 입력
+
+실행 옵션이 환경 변수보다 우선합니다. 이 저장소는 `.env` 파일을 자동으로 읽지
+않으므로 값을 현재 셸에서 `export`하거나 명령 앞에 지정합니다. `.env.example`은 사용
+가능한 환경 변수의 참고 목록입니다.
+
+| 경로 | 필수 설정 | 선택 설정 |
+|---|---|---|
+| Direct SDK | 없음 | `--ghcp-model` / `GHCP_MODEL`, `--bridge-port` / `GHCP_BRIDGE_PORT` |
+| LiteLLM | `LITELLM_BASE_URL`, `LITELLM_API_KEY` | `--litellm-model` / `LITELLM_MODEL` |
+
 ## 설정과 지원 범위
 
 ### 설정 보존
@@ -224,7 +243,8 @@ selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트
 | Reasoning effort, Ultracode `xhigh` routing | 단위 테스트와 로컬 프로토콜 확인 |
 | `Edit`, `Bash`, hooks, plugins, skills, 일반 MCP | Claude Code가 담당하며 전체 조합 E2E는 미수행 |
 | Image/document 변환 | 단위 테스트 확인; 실제 multimodal E2E는 미수행 |
-| Root/subagent 분리, SDK resume | 구현됨; 자동 테스트에서 직접 검증하지 않음 |
+| Root/subagent 세션 분리 | 단위 테스트 확인 |
+| SDK resume | 구현됨; 자동 테스트에서 직접 검증하지 않음 |
 | MCP tool search (`tool_reference`) | 일반 설정에서는 비활성화; managed policy가 강제하는 환경은 미지원 |
 | `--json-schema` structured output | `output_config` schema translation 미구현 |
 | Remote Control | Custom `ANTHROPIC_BASE_URL`에서 Claude Code가 비활성화 |

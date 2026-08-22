@@ -208,6 +208,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - GPT-5.6 context override와 gateway discovery row
 - `ultracode`에서 `xhigh`로의 변환과 model별 unsupported effort 조정
 - SDK session 생성과 `session.setModel()`을 통한 reasoning effort 변경
+- Claude Code root session과 subagent의 SDK session 분리
 - Direct/LiteLLM 임시 settings의 gateway routing 값
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
 
