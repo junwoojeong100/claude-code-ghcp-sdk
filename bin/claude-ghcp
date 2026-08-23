@@ -14,6 +14,7 @@ fi
 GHCP_MODEL_VALUE="${GHCP_MODEL:-claude-sonnet-5}"
 BRIDGE_PORT="${GHCP_BRIDGE_PORT:-}"
 CLAUDE_ARGS=()
+PERSISTENT_BRIDGE=0
 
 usage() {
   cat <<'EOF'
@@ -22,6 +23,7 @@ Usage: claude-ghcp [bridge options] [--] [claude options and prompt]
 Bridge options:
   --ghcp-model MODEL   GitHub Copilot model ID (default: claude-sonnet-5)
   --bridge-port PORT   Fixed loopback port (default: choose a free port)
+  --background, --bg   Use a persistent bridge for background agent sessions
   -h, --help           Show this help
 
 Use --ghcp-model instead of Claude Code's --model flag. The launcher maps the
@@ -58,8 +60,9 @@ while (($#)); do
       exit 2
       ;;
     --background|--bg)
-      echo "Claude Code background mode is not supported yet because the local bridge must remain running." >&2
-      exit 2
+      PERSISTENT_BRIDGE=1
+      CLAUDE_ARGS+=("$1")
+      shift
       ;;
     -h|--help)
       usage
@@ -69,9 +72,12 @@ while (($#)); do
       shift
       for argument in "$@"; do
         case "$argument" in
-          --model|--model=*|--settings|--settings=*|--background|--bg)
-            echo "Do not pass --model, --settings, or background mode through --; use GHCP launcher options." >&2
+          --model|--model=*|--settings|--settings=*)
+            echo "Do not pass --model or --settings through --; use GHCP launcher options." >&2
             exit 2
+            ;;
+          --background|--bg)
+            PERSISTENT_BRIDGE=1
             ;;
         esac
       done
@@ -84,6 +90,10 @@ while (($#)); do
       ;;
   esac
 done
+
+if [[ "${CLAUDE_ARGS[0]:-}" == "agents" ]]; then
+  PERSISTENT_BRIDGE=1
+fi
 
 for command in node copilot curl; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -99,18 +109,18 @@ if [[ ! -d "$ROOT_DIR/node_modules/@github/copilot-sdk" ]]; then
   exit 1
 fi
 
-if [[ -z "$BRIDGE_PORT" ]]; then
+if [[ -z "$BRIDGE_PORT" ]] && ((PERSISTENT_BRIDGE == 0)); then
   BRIDGE_PORT="$(
     node -e 'const net=require("node:net");const s=net.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});'
   )"
 fi
 
 FRONTEND_MODEL="$(node "$ROOT_DIR/src/model-cli.mjs" frontend "$GHCP_MODEL_VALUE")"
-BRIDGE_TOKEN="$(node -e 'console.log(require("node:crypto").randomBytes(24).toString("hex"))')"
 RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-ghcp.XXXXXX")"
 SETTINGS_FILE="$RUNTIME_DIR/settings.json"
 BRIDGE_LOG="$RUNTIME_DIR/bridge.log"
 BRIDGE_PID=""
+BRIDGE_TOKEN=""
 
 cleanup() {
   if [[ -n "$BRIDGE_PID" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
@@ -122,24 +132,42 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-BRIDGE_API_KEY="$BRIDGE_TOKEN" \
-GHCP_MODEL="$GHCP_MODEL_VALUE" \
-HOST=127.0.0.1 \
-PORT="$BRIDGE_PORT" \
-node "$ROOT_DIR/src/server.mjs" >"$BRIDGE_LOG" 2>&1 &
-BRIDGE_PID=$!
+if ((PERSISTENT_BRIDGE)); then
+  DAEMON_JSON="$(
+    node "$ROOT_DIR/src/bridge-daemon.mjs" \
+      ensure "$GHCP_MODEL_VALUE" "$BRIDGE_PORT"
+  )"
+  BRIDGE_PORT="$(
+    printf '%s' "$DAEMON_JSON" |
+      node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).port))'
+  )"
+  BRIDGE_TOKEN="$(
+    printf '%s' "$DAEMON_JSON" |
+      node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).token))'
+  )"
+else
+  BRIDGE_TOKEN="$(
+    node -e 'console.log(require("node:crypto").randomBytes(24).toString("hex"))'
+  )"
+  BRIDGE_API_KEY="$BRIDGE_TOKEN" \
+  GHCP_MODEL="$GHCP_MODEL_VALUE" \
+  HOST=127.0.0.1 \
+  PORT="$BRIDGE_PORT" \
+  node "$ROOT_DIR/src/server.mjs" >"$BRIDGE_LOG" 2>&1 &
+  BRIDGE_PID=$!
 
-for _ in {1..120}; do
-  if curl --silent --fail "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null 2>&1; then
-    break
-  fi
-  if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
-    echo "The GHCP bridge exited during startup:" >&2
-    sed -n '1,120p' "$BRIDGE_LOG" >&2
-    exit 1
-  fi
-  sleep 0.25
-done
+  for _ in {1..120}; do
+    if curl --silent --fail "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null 2>&1; then
+      break
+    fi
+    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+      echo "The GHCP bridge exited during startup:" >&2
+      sed -n '1,120p' "$BRIDGE_LOG" >&2
+      exit 1
+    fi
+    sleep 0.25
+  done
+fi
 
 curl --silent --fail "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null || {
   echo "Timed out waiting for the GHCP bridge." >&2

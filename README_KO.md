@@ -23,6 +23,8 @@ LiteLLM으로 연결합니다. 기존 permissions, hooks, MCP, skills도 계속 
 | 처음 설치하고 실행 | 이 README의 [Direct SDK 빠른 시작](#direct-sdk-빠른-시작) |
 | LiteLLM client 또는 gateway 구성 | [LiteLLM 설정 가이드](docs/LITELLM_KO.md) |
 | 구현, 보안 경계, 검증 범위 확인 | [아키텍처](docs/ARCHITECTURE_KO.md) |
+| 구현 가능한 공백과 구조적 한계 구분 | [호환성](docs/COMPATIBILITY_KO.md) |
+| 기능별 근거와 커버리지 비율 확인 | [기능 커버리지](docs/FEATURE_COVERAGE_KO.md) |
 
 ## 가능 여부와 공식 지원 경계
 
@@ -169,8 +171,9 @@ Ultracode는 `xhigh` 지원 모델에서만 사용할 수 있으며 일반 호�
 사용할 수 있습니다. `/model` picker와 effort 변환 방식은
 [아키텍처 문서](docs/ARCHITECTURE_KO.md#모델-discovery와-context)를 참고합니다.
 
-일반 세션에서는 subagent와 dynamic workflow를 사용할 수 있습니다. 로컬 bridge를 계속
-실행해야 하므로 `claude-ghcp --background`와 agent view는 지원하지 않습니다.
+일반 세션에서는 subagent와 dynamic workflow를 사용할 수 있습니다. `--background`와
+`agents` view는 persistent loopback bridge를 자동 사용합니다. 상태 확인과 종료는
+`claude-ghcp-status`, `claude-ghcp-stop`을 사용합니다.
 
 ## LiteLLM 빠른 시작
 
@@ -215,6 +218,8 @@ GitHub Copilot 모델을 사용하려면 model alias가 `github_copilot/claude-*
 | GitHub Copilot SDK 직접 사용 | `./bin/claude` 또는 `./bin/claude-ghcp` |
 | 허용된 Copilot 모델 조회 | `./bin/ghcp-models` |
 | GHCP 환경 진단 | `./bin/ghcp-doctor` |
+| Persistent bridge 상태 확인 | `./bin/claude-ghcp-status` |
+| Persistent bridge 종료 | `./bin/claude-ghcp-stop` |
 | LiteLLM gateway 사용 | `./bin/claude-litellm` |
 | 기존 Claude Code provider 사용 | `./bin/claude-current` |
 
@@ -258,16 +263,16 @@ selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트
 | Text, native `Read` tool | 실제 모델 E2E 확인 |
 | SSE, Anthropic Messages 변환 | 단위 테스트 확인 |
 | Reasoning effort, Ultracode `xhigh` routing | 단위 테스트와 로컬 프로토콜 확인 |
-| `Edit`, `Bash`, hooks, plugins, skills, 일반 MCP | Claude Code가 담당하며 전체 조합 E2E는 미수행 |
-| Image/document 변환 | 단위 테스트 확인; 실제 multimodal E2E는 미수행 |
-| Root/subagent 세션 분리 | 단위 테스트 확인; GPT-5.6 Sol → Explore → `Read` 흐름 수동 확인 |
-| SDK resume | conversation resume 구현; 진행 중인 tool call의 bridge 재시작 복구는 보장하지 않음 |
-| Token counting | `/count_tokens` 제공; tokenizer가 아닌 문자열 길이 기반 추정 |
-| Sampling과 생성 제어 | `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tool_choice` 미반영 |
-| MCP tool search (`tool_reference`) | 일반 설정에서는 비활성화; managed policy가 강제하는 환경은 미지원 |
-| `--json-schema` structured output | `output_config` schema translation 미구현 |
+| `Edit`, `Write`, `NotebookEdit`, `Bash`, hooks, plugins, skills, local MCP | Feature E2E 확인 |
+| Image/document 변환 | Image와 유효 PDF live E2E 확인 |
+| Root/subagent 세션 분리 | Unit test와 6모델 Agent→`Read` E2E 확인 |
+| SDK resume | Resume/fork와 history 축소 reconciliation 구현; in-flight crash recovery는 best-effort |
+| Token counting | Call 이후 실제 SDK usage; `/count_tokens` preflight는 명시적 추정 |
+| Sampling과 생성 제어 | 미지원 native control은 진단으로 노출; `tool_choice`는 bounded filtering/prompt emulation |
+| MCP tool search | Copilot SDK-side tool search 활성; native Claude `tool_reference` round-trip은 provider 의존 |
+| `--json-schema` structured output | Claude Code validator/retry를 bridge 경유 live E2E로 확인 |
 | Remote Control | Custom `ANTHROPIC_BASE_URL`에서 Claude Code가 비활성화 |
-| `--background`/agent view | 로컬 bridge lifecycle 때문에 미지원 |
+| `--background`/agent view | Private persistent bridge daemon으로 지원 |
 | Claude web/cloud, `--cloud`, `--teleport`, cloud ultrareview | 로컬 실행 경로 밖이므로 GHCP bridge를 사용하지 않음 |
 | Reasoning text/signature, citations, prompt-cache metadata | 완전한 round-trip은 미지원 |
 

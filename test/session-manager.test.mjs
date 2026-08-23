@@ -11,6 +11,9 @@ class FakeSession {
     this.handledToolCalls = [];
     this.sendImplementation = null;
     this.handlePendingToolCallImplementation = null;
+    this.abortImplementation = null;
+    this.abortCalls = 0;
+    this.disconnectCalls = 0;
     this.rpc = {
       tools: {
         handlePendingToolCall: async (request) => {
@@ -56,14 +59,23 @@ class FakeSession {
     this.setModelCalls.push({ model, options });
   }
 
-  async disconnect() {}
+  async abort() {
+    this.abortCalls += 1;
+    await this.abortImplementation?.();
+  }
+
+  async disconnect() {
+    this.disconnectCalls += 1;
+  }
 }
 
 class FakeClient {
   constructor(models) {
     this.models = models;
     this.created = [];
+    this.deleted = [];
     this.session = new FakeSession();
+    this.createSessionImplementation = null;
   }
 
   async start() {}
@@ -78,8 +90,15 @@ class FakeClient {
     return [];
   }
 
+  async deleteSession(sessionId) {
+    this.deleted.push(sessionId);
+  }
+
   async createSession(config) {
     this.created.push(config);
+    if (this.createSessionImplementation) {
+      return this.createSessionImplementation(config);
+    }
     return this.session;
   }
 }
@@ -124,6 +143,10 @@ test("applies initial and updated Claude Code effort to the Copilot session", as
     });
     assert.equal(client.created.length, 1);
     assert.equal(client.created[0].reasoningEffort, "xhigh");
+    assert.deepEqual(client.created[0].toolSearch, {
+      enabled: true,
+      deferThreshold: 30,
+    });
 
     await manager.execute(request("high"), {
       "x-claude-code-session-id": "session-1",
@@ -142,6 +165,308 @@ test("applies initial and updated Claude Code effort to the Copilot session", as
         options: undefined,
       },
     ]);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("aborts the active Copilot turn when the request signal is cancelled", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    turnTimeoutMs: 10_000,
+    client,
+  });
+
+  const controller = new AbortController();
+  let releaseAbort;
+  client.session.abortImplementation = () =>
+    new Promise((resolve) => {
+      releaseAbort = resolve;
+    });
+  client.session.sendImplementation = async () => {
+    controller.abort();
+  };
+
+  await manager.start();
+  try {
+    const first = manager.execute(
+      request(),
+      { "x-claude-code-session-id": "session-1" },
+      { signal: controller.signal },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    client.session.sendImplementation = null;
+    const second = manager.execute(request(), {
+      "x-claude-code-session-id": "session-1",
+    });
+    assert.equal(client.session.sendCalls.length, 1);
+
+    releaseAbort();
+    client.session.abortImplementation = null;
+    await assert.rejects(
+      first,
+      { name: "AbortError" },
+    );
+    assert.equal((await second).message.content, "ok");
+    assert.equal(client.session.abortCalls, 1);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("bounds a hung Copilot abort before releasing the session queue", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    abortTimeoutMs: 20,
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    turnTimeoutMs: 10_000,
+    client,
+  });
+  const controller = new AbortController();
+  client.session.abortImplementation = () => new Promise(() => {});
+  client.session.sendImplementation = async () => controller.abort();
+
+  await manager.start();
+  try {
+    await assert.rejects(
+      manager.execute(
+        request(),
+        { "x-claude-code-session-id": "session-1" },
+        { signal: controller.signal },
+      ),
+      { name: "AbortError" },
+    );
+    client.session.abortImplementation = null;
+    client.session.sendImplementation = null;
+    const next = await manager.execute(request(), {
+      "x-claude-code-session-id": "session-1",
+    });
+    assert.equal(next.message.content, "ok");
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("returns actual SDK usage when an assistant usage event is available", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    client,
+  });
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.usage", {
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+      finishReason: "length",
+      inputTokens: 100,
+      model: "gpt-5.6-sol",
+      outputTokens: 20,
+      reasoningTokens: 5,
+    });
+    client.session.emit("assistant.message", {
+      content: "done",
+      toolRequests: [],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const result = await manager.execute(request(), {
+      "x-claude-code-session-id": "session-1",
+    });
+    assert.deepEqual(result.usage, {
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+      contentFilterTriggered: false,
+      finishReason: "length",
+      inputTokens: 100,
+      outputTokens: 20,
+      reasoningTokens: 5,
+    });
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("reports state splits without logging system prompt contents", async () => {
+  const diagnostics = [];
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+
+  await manager.start();
+  try {
+    await manager.execute(request(), headers);
+    await manager.execute(
+      { ...request(), system: "changed secret system prompt" },
+      headers,
+    );
+
+    assert.equal(diagnostics[0].event, "bridge.state_split");
+    assert.deepEqual(diagnostics[0].changes, ["systemHash"]);
+    assert.equal(JSON.stringify(diagnostics).includes("secret"), false);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("evicts the least-recent idle state when the state limit is exceeded", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    maxStates: 1,
+    client,
+  });
+
+  await manager.start();
+  try {
+    await manager.execute(request(), {
+      "x-claude-code-session-id": "session-1",
+    });
+    await Promise.resolve();
+    await manager.execute(request(), {
+      "x-claude-code-session-id": "session-2",
+    });
+
+    assert.equal(client.session.disconnectCalls, 1);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("does not evict a state with a pending external tool call", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    maxStates: 1,
+    client,
+  });
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "",
+      toolRequests: [
+        { toolCallId: "tool-1", name: "Read", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("external_tool.requested", {
+      requestId: "request-1",
+      toolCallId: "tool-1",
+      toolName: "Read",
+    });
+  };
+
+  await manager.start();
+  try {
+    await manager.execute(toolBody, {
+      "x-claude-code-session-id": "session-1",
+    });
+    client.session.sendImplementation = null;
+    await manager.execute(request(), {
+      "x-claude-code-session-id": "session-2",
+    });
+    assert.equal(client.session.disconnectCalls, 0);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("shares one state creation across concurrent requests", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  let releaseCreation;
+  client.createSessionImplementation = async () => {
+    await new Promise((resolve) => {
+      releaseCreation = resolve;
+    });
+    return client.session;
+  };
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+
+  await manager.start();
+  try {
+    const first = manager.execute(request(), headers);
+    const second = manager.execute(request(), headers);
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseCreation();
+    await Promise.all([first, second]);
+    assert.equal(client.created.length, 1);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("recreates Copilot state when same-length Claude history diverges", async () => {
+  const diagnostics = [];
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+
+  await manager.start();
+  try {
+    await manager.execute(
+      {
+        ...request(),
+        messages: [
+          { role: "user", content: "one" },
+          { role: "assistant", content: "two" },
+          { role: "user", content: "three" },
+        ],
+      },
+      headers,
+    );
+    await manager.execute(
+      {
+        ...request(),
+        messages: [
+          { role: "user", content: "one" },
+          { role: "assistant", content: "replacement" },
+          { role: "user", content: "rewound" },
+        ],
+      },
+      headers,
+    );
+
+    assert.equal(client.created.length, 2);
+    assert.equal(client.deleted.length, 1);
+    assert.equal(
+      diagnostics.some(
+        (event) => event.event === "bridge.history_reconciled",
+      ),
+      true,
+    );
   } finally {
     await manager.stop();
   }
@@ -513,6 +838,7 @@ test("returns a single-message tool request without an idle event", async () => 
       result.message.toolRequests.map((tool) => tool.toolCallId),
       ["tool-1"],
     );
+    assert.equal(client.created[0].tools[0].defer, "auto");
   } finally {
     await manager.stop();
   }

@@ -9,6 +9,8 @@
   },
   "bin": {
     "claude-ghcp": "bin/claude-ghcp",
+    "claude-ghcp-status": "bin/claude-ghcp-status",
+    "claude-ghcp-stop": "bin/claude-ghcp-stop",
     "claude-litellm": "bin/claude-litellm",
     "claude-current": "bin/claude-current",
     "ghcp-doctor": "bin/ghcp-doctor",
@@ -23,10 +25,16 @@
     "models": "node src/list-models.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "bash scripts/e2e.sh",
+    "test:e2e:background": "bash scripts/e2e-background.sh",
+    "test:e2e:features": "bash scripts/e2e-features.sh",
+    "test:e2e:session": "bash scripts/e2e-session.sh",
+    "test:e2e:stream": "bash scripts/e2e-stream.sh",
+    "test:e2e:worktree": "bash scripts/e2e-worktree.sh",
     "test:e2e:gpt-5.6": "bash scripts/e2e-gpt-5.6.sh",
     "test:e2e:litellm": "bash scripts/e2e-litellm.sh"
   },
   "dependencies": {
-    "@github/copilot-sdk": "1.0.10-preview.0"
+    "@github/copilot-sdk": "1.0.10-preview.0",
+    "proper-lockfile": "4.1.2"
   }
 }

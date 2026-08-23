@@ -99,15 +99,6 @@ export function copilotModelForFrontend(frontendModel) {
   );
 }
 
-function familyFor(model) {
-  const value = stripContextSuffix(model).toLowerCase();
-  if (value.includes("fable")) return "fable";
-  if (value.includes("opus")) return "opus";
-  if (value.includes("sonnet")) return "sonnet";
-  if (value.includes("haiku")) return "haiku";
-  return null;
-}
-
 export function resolveCopilotModel({
   requested,
   availableIds,
@@ -116,20 +107,37 @@ export function resolveCopilotModel({
   const available = new Set(availableIds);
   const raw = stripContextSuffix(requested);
 
+  if (
+    (!raw || raw === "default") &&
+    preferredModel &&
+    available.has(preferredModel)
+  ) {
+    return preferredModel;
+  }
   if (available.has(raw)) return raw;
 
   const converted = copilotModelForFrontend(raw);
   if (available.has(converted)) return converted;
 
-  const family = familyFor(raw);
+  const embeddedClaudeModel = raw.match(
+    /claude-(?:fable|opus|sonnet|haiku)-\d+(?:[.-]\d+)?/i,
+  )?.[0];
+  if (embeddedClaudeModel) {
+    const embeddedConverted = copilotModelForFrontend(embeddedClaudeModel);
+    if (available.has(embeddedConverted)) return embeddedConverted;
+  }
+
+  const family = ["fable", "opus", "sonnet", "haiku"].includes(
+    raw.toLowerCase(),
+  )
+    ? raw.toLowerCase()
+    : null;
   if (family) {
     const familyMatch = FAMILY_CANDIDATES[family].find((candidate) =>
       available.has(candidate),
     );
     if (familyMatch) return familyMatch;
   }
-
-  if (preferredModel && available.has(preferredModel)) return preferredModel;
 
   throw new ModelUnavailableError(requested, availableIds);
 }

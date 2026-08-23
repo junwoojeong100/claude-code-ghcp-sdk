@@ -8,7 +8,9 @@ import {
   extractSystem,
   extractTurnInput,
   serializeConversation,
+  serializeConversationTail,
   startSse,
+  writeJsonMessage,
 } from "../src/anthropic.mjs";
 
 function fakeResponse() {
@@ -19,7 +21,8 @@ function fakeResponse() {
     write(value) {
       this.chunks.push(value);
     },
-    end() {
+    end(value) {
+      if (value) this.chunks.push(value);
       this.ended = true;
     },
   };
@@ -246,6 +249,32 @@ test("renders Copilot tool requests as Anthropic tool_use blocks", () => {
   );
 });
 
+test("uses actual SDK usage and finish reason in non-streaming responses", () => {
+  const response = fakeResponse();
+  writeJsonMessage(response, {
+    id: "msg-usage",
+    inputTokens: 10,
+    message: { content: "partial", outputTokens: 1, toolRequests: [] },
+    model: "gpt-5.6-sol",
+    usage: {
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+      finishReason: "length",
+      inputTokens: 100,
+      outputTokens: 20,
+    },
+  });
+
+  const body = JSON.parse(response.chunks.at(-1));
+  assert.equal(body.stop_reason, "max_tokens");
+  assert.deepEqual(body.usage, {
+    cache_creation_input_tokens: 4,
+    cache_read_input_tokens: 3,
+    input_tokens: 100,
+    output_tokens: 20,
+  });
+});
+
 test("serializes prior conversation for cold recovery", () => {
   const rendered = serializeConversation([
     { role: "user", content: "hello" },
@@ -253,6 +282,22 @@ test("serializes prior conversation for cold recovery", () => {
   ]);
   assert.match(rendered, /USER: hello/);
   assert.match(rendered, /ASSISTANT: hi/);
+});
+
+test("bounds cold-recovery history at whole-message boundaries", () => {
+  const replay = serializeConversationTail(
+    [
+      { role: "user", content: "first message" },
+      { role: "assistant", content: "second message" },
+      { role: "user", content: "final" },
+    ],
+    24,
+  );
+
+  assert.equal(replay.truncated, true);
+  assert.match(replay.text, /prior conversation truncated/);
+  assert.match(replay.text, /USER: final/);
+  assert.doesNotMatch(replay.text, /first message/);
 });
 
 test("streams text deltas without duplicating final content", () => {
@@ -277,7 +322,39 @@ test("streams text deltas without duplicating final content", () => {
   assert.equal(response.ended, true);
 });
 
-test("buffers tool JSON until the tool name is known", () => {
+test("reports actual SDK usage in the final streaming delta", () => {
+  const response = fakeResponse();
+  startSse(response);
+  const stream = new AnthropicSseStream(response, {
+    id: "msg-usage",
+    inputTokens: 10,
+  });
+  stream.finish({
+    model: "gpt-5.6-sol",
+    message: { content: "done", toolRequests: [], outputTokens: 1 },
+    usage: {
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+      inputTokens: 100,
+      outputTokens: 20,
+    },
+  });
+
+  const events = response.chunks
+    .join("")
+    .split(/\n/)
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)));
+  const delta = events.find((event) => event.type === "message_delta");
+  assert.deepEqual(delta.usage, {
+    cache_creation_input_tokens: 4,
+    cache_read_input_tokens: 3,
+    input_tokens: 100,
+    output_tokens: 20,
+  });
+});
+
+test("replaces incomplete tool deltas with final valid JSON", () => {
   const response = fakeResponse();
   startSse(response);
   const stream = new AnthropicSseStream(response, {
@@ -307,4 +384,12 @@ test("buffers tool JSON until the tool name is known", () => {
   const output = response.chunks.join("");
   assert.match(output, /"name":"Read"/);
   assert.doesNotMatch(output, /"name":"tool"/);
+  const partialJson = output
+    .split(/\n/)
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)))
+    .filter((data) => data.delta?.type === "input_json_delta")
+    .map((data) => data.delta.partial_json)
+    .join("");
+  assert.deepEqual(JSON.parse(partialJson), { file_path: "/tmp/a" });
 });

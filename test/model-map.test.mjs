@@ -7,6 +7,7 @@ import {
   copilotModelForFrontend,
   frontendModelFor,
   gatewayModelEntries,
+  ModelUnavailableError,
   pickerModelFor,
   resolveCopilotModel,
   resolveReasoningEffort,
@@ -73,6 +74,38 @@ test("uses preferred Copilot model for unknown provider-specific names", () => {
   assert.equal(
     resolveCopilotModel({
       requested: "databricks-claude-sonnet-5[1m]",
+      availableIds,
+      preferredModel: "claude-sonnet-5",
+    }),
+    "claude-sonnet-5",
+  );
+});
+
+test("does not silently replace an explicit unavailable model", () => {
+  assert.throws(
+    () =>
+      resolveCopilotModel({
+        requested: "gpt-does-not-exist",
+        availableIds,
+        preferredModel: "claude-sonnet-5",
+      }),
+    ModelUnavailableError,
+  );
+  assert.throws(
+    () =>
+      resolveCopilotModel({
+        requested: "claude-sonnet-99",
+        availableIds,
+        preferredModel: "claude-sonnet-5",
+      }),
+    ModelUnavailableError,
+  );
+});
+
+test("uses the preferred model for an explicit default request", () => {
+  assert.equal(
+    resolveCopilotModel({
+      requested: "default",
       availableIds,
       preferredModel: "claude-sonnet-5",
     }),
