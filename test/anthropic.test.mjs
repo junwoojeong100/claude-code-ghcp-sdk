@@ -94,6 +94,84 @@ test("converts Claude tool results for the pending Copilot tool call", () => {
   assert.equal(input.toolResults[0].value.textResultForLlm, "done");
 });
 
+test("finds a tool result before trailing Claude Code system messages", () => {
+  const input = extractTurnInput({
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "done",
+          },
+        ],
+      },
+      {
+        role: "system",
+        content: "Tool execution completed.",
+      },
+    ],
+  });
+
+  assert.equal(input.kind, "tool-results");
+  assert.equal(input.messageIndex, 1);
+  assert.equal(input.toolResults[0].toolUseId, "tool-1");
+});
+
+test("preserves sibling text from an updated tool result", () => {
+  const input = extractTurnInput({
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "final result",
+          },
+          {
+            type: "text",
+            text: "The background agent completed.",
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(input.kind, "tool-results");
+  assert.equal(input.prompt, "The background agent completed.");
+  assert.equal(
+    input.toolResults[0].value.textResultForLlm,
+    "final result",
+  );
+});
+
+test("finds a prompt before trailing Claude Code system messages", () => {
+  const input = extractTurnInput({
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "inspect this" }],
+      },
+      {
+        role: "system",
+        content: "Prompt metadata.",
+      },
+    ],
+  });
+
+  assert.equal(input.kind, "prompt");
+  assert.equal(input.prompt, "inspect this");
+  assert.equal(input.messageIndex, 0);
+});
+
 test("does not replay a historical tool result when history ends with assistant", () => {
   const input = extractTurnInput({
     messages: [
@@ -110,6 +188,33 @@ test("does not replay a historical tool result when history ends with assistant"
       {
         role: "assistant",
         content: [{ type: "text", text: "Waiting for the agent." }],
+      },
+    ],
+  });
+
+  assert.equal(input.kind, "continuation");
+});
+
+test("does not replay a historical tool result before assistant and system messages", () => {
+  const input = extractTurnInput({
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "parent-agent",
+            content: "Agent started.",
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Waiting for the agent." }],
+      },
+      {
+        role: "system",
+        content: "Agent status updated.",
       },
     ],
   });

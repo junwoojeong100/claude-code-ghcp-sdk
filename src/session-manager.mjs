@@ -15,9 +15,23 @@ import {
 
 const CONTINUATION_PROMPT =
   "Continue from the prior conversation and follow the current system instructions.";
+const BACKGROUND_TOOL_WAIT_MESSAGE =
+  "Waiting for the background tool to finish.";
+const TOOL_RESULT_UPDATE_PROMPT =
+  "A previously started external tool has produced an additional result. " +
+  "Use the update below to continue the current task.";
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function toolResultHash(value, prompt, toolName) {
+  return hash(
+    JSON.stringify({
+      ...(toolName === "Agent" ? { prompt } : {}),
+      value,
+    }),
+  );
 }
 
 function toolSignature(tools = []) {
@@ -193,6 +207,7 @@ export class SessionManager {
       fresh: !resumed,
       queue: Promise.resolve(),
       pendingByToolCallId: new Map(),
+      completedToolCalls: new Map(),
     };
 
     session.on("external_tool.requested", (event) => {
@@ -211,18 +226,131 @@ export class SessionManager {
     const input = extractTurnInput(body);
 
     if (input.kind === "tool-results" && !state.fresh) {
-      return this.#waitForTurn(state, async () => {
-        await Promise.all(
-          input.toolResults.map(async ({ toolUseId, value }) => {
-            const requestId = await this.#waitForPendingRequest(state, toolUseId);
-            state.pendingByToolCallId.delete(toolUseId);
-            await state.session.rpc.tools.handlePendingToolCall({
-              requestId,
+      const results = input.toolResults.map((result) => ({
+        ...result,
+        resultHash: toolResultHash(
+          result.value,
+          input.prompt,
+          state.completedToolCalls.get(result.toolUseId)?.toolName,
+        ),
+        completed: state.completedToolCalls.get(result.toolUseId),
+      }));
+      const changedCompleted = results.filter(
+        (result) =>
+          result.completed &&
+          result.completed.resultHash !== result.resultHash,
+      );
+      const pendingResults = results.filter((result) => !result.completed);
+      if (changedCompleted.length) {
+        if (pendingResults.length) {
+          throw new Error(
+            "Cannot process updated and pending tool results in the same turn.",
+          );
+        }
+        if (
+          changedCompleted.some(
+            (result) => result.completed.toolName !== "Agent",
+          )
+        ) {
+          throw new Error(
+            "Only background Agent tool calls can publish updated results.",
+          );
+        }
+        const prompt = [
+          TOOL_RESULT_UPDATE_PROMPT,
+          ...changedCompleted.map(({ value }) => value.textResultForLlm),
+          input.prompt,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        const turn = await this.#waitForTurn(
+          state,
+          () => state.session.send({ prompt, attachments: [] }),
+          onEvent,
+        );
+        for (const result of changedCompleted) {
+          state.completedToolCalls.set(result.toolUseId, {
+            ...result.completed,
+            lastTurn: turn,
+            resultHash: result.resultHash,
+          });
+        }
+        return turn;
+      }
+
+      if (!pendingResults.length) {
+        const cachedTurn = results.findLast(
+          (result) => result.completed.lastTurn,
+        )?.completed.lastTurn;
+        if (cachedTurn) return cachedTurn;
+
+        return this.#waitForTurn(
+          state,
+          () =>
+            state.session.send({
+              prompt: CONTINUATION_PROMPT,
+              attachments: [],
+            }),
+          onEvent,
+        );
+      }
+
+      const handledTools = [];
+      const turn = await this.#waitForTurn(state, async () => {
+        const submissions = await Promise.allSettled(
+          pendingResults.map(async ({ toolUseId, value }) => {
+            const pending = await this.#waitForPendingRequest(state, toolUseId);
+            const response = await state.session.rpc.tools.handlePendingToolCall({
+              requestId: pending.requestId,
               result: value,
             });
+            if (response?.success === false) {
+              throw new Error(
+                `GitHub Copilot rejected the result for tool call ${toolUseId}.`,
+              );
+            }
+            state.pendingByToolCallId.delete(toolUseId);
+            const completed = {
+              lastTurn: null,
+              resultHash: toolResultHash(
+                value,
+                input.prompt,
+                pending.toolName,
+              ),
+              toolName: pending.toolName,
+            };
+            state.completedToolCalls.set(toolUseId, completed);
+            handledTools.push({ completed, toolUseId });
           }),
         );
+        const failure = submissions.find(
+          (submission) => submission.status === "rejected",
+        );
+        if (failure) throw failure.reason;
       }, onEvent);
+      let completedTurn = turn;
+      if (
+        handledTools.some(({ completed }) => completed.toolName === "Agent") &&
+        !turn.message.content &&
+        !turn.message.toolRequests?.length
+      ) {
+        completedTurn = {
+          ...turn,
+          message: {
+            ...turn.message,
+            content: BACKGROUND_TOOL_WAIT_MESSAGE,
+          },
+        };
+      }
+      for (const { completed } of handledTools) {
+        completed.lastTurn = completedTurn;
+      }
+      for (const result of results) {
+        if (result.completed && !result.completed.lastTurn) {
+          result.completed.lastTurn = completedTurn;
+        }
+      }
+      return completedTurn;
     }
 
     const messages = body.messages || [];
@@ -231,7 +359,10 @@ export class SessionManager {
     if (state.fresh && messages.length) {
       // Forked agents can start with inherited history that ends in an assistant
       // message or an already-completed parent tool result.
-      const priorMessages = input.kind === "prompt" ? messages.slice(0, -1) : messages;
+      const priorMessages =
+        input.kind === "prompt"
+          ? messages.slice(0, input.messageIndex)
+          : messages;
       if (priorMessages.length) {
         const prior = serializeConversation(priorMessages);
         prompt = `<prior_conversation>\n${prior}\n</prior_conversation>\n\n${prompt || CONTINUATION_PROMPT}`;
@@ -259,15 +390,18 @@ export class SessionManager {
   #waitForTurn(state, trigger, onEvent) {
     const messages = [];
     const subscriptions = [];
-    let pendingToolResponse = null;
 
     return new Promise((resolve, reject) => {
       let settled = false;
+      let completionStarted = false;
+      let turnStarted = false;
+      let triggerFinished = false;
+      let deferredCompletion = null;
       const timeout = setTimeout(() => {
         finish(new Error("Timed out waiting for the GitHub Copilot model turn."));
       }, this.turnTimeoutMs);
 
-      const finish = (error, message) => {
+      const settle = (error, message) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
@@ -275,36 +409,63 @@ export class SessionManager {
         if (error) reject(error);
         else resolve({ model: state.model, message });
       };
+      const finish = (error, message) => {
+        if (error || triggerFinished) {
+          settle(error, message);
+          return;
+        }
+        deferredCompletion = { message };
+      };
+
+      const finishTurn = () => {
+        if (settled || completionStarted || !turnStarted) return;
+
+        const combined = messages.length
+          ? this.#combineMessages(messages)
+          : { content: "", toolRequests: [] };
+        if (!combined.toolRequests.length) {
+          finish(null, combined);
+          return;
+        }
+
+        completionStarted = true;
+        Promise.all(
+          combined.toolRequests.map((request) =>
+            this.#waitForPendingRequest(state, request.toolCallId),
+          ),
+        )
+          .then(() => finish(null, combined))
+          .catch((error) => finish(error));
+      };
 
       const onMessage = (event) => {
         if (event.agentId) return;
+        turnStarted = true;
         messages.push(event.data);
-        if (event.data.toolRequests?.length) {
-          const combined = this.#combineMessages(messages);
-          pendingToolResponse = Promise.all(
-            combined.toolRequests.map((request) =>
-              this.#waitForPendingRequest(state, request.toolCallId),
-            ),
-          ).then(() => combined);
-          void pendingToolResponse
-            .then((message) => finish(null, message))
-            .catch((error) => finish(error));
+        const { chunkCount, chunkIndex } = event.data;
+        const finalChunk =
+          !Number.isInteger(chunkCount) ||
+          !Number.isInteger(chunkIndex) ||
+          chunkIndex === chunkCount - 1;
+        if (
+          finalChunk &&
+          messages.some((message) => message.toolRequests?.length)
+        ) {
+          finishTurn();
         }
       };
-      const onIdle = () => {
-        if (pendingToolResponse) return;
-        finish(
-          null,
-          messages.length
-            ? this.#combineMessages(messages)
-            : { content: "", toolRequests: [] },
-        );
+      const onTurnStart = (event) => {
+        if (!event.agentId) turnStarted = true;
+      };
+      const onTurnEnd = (event) => {
+        if (!event.agentId) finishTurn();
       };
       const onError = (event) => {
         finish(new Error(event.data?.message || "GitHub Copilot SDK session error."));
       };
 
       subscriptions.push(
+        state.session.on("assistant.turn_start", onTurnStart),
         state.session.on("assistant.message", onMessage),
         state.session.on("assistant.message_delta", (event) => {
           onEvent?.(event);
@@ -312,11 +473,19 @@ export class SessionManager {
         state.session.on("assistant.tool_call_delta", (event) => {
           onEvent?.(event);
         }),
-        state.session.on("session.idle", onIdle),
+        state.session.on("assistant.turn_end", onTurnEnd),
+        state.session.on("session.idle", finishTurn),
         state.session.on("session.error", onError),
       );
 
-      Promise.resolve(trigger()).catch((error) => finish(error));
+      Promise.resolve(trigger())
+        .then(() => {
+          triggerFinished = true;
+          if (deferredCompletion) {
+            settle(null, deferredCompletion.message);
+          }
+        })
+        .catch((error) => settle(error));
     });
   }
 
@@ -335,13 +504,16 @@ export class SessionManager {
   #rememberPendingRequest(state, event) {
     state.pendingByToolCallId.set(
       event.data.toolCallId,
-      event.data.requestId,
+      {
+        requestId: event.data.requestId,
+        toolName: event.data.toolName,
+      },
     );
   }
 
   #forgetPendingRequest(state, requestId) {
-    for (const [toolCallId, pendingRequestId] of state.pendingByToolCallId) {
-      if (pendingRequestId === requestId) {
+    for (const [toolCallId, pending] of state.pendingByToolCallId) {
+      if (pending.requestId === requestId) {
         state.pendingByToolCallId.delete(toolCallId);
         return;
       }
@@ -351,8 +523,8 @@ export class SessionManager {
   async #waitForPendingRequest(state, toolCallId) {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
-      const requestId = state.pendingByToolCallId.get(toolCallId);
-      if (requestId) return requestId;
+      const pending = state.pendingByToolCallId.get(toolCallId);
+      if (pending) return pending;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     throw new Error(`No pending GitHub Copilot tool call found for ${toolCallId}.`);

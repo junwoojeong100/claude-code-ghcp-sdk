@@ -20,7 +20,11 @@ export function extractReasoningEffort(body) {
 }
 
 export function lastMessage(messages = []) {
-  return messages.at(-1);
+  return messages.findLast((message) => message?.role !== "system");
+}
+
+function lastMessageIndex(messages = []) {
+  return messages.findLastIndex((message) => message?.role !== "system");
 }
 
 function attachmentFromBlock(block, index) {
@@ -71,7 +75,9 @@ function toolResultValue(block) {
 }
 
 export function extractTurnInput(body) {
-  const message = lastMessage(body.messages);
+  const messages = body.messages || [];
+  const messageIndex = lastMessageIndex(messages);
+  const message = messages[messageIndex];
   if (message?.role !== "user") {
     return { kind: "continuation", attachments: [] };
   }
@@ -85,7 +91,12 @@ export function extractTurnInput(body) {
     }));
 
   if (toolResults.length) {
-    return { kind: "tool-results", toolResults };
+    return {
+      kind: "tool-results",
+      toolResults,
+      prompt: extractText(message.content),
+      messageIndex,
+    };
   }
 
   const attachments = blocks
@@ -96,6 +107,7 @@ export function extractTurnInput(body) {
     kind: "prompt",
     prompt: extractText(message.content),
     attachments,
+    messageIndex,
   };
 }
 
