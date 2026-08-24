@@ -52,6 +52,8 @@ validated across all six during compatibility testing. The broad feature suite
 (Edit, Write, NotebookEdit, Bash, hooks, skills, plugins, MCP, plan, image,
 PDF, cron, and structured output) uses `claude-haiku-4.5` as the default
 representative model, with `claude-sonnet-5` as the default image/PDF model.
+The 35-tool MCP fallback also uses `claude-sonnet-5` as its default
+representative model to reduce provider-selection variance.
 
 Other models may appear in the GitHub Copilot catalog and may work through the
 generic protocol adapter, but this project does **not** guarantee compatibility
