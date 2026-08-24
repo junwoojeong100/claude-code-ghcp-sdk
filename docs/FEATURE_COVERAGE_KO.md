@@ -82,7 +82,7 @@ GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapt
 | 18 | CLAUDE.md, memory, rules | Unit/manual | Claude Code가 load; 전용 live fixture는 없음 |
 | 19 | Built-in/custom subagent | E2E | 6모델 Agent→Read와 feature E2E |
 | 20 | Dynamic workflow와 local agent team | Partial | 핵심 subagent primitive는 통과, 대규모 fan-out/team messaging E2E 없음 |
-| 21 | Background agent와 agent view | E2E | Persistent daemon과 `test:e2e:background` |
+| 21 | Background agent와 agent view | E2E | Persistent bridge daemon과 `test:e2e:background`; Claude Code 자체 transient daemon/worker는 재연결을 위해 남을 수 있음 |
 | 22 | In-session cron과 goal loop | E2E | Cron create/list/delete E2E, goal은 같은 local scheduler |
 | 23 | Worktree | E2E | 격리된 임시 Git repository E2E |
 | 24 | Output style | Partial | Local system-prompt 기능, 전용 E2E 없음 |
@@ -124,8 +124,14 @@ GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapt
 | `npm run test:e2e:gpt-5.6` | GPT-5.6 text와 Read |
 | `npm run test:e2e:features` | Structured output, Edit, Write, NotebookEdit, Bash, hook, skill, plugin, MCP, plan, subagent, image, cron |
 | `npm run test:e2e:session` | Resume와 fork |
-| `npm run test:e2e:background` | Background agent, agent view, daemon cleanup |
+| `npm run test:e2e:background` | Background agent, agent view, bridge-daemon cleanup |
 | `npm run test:e2e:stream` | stream-json 입출력과 replay |
 | `npm run test:e2e:worktree` | Git worktree 격리 |
 
 Live E2E는 GitHub Copilot AI Credits를 사용합니다.
+
+`test:e2e:background`는 bridge daemon과 private registry를 정리합니다. Claude Code는
+background session용 별도 per-user transient daemon과 worker roster를 관리하며, 이
+product daemon은 테스트 후에도 남을 수 있습니다. `claude daemon stop --any`는 전역
+명령으로 다른 사용자 session까지 종료할 수 있어 테스트가 자동 실행하지 않습니다.
+완전한 process 격리가 필요하면 별도 OS user 또는 CI account에서 실행해야 합니다.
