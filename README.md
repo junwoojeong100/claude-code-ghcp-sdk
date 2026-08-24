@@ -20,6 +20,8 @@ An Anthropic Messages API bridge that routes Claude Code's model calls to GitHub
 | Initial installation and first run | This README's [Direct SDK Quick Start](#direct-sdk-quick-start) |
 | Configure a LiteLLM client or gateway | [LiteLLM Setup Guide](docs/LITELLM.md) |
 | Review implementation, security boundaries, and validation scope | [Architecture](docs/ARCHITECTURE.md) |
+| Distinguish implementable gaps from structural limits | [Compatibility](docs/COMPATIBILITY.md) |
+| Review feature-by-feature evidence and coverage percentages | [Feature Coverage](docs/FEATURE_COVERAGE.md) |
 
 ## Availability and Official Support Boundary
 
@@ -97,6 +99,10 @@ If permitted by your account and organization policy, the following GPT-5.6 mode
 
 All three models are configured with a 1,050,000-token context as listed in the Copilot catalog.
 
+The guaranteed live-test boundary is `claude-opus-5`, `claude-sonnet-5`,
+`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.
+Other catalog models are not guaranteed until added to the live test matrix.
+
 ### 5. Optional: Add `claude` to PATH
 
 To run from any directory, add the repository's `bin` directory to your PATH from the repository root. Example for Zsh:
@@ -150,7 +156,9 @@ Check the models available to your account and their supported features before s
 
 Ultracode is available only on models that support `xhigh` and may consume more GitHub Copilot AI Credits than a standard call. For details on the `/model` picker and effort translation, see the [Architecture document](docs/ARCHITECTURE.md#model-discovery-and-context).
 
-Standard sessions support subagents and dynamic workflows. `claude-ghcp --background` and the agent view are not supported because the local bridge must remain running.
+Standard sessions support subagents and dynamic workflows. `--background` and
+the `agents` view automatically use a persistent loopback bridge. Inspect or
+stop it with `claude-ghcp-status` and `claude-ghcp-stop`.
 
 ## LiteLLM Quick Start
 
@@ -190,6 +198,8 @@ For local gateway installation, GitHub device OAuth, model mapping, multi-user a
 | Use the GitHub Copilot SDK directly | `./bin/claude` or `./bin/claude-ghcp` |
 | List permitted Copilot models | `./bin/ghcp-models` |
 | Diagnose the GHCP environment | `./bin/ghcp-doctor` |
+| Inspect the persistent bridge | `./bin/claude-ghcp-status` |
+| Stop the persistent bridge | `./bin/claude-ghcp-stop` |
 | Use the LiteLLM gateway | `./bin/claude-litellm` |
 | Use the original Claude Code provider | `./bin/claude-current` |
 
@@ -224,16 +234,16 @@ The table below shows the current status for the Direct SDK path.
 | Text, native `Read` tool | Verified end-to-end with a real model |
 | SSE, Anthropic Messages translation | Verified by unit tests |
 | Reasoning effort, Ultracode `xhigh` routing | Verified by unit tests and local protocol checks |
-| `Edit`, `Bash`, hooks, plugins, skills, general MCP | Handled by Claude Code; full combination E2E not performed |
-| Image/document translation | Verified by unit tests; real multimodal E2E not performed |
-| Root/subagent session isolation | Verified by unit tests; GPT-5.6 Sol → Explore → `Read` flow verified manually |
-| SDK resume | Conversation resume implemented; recovery of in-flight tool calls across bridge restarts is not guaranteed |
-| Token counting | `/count_tokens` provided; estimate based on string length, not a tokenizer |
-| Sampling and generation controls | `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tool_choice` not applied |
-| MCP tool search (`tool_reference`) | Disabled in general configuration; environments where managed policy enforces it are not supported |
-| `--json-schema` structured output | `output_config` schema translation not implemented |
+| `Edit`, `Write`, `NotebookEdit`, `Bash`, hooks, plugins, skills, local MCP | Verified by feature E2E |
+| Image/document translation | Image and valid PDF verified by live E2E |
+| Root/subagent session isolation | Verified by unit tests and six-model Agent→`Read` E2E |
+| SDK resume | Resume/fork and history-shrink reconciliation implemented; in-flight crash recovery remains best-effort |
+| Token counting | Actual post-call SDK usage; `/count_tokens` preflight remains an explicit estimate |
+| Sampling and generation controls | Unsupported native controls are diagnosed; `tool_choice` has bounded filtering/prompt emulation |
+| MCP tool search | Native search unsupported; safe full-schema fallback verified with 35 MCP tools |
+| `--json-schema` structured output | Claude Code validator/retry verified through the bridge by live E2E |
 | Remote Control | Disabled by Claude Code when a custom `ANTHROPIC_BASE_URL` is set |
-| `--background`/agent view | Not supported due to local bridge lifecycle |
+| `--background`/agent view | Supported through the private persistent bridge daemon |
 | Claude web/cloud, `--cloud`, `--teleport`, cloud ultrareview | Outside the local execution path; the GHCP bridge is not used |
 | Reasoning text/signature, citations, prompt-cache metadata | Full round-trip not supported |
 

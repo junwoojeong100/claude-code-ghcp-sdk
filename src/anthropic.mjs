@@ -135,6 +135,47 @@ export function serializeConversation(messages = []) {
     .join("\n\n");
 }
 
+export function serializeConversationTail(messages = [], maxBytes = 262_144) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error("maxBytes must be a positive integer.");
+  }
+
+  const rendered = messages.map((message) => serializeConversation([message]));
+  const selected = [];
+  let selectedBytes = 0;
+  for (let index = rendered.length - 1; index >= 0; index -= 1) {
+    const separatorBytes = selected.length ? 2 : 0;
+    const messageBytes = Buffer.byteLength(rendered[index]);
+    if (selectedBytes + separatorBytes + messageBytes > maxBytes) break;
+    selected.unshift(rendered[index]);
+    selectedBytes += separatorBytes + messageBytes;
+  }
+
+  const truncated = selected.length < rendered.length;
+  return {
+    text: [
+      ...(truncated ? ["[... prior conversation truncated ...]"] : []),
+      ...selected,
+    ].join("\n\n"),
+    truncated,
+  };
+}
+
+function normalizeToolArguments(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {}
+  }
+  return {};
+}
+
 export function anthropicContent(message) {
   const content = [];
   if (message.content) content.push({ type: "text", text: message.content });
@@ -144,7 +185,7 @@ export function anthropicContent(message) {
       type: "tool_use",
       id: tool.toolCallId,
       name: tool.name,
-      input: tool.arguments || {},
+      input: normalizeToolArguments(tool.arguments),
     });
   }
 
@@ -155,20 +196,42 @@ export function estimateTokens(value) {
   return Math.max(1, Math.ceil(JSON.stringify(value || {}).length / 4));
 }
 
-export function writeJsonMessage(res, { id, model, message, inputTokens }) {
-  const hasTools = Boolean(message.toolRequests?.length);
+function anthropicStopReason(message, usage) {
+  if (message.toolRequests?.length) return "tool_use";
+  if (usage?.contentFilterTriggered || usage?.finishReason === "content_filter") {
+    return "refusal";
+  }
+  if (usage?.finishReason === "length") return "max_tokens";
+  if (usage?.finishReason === "stop_sequence") return "stop_sequence";
+  return "end_turn";
+}
+
+function anthropicUsage(inputTokens, message, usage) {
+  return {
+    input_tokens: usage?.inputTokens || inputTokens,
+    output_tokens: usage?.outputTokens || message.outputTokens || 0,
+    ...(usage?.cacheReadTokens
+      ? { cache_read_input_tokens: usage.cacheReadTokens }
+      : {}),
+    ...(usage?.cacheWriteTokens
+      ? { cache_creation_input_tokens: usage.cacheWriteTokens }
+      : {}),
+  };
+}
+
+export function writeJsonMessage(
+  res,
+  { id, model, message, inputTokens, usage },
+) {
   const body = {
     id,
     type: "message",
     role: "assistant",
     model,
     content: anthropicContent(message),
-    stop_reason: hasTools ? "tool_use" : "end_turn",
+    stop_reason: anthropicStopReason(message, usage),
     stop_sequence: null,
-    usage: {
-      input_tokens: inputTokens,
-      output_tokens: message.outputTokens || 0,
-    },
+    usage: anthropicUsage(inputTokens, message, usage),
   };
   const rendered = JSON.stringify(body);
   res.writeHead(200, {
@@ -202,7 +265,6 @@ export class AnthropicSseStream {
     this.nextIndex = 0;
     this.textBlock = null;
     this.toolBlocks = new Map();
-    this.pendingToolDeltas = new Map();
   }
 
   start(model) {
@@ -234,19 +296,13 @@ export class AnthropicSseStream {
 
     if (sdkEvent.type === "assistant.tool_call_delta") {
       const data = sdkEvent.data;
-      let block = this.toolBlocks.get(data.toolCallId);
-      if (!block && !data.toolName) {
-        const pending = this.pendingToolDeltas.get(data.toolCallId) || [];
-        if (data.inputDelta) pending.push(data.inputDelta);
-        this.pendingToolDeltas.set(data.toolCallId, pending);
-        return;
+      if (data.toolName) {
+        this.#ensureToolBlock(data.toolCallId, data.toolName);
       }
-      block ||= this.#ensureToolBlock(data.toolCallId, data.toolName);
-      this.#writeToolInputDelta(block, data.inputDelta);
     }
   }
 
-  finish({ model, message }) {
+  finish({ model, message, usage }) {
     this.start(model);
 
     const streamedContent = this.textBlock?.content || "";
@@ -257,9 +313,10 @@ export class AnthropicSseStream {
 
     for (const tool of message.toolRequests || []) {
       const block = this.#ensureToolBlock(tool.toolCallId, tool.name);
-      if (!block.hasInputDelta) {
-        this.#writeToolInputDelta(block, JSON.stringify(tool.arguments || {}));
-      }
+      this.#writeToolInputDelta(
+        block,
+        JSON.stringify(normalizeToolArguments(tool.arguments)),
+      );
     }
 
     const blocks = [
@@ -276,10 +333,10 @@ export class AnthropicSseStream {
     event(this.res, "message_delta", {
       type: "message_delta",
       delta: {
-        stop_reason: message.toolRequests?.length ? "tool_use" : "end_turn",
+        stop_reason: anthropicStopReason(message, usage),
         stop_sequence: null,
       },
-      usage: { output_tokens: message.outputTokens || 0 },
+      usage: anthropicUsage(this.inputTokens, message, usage),
     });
     event(this.res, "message_stop", { type: "message_stop" });
     this.res.end();
@@ -310,7 +367,6 @@ export class AnthropicSseStream {
     const block = {
       index: this.nextIndex++,
       name: toolName,
-      hasInputDelta: false,
     };
     this.toolBlocks.set(toolCallId, block);
     event(this.res, "content_block_start", {
@@ -324,17 +380,11 @@ export class AnthropicSseStream {
       },
     });
 
-    const pending = this.pendingToolDeltas.get(toolCallId) || [];
-    this.pendingToolDeltas.delete(toolCallId);
-    for (const inputDelta of pending) {
-      this.#writeToolInputDelta(block, inputDelta);
-    }
     return block;
   }
 
   #writeToolInputDelta(block, inputDelta) {
     if (!inputDelta) return;
-    block.hasInputDelta = true;
     event(this.res, "content_block_delta", {
       type: "content_block_delta",
       index: block.index,

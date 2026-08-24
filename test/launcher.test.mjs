@@ -31,7 +31,6 @@ test("claude-ghcp rejects arguments that can bypass bridge routing", () => {
     ["--settings", "/tmp/other-settings.json"],
     ["--", "--settings", "/tmp/other-settings.json"],
     ["--", "--model", "claude-sonnet-5"],
-    ["--", "--background"],
   ];
 
   for (const args of cases) {

@@ -76,7 +76,12 @@ The bridge separates root sessions and subagents using the following Claude Code
 - `x-claude-code-session-id`
 - `x-claude-code-agent-id`
 
-The Copilot SDK session ID is determined by the Claude session, agent, resolved model, tool schema signature, and system prompt signature. When the bridge is restarted, it attempts to resume existing sessions.
+The Copilot SDK session ID is determined by a bridge-instance namespace plus
+the Claude session, agent, resolved model, tool schema signature, and system
+prompt signature. A persistent daemon can resume evicted sessions within the
+same bridge process. After a process restart, the bridge performs bounded cold
+history replay instead of reusing provider state from an earlier process; this
+prevents cross-run conversation leakage.
 
 ### Model ID Translation
 
@@ -144,6 +149,13 @@ The following list describes the implementation scope, not the E2E validation sc
 - Model alias and version conversion
 - Claude Code root/subagent session isolation
 - SDK session resume
+- Request abort propagation to `CopilotSession.abort()`
+- Actual post-call SDK usage and provider finish-reason mapping
+- Bounded cold-history replay and history-shrink reconciliation
+- State split diagnostics, LRU/TTL eviction, and history-event cache invalidation
+- Persistent loopback bridge lifecycle for background agents and agent view
+- Bounded `tool_choice` filtering/prompt emulation
+- Safe full-schema fallback for large MCP tool sets
 
 ## Configuration, Network, and Logging
 
@@ -152,13 +164,17 @@ The following list describes the implementation scope, not the E2E validation sc
 - Existing user, project, local, and managed Claude settings continue to be loaded.
 - Command-line settings override only the values needed for routing: base URL, authentication token, selected model, and family mapping. The Direct path also configures model discovery and custom model context.
 - The Claude cloud-provider selector in user, project, or shell settings is overwritten with an empty value to prevent requests from bypassing the configured endpoint.
-- `ENABLE_TOOL_SEARCH` in user, project, or shell settings is also overwritten with an empty value, because the Direct bridge forwards general MCP tool schemas but has not implemented the `tool_reference` protocol.
+- Claude-native `tool_reference` remains disabled at the gateway boundary, while
+  the bridge preloads the full declared tool set. Copilot SDK native deferral is
+  disabled because declaration-only external tools can stall in that mode.
 - Managed settings take precedence over these command-line settings. Therefore, if an organization policy enforces a provider selector or MCP tool search, the launch scripts do not override it.
 
 ### Network and Credentials
 
 - The Direct launch script binds the bridge to `127.0.0.1` only.
-- The Direct launch script generates a random bridge token on each run and deletes it on exit.
+- Foreground launches generate a random bridge token and delete it on exit.
+  Background launches use a persistent loopback daemon with a `0600` registry,
+  atomic lock, health check, stale cleanup, and explicit status/stop commands.
 - The bridge uses the Copilot CLI login credentials. It does not read or copy Anthropic credentials into the project.
 
 ### Logging
@@ -169,16 +185,33 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 - This is not an official backend integration jointly supported by GitHub and Anthropic.
 - The Copilot SDK upstream is GA, but the pinned `@github/copilot-sdk` package is a preview release, and the public pending tool-call API it uses may change in the future.
-- The primary request fields the bridge currently interprets are: model, system text, messages, tools, attachments, `output_config.effort`, and whether streaming is enabled. The semantics of `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `tool_choice`, and `cache_control` are not reflected in Copilot SDK calls.
+- The primary request fields the bridge interprets are model, system text,
+  messages, tools, attachments, `output_config.effort`, `tool_choice`, and
+  whether streaming is enabled. Native `max_tokens`, `temperature`, `top_p`,
+  and `stop_sequences` semantics are not exposed by the Copilot SDK and are
+  reported as degraded controls.
 - The Claude Code gateway contract is an open contract to which new headers and body fields may be added. Because this bridge translates to Copilot SDK format rather than forwarding to an Anthropic upstream unchanged, new Claude Code capabilities are not automatically supported and require per-release compatibility review.
 - Extended-thinking signatures, encrypted reasoning content, reasoning summaries, server tools, citations, and prompt-cache metadata do not round-trip completely.
-- The input token count in `/v1/messages/count_tokens` and response usage is an estimate derived by dividing the JSON string length by 4, not a tokenizer result. Context display and compaction decisions may differ from the actual token count for the Copilot model.
+- Initial image/document content blocks are E2E-verified. Binary image/document
+  results returned from a local tool remain provider-dependent and may require
+  a text or initial-attachment fallback.
+- `/v1/messages/count_tokens` remains a preflight estimate derived from JSON
+  length and is labeled by response header. Completed turns use actual Copilot
+  SDK usage events when available.
 - The `toolCallId` → SDK `requestId` mapping for pending external tools lives in the bridge process memory. SDK conversation resume is implemented, but if the bridge exits while a tool call is in flight, that mapping is lost and recovery of the in-flight turn is not guaranteed.
-- There is no eviction policy for the bridge's in-memory state map, and SDK sessions are preserved in `COPILOT_HOME` after disconnection without an automatic cleanup policy. Long-running sessions and repeated executions require memory and filesystem cleanup policies.
-- Retry/idempotency, disconnect recovery, and context reconciliation require production hardening.
-- Claude Code background mode is not supported due to the `claude-ghcp` bridge lifecycle.
+- The in-memory state map has configurable LRU/TTL bounds and bounded replay.
+  SDK session files remain in `COPILOT_HOME`; history shrink deletes the stale
+  SDK session, while normal eviction preserves resumability.
+- Tool-result retry/idempotency and background Agent updates are handled.
+  General message retries are not deduplicated without a stable provider request
+  identifier, and process-crash recovery during an in-flight external tool call
+  remains best-effort.
+- Background mode and agent view are supported through the persistent bridge
+  daemon. Remote Control remains unavailable.
 - Remote Control is disabled by the Claude Code constraint that applies when a custom `ANTHROPIC_BASE_URL` is used. Cloud/web sessions and cloud ultrareview are outside the local bridge path.
-- `output_config` schema translation for structured output and MCP `tool_reference` are not implemented.
+- Claude Code's structured-output validator/retry works through the bridge and
+  is covered by live E2E. Native Claude `tool_reference` blocks are not
+  round-tripped; a full-schema MCP fallback is used instead.
 - Remote or shared deployments require TLS, user authentication, authorization, and tenant-isolated Copilot identity/session storage.
 - Prompts and source code are sent to the GitHub Copilot model service. Review your enterprise policy, content exclusion settings, and data retention conditions before use.
 - Model usage is subject to GitHub Copilot AI Credits and plan policy.
@@ -198,16 +231,28 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 - Inherited history recovery for forked subagents and pending tool-call handoff with `agentId`
 - Gateway routing values in the Direct/LiteLLM temporary settings
 - Mode `0600`, argument handling, and provider detection for LiteLLM settings
+- Request cancellation, state eviction, bounded replay, actual usage, strict
+  model selection, request policy, daemon registry, and tool-result idempotency
 
 E2E scripts call real models:
 
 - `npm run test:e2e`: Direct SDK text response for the default `claude-haiku-4.5`, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash. The model can be changed with `GHCP_E2E_MODEL`.
 - `npm run test:e2e:gpt-5.6`: Text response, `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash for each of GPT-5.6 Sol, Terra, and Luna.
 - `npm run test:e2e:litellm`: LiteLLM health check, model discovery, token counting, text response, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash.
+- `npm run test:e2e:features`: Structured output, Edit, Write, NotebookEdit,
+  Bash, hooks, skills, plugins, local MCP, plan mode, subagents, image input,
+  and cron.
+- `npm run test:e2e:session`: Resume and fork.
+- `npm run test:e2e:background`: Background agent, agent view, and daemon
+  cleanup.
+- `npm run test:e2e:stream`: stream-json input/output and replay.
+- `npm run test:e2e:worktree`: Git worktree isolation.
 
 All E2E tests consume real GitHub Copilot AI Credits.
 
-`Edit`, `Bash`, hooks/plugins/skills, general MCP, real multimodal, long-running subagents, and in-flight tool recovery across bridge restarts are not included in the automated E2E scope.
+Large multi-page PDF corpora, broad workflow fan-out, exact compact/rewind boundary
+mapping, and crash-time in-flight tool recovery are not included in the
+automated E2E scope.
 
 ### Additional Manual Validation
 
