@@ -238,6 +238,8 @@ E2E scripts call real models:
 
 - `npm run test:e2e`: Direct SDK text response for the default `claude-haiku-4.5`, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash. The model can be changed with `GHCP_E2E_MODEL`.
 - `npm run test:e2e:gpt-5.6`: Text response, `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash for each of GPT-5.6 Sol, Terra, and Luna.
+- `npm run test:e2e:primary`: Text response and `Read` loop for the
+  guaranteed primary seven-model matrix.
 - `npm run test:e2e:litellm`: LiteLLM health check, model discovery, token counting, text response, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash.
 - `npm run test:e2e:features`: Structured output, Edit, Write, NotebookEdit,
   Bash, hooks, skills, plugins, local MCP, plan mode, subagents, image input,

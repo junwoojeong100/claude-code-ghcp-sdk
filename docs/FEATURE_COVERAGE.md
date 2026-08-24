@@ -38,7 +38,7 @@ Copilot SDK. They must be recalculated when either product changes.
 
 ## Tested Model Boundary
 
-The repository's live validation covers these six model IDs:
+The repository's guaranteed primary matrix covers these seven model IDs:
 
 - `claude-opus-5`
 - `claude-sonnet-5`
@@ -46,9 +46,10 @@ The repository's live validation covers these six model IDs:
 - `gpt-5.6-sol`
 - `gpt-5.6-terra`
 - `gpt-5.6-luna`
+- `gemini-3.7-flash`
 
-All six run the base text/Read E2E. Core Agent→Read behavior has also been
-validated across all six during compatibility testing. The broad feature suite
+All seven run the base text/Read E2E. Core Agent→Read behavior has also been
+validated across all seven during compatibility testing. The broad feature suite
 (Edit, Write, NotebookEdit, Bash, hooks, skills, plugins, MCP, plan, image,
 PDF, cron, and structured output) uses `claude-haiku-4.5` as the default
 representative model, with `claude-sonnet-5` as the default image/PDF model.
@@ -57,8 +58,8 @@ representative model to reduce provider-selection variance.
 
 Other models may appear in the GitHub Copilot catalog and may work through the
 generic protocol adapter, but this project does **not** guarantee compatibility
-for model IDs outside the six listed above until they are added to the live
-test matrix.
+for model IDs outside the seven listed above. `gpt-5.5` is explicitly excluded
+from the guaranteed primary matrix.
 
 ## Implementable and Local Feature Groups
 
@@ -126,6 +127,7 @@ group.
 | `npm test` | Protocol, launch, session, daemon, request policy, replay, usage |
 | `npm run test:e2e` | Text and Read |
 | `npm run test:e2e:gpt-5.6` | GPT-5.6 text and Read |
+| `npm run test:e2e:primary` | Primary seven-model text and Read matrix |
 | `npm run test:e2e:features` | Structured output, Edit, Write, NotebookEdit, Bash, hook, skill, plugin, MCP, plan, subagent, image, cron |
 | `npm run test:e2e:session` | Resume and fork |
 | `npm run test:e2e:background` | Background agent, agent view, bridge-daemon cleanup |

@@ -280,6 +280,7 @@ E2E 스크립트는 실제 모델을 호출합니다.
   `GHCP_E2E_MODEL`로 model 변경 가능
 - `npm run test:e2e:gpt-5.6`: GPT-5.6 Sol, Terra, Luna 각각의 text response, `Read` tool
   loop와 user settings 파일 존재 여부 및 content hash 불변
+- `npm run test:e2e:primary`: 보증하는 주력 7모델의 text response와 `Read` loop
 - `npm run test:e2e:litellm`: LiteLLM health, model discovery, token counting, text response,
   Claude Code native `Read` tool loop와 user settings 파일 존재 여부 및 content hash 불변
 - `npm run test:e2e:features`: Structured output, Edit, Write, NotebookEdit, Bash, hook,

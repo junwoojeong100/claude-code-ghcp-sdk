@@ -113,8 +113,9 @@ npx copilot login
 세 모델은 Copilot catalog 기준 1,050,000 토큰 컨텍스트로 설정됩니다.
 
 Live test로 보증하는 범위는 `claude-opus-5`, `claude-sonnet-5`,
-`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
-6종입니다. 다른 catalog 모델은 live test matrix에 추가되기 전까지 보증하지 않습니다.
+`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
+`gemini-3.7-flash`의 주력 7종입니다. `gpt-5.5`와 다른 catalog 모델은 보증
+matrix에 포함하지 않습니다.
 
 ### 5. 선택: `claude` 명령을 PATH에 추가
 
