@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL="${GHCP_E2E_MODEL:-claude-haiku-4.5}"
 MULTIMODAL_MODEL="${GHCP_E2E_MULTIMODAL_MODEL:-claude-sonnet-5}"
+MCP_MODEL="${GHCP_E2E_MCP_MODEL:-claude-sonnet-5}"
 SETTINGS_PATH="${HOME}/.claude/settings.json"
 PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/claude-ghcp-features.XXXXXX")"
 CONFIG_DIR="$PROJECT/claude-config"
@@ -247,7 +248,15 @@ step edit_hook
     "Use Edit to replace the entire contents of $FIXTURE with exactly: $MARKER"
 ) >/dev/null
 grep -Fx "$MARKER" "$FIXTURE" >/dev/null
-grep -F "HOOK_E2E_OK" "$HOOK_LOG" >/dev/null
+HOOK_OK=0
+for _ in {1..50}; do
+  if [[ -f "$HOOK_LOG" ]] && grep -F "HOOK_E2E_OK" "$HOOK_LOG" >/dev/null; then
+    HOOK_OK=1
+    break
+  fi
+  sleep 0.1
+done
+[[ "$HOOK_OK" == "1" ]]
 
 step write
 (
@@ -330,7 +339,7 @@ step mcp_tool_search
 MCP_OUTPUT="$(
   cd "$PROJECT"
   run_claude "$ROOT_DIR/bin/claude-ghcp" \
-    --ghcp-model "$MODEL" \
+    --ghcp-model "$MCP_MODEL" \
     -p \
     --no-session-persistence \
     --allowedTools 'mcp__e2e__*' \
@@ -493,4 +502,4 @@ AFTER_SETTINGS_STATE="$(
   exit 1
 }
 
-printf 'PASS model=%s multimodal_model=%s structured=true edit=true write=true notebook=true bash=true hook=true skill=true plugin=true mcp=true plan=true subagent=true image=true pdf=true cron=true settings_unchanged=true\n' "$MODEL" "$MULTIMODAL_MODEL"
+printf 'PASS model=%s multimodal_model=%s mcp_model=%s structured=true edit=true write=true notebook=true bash=true hook=true skill=true plugin=true mcp=true plan=true subagent=true image=true pdf=true cron=true settings_unchanged=true\n' "$MODEL" "$MULTIMODAL_MODEL" "$MCP_MODEL"

@@ -51,6 +51,8 @@ estimate입니다. 어느 쪽이든 변경되면 다시 계산해야 합니다.
 NotebookEdit, Bash, hook, skill, plugin, MCP, plan, image, PDF, cron,
 structured output)는 `claude-haiku-4.5`를 기본 대표 모델로 사용하고 image/PDF는
 `claude-sonnet-5`를 기본 모델로 사용합니다.
+35-tool MCP fallback도 provider 선택 편차를 줄이기 위해 `claude-sonnet-5`를
+기본 대표 모델로 사용합니다.
 
 GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapter를 통해
 동작할 수는 있지만, 위 6개 이외 모델은 live test matrix에 추가되기 전까지 이
