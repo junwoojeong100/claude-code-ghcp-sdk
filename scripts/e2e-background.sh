@@ -76,4 +76,4 @@ node -e '
 [[ ! -e "$DAEMON_DIR/bridge.json" ]]
 [[ ! -e "$DAEMON_DIR/bridge.log" ]]
 
-printf 'PASS model=%s background=true background_result=true agent_view=true daemon_cleanup=true\n' "$MODEL"
+printf 'PASS model=%s background=true background_result=true agent_view=true bridge_daemon_cleanup=true claude_daemon_persistent=true\n' "$MODEL"

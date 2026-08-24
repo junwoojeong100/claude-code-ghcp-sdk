@@ -84,7 +84,7 @@ test matrix.
 | 18 | CLAUDE.md, memory, and rules | Unit/manual | Loaded by Claude Code; no dedicated live fixture yet |
 | 19 | Built-in and custom subagents | E2E | Six-model Agent→Read and feature E2E |
 | 20 | Dynamic workflows and local agent teams | Partial | Core subagent primitives pass; broad fan-out/team messaging E2E absent |
-| 21 | Background agents and agent view | E2E | Persistent daemon and `test:e2e:background` |
+| 21 | Background agents and agent view | E2E | Persistent bridge daemon and `test:e2e:background`; Claude Code's own transient daemon/workers may persist for re-adoption |
 | 22 | In-session cron and goal loops | E2E | Cron create/list/delete E2E; goal loop shares local scheduler |
 | 23 | Worktrees | E2E | Isolated temporary Git repository E2E |
 | 24 | Output styles | Partial | Local system-prompt feature; no dedicated E2E |
@@ -128,8 +128,15 @@ group.
 | `npm run test:e2e:gpt-5.6` | GPT-5.6 text and Read |
 | `npm run test:e2e:features` | Structured output, Edit, Write, NotebookEdit, Bash, hook, skill, plugin, MCP, plan, subagent, image, cron |
 | `npm run test:e2e:session` | Resume and fork |
-| `npm run test:e2e:background` | Background agent, agent view, daemon cleanup |
+| `npm run test:e2e:background` | Background agent, agent view, bridge-daemon cleanup |
 | `npm run test:e2e:stream` | stream-json input/output and replay |
 | `npm run test:e2e:worktree` | Git worktree isolation |
 
 Live E2E tests consume GitHub Copilot AI credits.
+
+`test:e2e:background` removes the bridge daemon and its private registry. Claude
+Code manages a separate per-user transient daemon and worker roster for
+background sessions; that product daemon can remain after the test and is not
+stopped automatically because `claude daemon stop --any` is global and could
+terminate unrelated user sessions. Run this E2E under an isolated OS user or CI
+account when complete process isolation is required.

@@ -35,7 +35,8 @@ bounded compatibility path in this repository:
 
 - A persistent loopback bridge daemon for Claude Code background agents and
   agent view, with private registry permissions, locking, status, stop, and
-  stale cleanup
+  stale cleanup. Claude Code's separate transient daemon remains under Claude
+  Code lifecycle management.
 - Actual post-call token usage from Copilot SDK events, while preflight token
   counting remains explicitly marked as estimated
 - History-shrink reconciliation, completed-tool cache invalidation, bounded

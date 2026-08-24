@@ -33,7 +33,8 @@
 경로가 추가됐습니다.
 
 - Private registry permission, lock, status, stop, stale cleanup을 포함한
-  background agent·agent view용 persistent loopback bridge daemon
+  background agent·agent view용 persistent loopback bridge daemon. Claude Code
+  자체 transient daemon은 Claude Code lifecycle이 관리
 - Copilot SDK event 기반 실제 call 이후 token usage와, estimated임을 명시한
   preflight token count
 - History 축소 reconciliation, completed-tool cache invalidation, bounded cold
