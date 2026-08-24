@@ -37,7 +37,7 @@ estimate입니다. 어느 쪽이든 변경되면 다시 계산해야 합니다.
 
 ## 검증 모델 경계
 
-저장소의 live 검증은 다음 6개 model ID를 대상으로 합니다.
+저장소가 보증하는 주력 matrix는 다음 7개 model ID입니다.
 
 - `claude-opus-5`
 - `claude-sonnet-5`
@@ -45,9 +45,10 @@ estimate입니다. 어느 쪽이든 변경되면 다시 계산해야 합니다.
 - `gpt-5.6-sol`
 - `gpt-5.6-terra`
 - `gpt-5.6-luna`
+- `gemini-3.7-flash`
 
-6개 모델 모두 기본 text/Read E2E를 실행합니다. 핵심 Agent→Read 동작도 호환성
-검증 과정에서 6개 모델 전체로 확인했습니다. 확장 feature suite(Edit, Write,
+7개 모델 모두 기본 text/Read E2E를 실행합니다. 핵심 Agent→Read 동작도 호환성
+검증 과정에서 7개 모델 전체로 확인했습니다. 확장 feature suite(Edit, Write,
 NotebookEdit, Bash, hook, skill, plugin, MCP, plan, image, PDF, cron,
 structured output)는 `claude-haiku-4.5`를 기본 대표 모델로 사용하고 image/PDF는
 `claude-sonnet-5`를 기본 모델로 사용합니다.
@@ -55,8 +56,8 @@ structured output)는 `claude-haiku-4.5`를 기본 대표 모델로 사용하고
 기본 대표 모델로 사용합니다.
 
 GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapter를 통해
-동작할 수는 있지만, 위 6개 이외 모델은 live test matrix에 추가되기 전까지 이
-프로젝트가 호환성을 **보증하지 않습니다**.
+동작할 수는 있지만, 위 7개 이외 모델은 이 프로젝트가 호환성을 **보증하지
+않습니다**. `gpt-5.5`는 주력 보증 matrix에서 명시적으로 제외합니다.
 
 ## 구현 가능·local 기능 그룹
 
@@ -122,6 +123,7 @@ GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapt
 | `npm test` | Protocol, launch, session, daemon, request policy, replay, usage |
 | `npm run test:e2e` | Text와 Read |
 | `npm run test:e2e:gpt-5.6` | GPT-5.6 text와 Read |
+| `npm run test:e2e:primary` | 주력 7모델 text와 Read matrix |
 | `npm run test:e2e:features` | Structured output, Edit, Write, NotebookEdit, Bash, hook, skill, plugin, MCP, plan, subagent, image, cron |
 | `npm run test:e2e:session` | Resume와 fork |
 | `npm run test:e2e:background` | Background agent, agent view, bridge-daemon cleanup |

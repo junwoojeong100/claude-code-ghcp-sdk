@@ -100,8 +100,9 @@ If permitted by your account and organization policy, the following GPT-5.6 mode
 All three models are configured with a 1,050,000-token context as listed in the Copilot catalog.
 
 The guaranteed live-test boundary is `claude-opus-5`, `claude-sonnet-5`,
-`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.
-Other catalog models are not guaranteed until added to the live test matrix.
+`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
+`gemini-3.7-flash`. These seven are the primary model matrix. `gpt-5.5` and
+other catalog models are not part of the guaranteed matrix.
 
 ### 5. Optional: Add `claude` to PATH
 
