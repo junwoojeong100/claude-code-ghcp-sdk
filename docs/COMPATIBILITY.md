@@ -42,7 +42,8 @@ bounded compatibility path in this repository:
   cold replay, state split diagnostics, and state LRU/TTL cleanup
 - Claude Code's native structured-output validator/retry, verified through the
   bridge with a live model
-- Copilot SDK-side tool search and a full-schema fallback for local MCP tools
+- Safe full-schema fallback for local MCP tools; native tool search remains a
+  documented compatibility gap
 - Request cancellation to `CopilotSession.abort()`
 - Live E2E coverage for Edit, Write, NotebookEdit, Bash, permissions, hooks,
   skills, plugins, MCP, multimodal input, worktrees, sessions, streams, cron,

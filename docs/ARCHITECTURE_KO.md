@@ -89,9 +89,11 @@ Bridge는 다음 Claude Code header로 root session과 subagent를 분리합니�
 - `x-claude-code-session-id`
 - `x-claude-code-agent-id`
 
-Copilot SDK session ID는 Claude session, agent, resolved model, tool schema signature,
-system prompt signature로 결정됩니다. Bridge를 다시 시작하면 기존 session의 resume을
-시도합니다.
+Copilot SDK session ID는 bridge-instance namespace와 Claude session, agent, resolved
+model, tool schema signature, system prompt signature로 결정됩니다. Persistent
+daemon은 같은 bridge process 안에서 evicted session을 resume할 수 있습니다. Process
+재시작 후에는 과거 provider state를 재사용하지 않고 bounded cold history replay를
+수행해 cross-run conversation leakage를 방지합니다.
 
 ### 모델 ID 변환
 
@@ -178,7 +180,7 @@ tool 실행은 Claude Code가 담당합니다.
 - State split 진단, LRU/TTL eviction, history event cache invalidation
 - Background agent와 agent view용 persistent loopback bridge
 - Bounded `tool_choice` filtering/prompt emulation
-- Copilot SDK-side tool search
+- 대규모 MCP tool set의 안전한 full-schema fallback
 
 ## 설정, 네트워크와 로그
 
@@ -225,6 +227,9 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
   검토가 필요합니다.
 - Extended-thinking signature, encrypted reasoning content, reasoning summary, server
   tools, citations와 prompt-cache metadata는 완전하게 round-trip하지 않습니다.
+- Initial image/document content block은 E2E로 확인했습니다. Local tool이 반환하는
+  binary image/document result는 provider 의존이며 text 또는 initial attachment
+  fallback이 필요할 수 있습니다.
 - `/v1/messages/count_tokens`는 JSON 길이 기반 preflight 추정이며 response header로
   표시합니다. 완료된 turn은 가능한 경우 실제 Copilot SDK usage event를 사용합니다.
 - Pending external-tool의 `toolCallId` → SDK `requestId` mapping은 bridge process memory에
@@ -233,15 +238,17 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - In-memory state map은 configurable LRU/TTL과 bounded replay를 사용합니다. SDK session
   file은 `COPILOT_HOME`에 남으며 history 축소 시 stale session을 삭제하고 일반 eviction은
   resume 가능성을 보존합니다.
-- Request retry/idempotency와 background Agent update는 처리하지만 process crash 중
-  in-flight external tool call 복구는 best-effort입니다.
+- Tool-result retry/idempotency와 background Agent update는 처리합니다. 안정적인
+  provider request ID가 없는 일반 message retry는 deduplicate하지 않으며 process crash
+  중 in-flight external tool call 복구는 best-effort입니다.
 - Background mode와 agent view는 persistent bridge daemon으로 지원합니다. Remote
   Control은 계속 사용할 수 없습니다.
 - Custom `ANTHROPIC_BASE_URL`을 사용하는 Claude Code 제약에 따라 Remote Control은
   비활성화됩니다. Cloud/web session과 cloud ultrareview는 local bridge 경로 밖입니다.
 - Claude Code structured-output validator/retry는 bridge를 통과해 동작하며 live E2E로
   확인합니다. Native Claude `tool_reference` block은 round-trip하지 않고 Copilot
-  SDK-side tool search를 사용합니다.
+  round-trip하지 않습니다. Declaration-only external tool과 native deferral 조합은
+  stall할 수 있어 전체 MCP schema preload fallback을 사용합니다.
 - 원격·공유 배포에는 TLS, user authentication, authorization와 tenant-isolated
   Copilot identity/session storage가 필요합니다.
 - Prompt와 source code는 GitHub Copilot model service로 전송됩니다. 사용 전 enterprise
@@ -264,7 +271,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - Direct/LiteLLM 임시 settings의 gateway routing 값
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
 - Request cancellation, state eviction, bounded replay, 실제 usage, strict model
-  selection, request policy, daemon registry, retry/idempotency
+  selection, request policy, daemon registry, tool-result idempotency
 
 E2E 스크립트는 실제 모델을 호출합니다.
 

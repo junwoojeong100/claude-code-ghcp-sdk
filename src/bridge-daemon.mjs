@@ -9,6 +9,15 @@ import lockfile from "proper-lockfile";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(rootDir, "src", "server.mjs");
+const implementationFiles = [
+  "package.json",
+  "package-lock.json",
+  ...fs
+    .readdirSync(path.join(rootDir, "src"))
+    .filter((name) => name.endsWith(".mjs"))
+    .sort()
+    .map((name) => `src/${name}`),
+];
 
 export function daemonPaths(env = process.env) {
   const base =
@@ -34,21 +43,29 @@ function ensureBase(paths) {
 
 function daemonConfigFingerprint(env, requestedPort) {
   const configuration = Object.fromEntries(
-    [
-      "COPILOT_HOME",
-      "GH_CONFIG_DIR",
-      "HOME",
-      "LOG_LEVEL",
-      "MAX_BODY_BYTES",
-      "MAX_REPLAY_BYTES",
-      "MAX_STATES",
-      "MAX_TOOL_RESULTS",
-      "PENDING_TOOL_WAIT_MS",
-      "STATE_IDLE_TTL_MS",
-    ].map((name) => [name, env[name] || ""]),
+    Object.keys(env)
+      .filter((name) =>
+        /^(COPILOT_|CLEANUP_TIMEOUT_MS$|GH_CONFIG_DIR$|GH_TOKEN$|GITHUB_TOKEN$|HOME$|HTTPS?_PROXY$|NO_PROXY$|LOG_LEVEL$|MAX_|PENDING_TOOL_WAIT_MS$|STATE_IDLE_TTL_MS$)/.test(
+          name,
+        ),
+      )
+      .sort()
+      .map((name) => [name, env[name] || ""]),
   );
+  const implementation = createHash("sha256");
+  implementation.update(rootDir);
+  for (const relativePath of implementationFiles) {
+    implementation.update(relativePath);
+    implementation.update(fs.readFileSync(path.join(rootDir, relativePath)));
+  }
   return createHash("sha256")
-    .update(JSON.stringify({ configuration, requestedPort: requestedPort || null }))
+    .update(
+      JSON.stringify({
+        configuration,
+        implementation: implementation.digest("hex"),
+        requestedPort: requestedPort || null,
+      }),
+    )
     .digest("hex");
 }
 
@@ -134,12 +151,21 @@ function removeRegistry(paths) {
 }
 
 async function stopRegistry(paths, registry, { ownedPid } = {}) {
+  if (!registry) {
+    removeRegistry(paths);
+    return false;
+  }
   const currentHealth = registry ? await health(registry) : null;
   const verified =
     registry &&
     (ownedPid === registry.pid ||
       (currentHealth?.instanceId &&
         currentHealth.instanceId === registry.instanceId));
+  if (pidAlive(registry.pid) && !verified) {
+    throw new Error(
+      "Persistent bridge PID is live but its instance could not be verified; registry was preserved.",
+    );
+  }
   if (verified && pidAlive(registry.pid)) {
     try {
       process.kill(registry.pid, "SIGTERM");
@@ -147,8 +173,26 @@ async function stopRegistry(paths, registry, { ownedPid } = {}) {
     for (let attempt = 0; attempt < 50 && pidAlive(registry.pid); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    if (pidAlive(registry.pid)) {
+      try {
+        process.kill(registry.pid, "SIGKILL");
+      } catch {}
+      for (
+        let attempt = 0;
+        attempt < 20 && pidAlive(registry.pid);
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    if (pidAlive(registry.pid)) {
+      throw new Error(
+        "Persistent bridge did not stop; registry was preserved for retry.",
+      );
+    }
   }
   removeRegistry(paths);
+  return true;
 }
 
 async function acquireLock(paths) {
@@ -249,9 +293,9 @@ export async function stopDaemon(env = process.env) {
   const release = await acquireLock(paths);
   try {
     const registry = readDaemonRegistry(paths);
-    await stopRegistry(paths, registry);
+    const stopped = await stopRegistry(paths, registry);
     fs.rmSync(paths.log, { force: true });
-    return Boolean(registry);
+    return stopped;
   } finally {
     release();
   }

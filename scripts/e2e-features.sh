@@ -9,6 +9,7 @@ for attempt in 1 2 3; do
   fi
   if [[ "$attempt" != "3" ]]; then
     echo "Feature E2E attempt $attempt failed; retrying with fresh fixtures." >&2
+    sleep $((attempt * 5))
   fi
 done
 

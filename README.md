@@ -99,6 +99,10 @@ If permitted by your account and organization policy, the following GPT-5.6 mode
 
 All three models are configured with a 1,050,000-token context as listed in the Copilot catalog.
 
+The guaranteed live-test boundary is `claude-opus-5`, `claude-sonnet-5`,
+`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.
+Other catalog models are not guaranteed until added to the live test matrix.
+
 ### 5. Optional: Add `claude` to PATH
 
 To run from any directory, add the repository's `bin` directory to your PATH from the repository root. Example for Zsh:
@@ -236,7 +240,7 @@ The table below shows the current status for the Direct SDK path.
 | SDK resume | Resume/fork and history-shrink reconciliation implemented; in-flight crash recovery remains best-effort |
 | Token counting | Actual post-call SDK usage; `/count_tokens` preflight remains an explicit estimate |
 | Sampling and generation controls | Unsupported native controls are diagnosed; `tool_choice` has bounded filtering/prompt emulation |
-| MCP tool search | Copilot SDK-side tool search enabled; native Claude `tool_reference` round-trip remains provider-dependent |
+| MCP tool search | Native search unsupported; safe full-schema fallback verified with 35 MCP tools |
 | `--json-schema` structured output | Claude Code validator/retry verified through the bridge by live E2E |
 | Remote Control | Disabled by Claude Code when a custom `ANTHROPIC_BASE_URL` is set |
 | `--background`/agent view | Supported through the private persistent bridge daemon |

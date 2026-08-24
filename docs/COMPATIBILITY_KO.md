@@ -40,7 +40,7 @@
   replay, state split 진단, state LRU/TTL cleanup
 - 이 bridge를 통과하는 Claude Code native structured-output validator/retry의
   실제 model 검증
-- Copilot SDK-side tool search와 local MCP full-schema fallback
+- Local MCP의 안전한 full-schema fallback; native tool search는 문서화된 호환성 공백
 - `CopilotSession.abort()`까지 전달되는 request cancellation
 - Edit, Write, NotebookEdit, Bash, permission, hook, skill, plugin, MCP,
   multimodal input, worktree, session, stream, cron, subagent 실제 E2E

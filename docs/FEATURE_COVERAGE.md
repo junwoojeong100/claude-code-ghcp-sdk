@@ -22,19 +22,41 @@ Status scores:
 Current normalized counts:
 
 - Implementable/local groups: **34**
-- E2E groups: **23**
+- E2E groups: **22**
 - Implemented unit/manual groups: **5**
-- Partial groups: **6**
+- Partial groups: **7**
 - Structural groups: **11**
 
 Calculations:
 
-- **Implementable-scope coverage:** `(23 + 5 + 6 × 0.5) / 34 = 91.2%`
-- **Reproducible live E2E coverage:** `23 / 34 = 67.6%`
-- **Whole-product equivalence:** `(23 + 5 + 6 × 0.5) / (34 + 11) = 68.9%`
+- **Implementable-scope coverage:** `(22 + 5 + 7 × 0.5) / 34 = 89.7%`
+- **Reproducible live E2E coverage:** `22 / 34 = 64.7%`
+- **Whole-product equivalence:** `(22 + 5 + 7 × 0.5) / (34 + 11) = 67.8%`
 
 These percentages are versioned estimates for Claude Code 2.1.241 and the pinned
 Copilot SDK. They must be recalculated when either product changes.
+
+## Tested Model Boundary
+
+The repository's live validation covers these six model IDs:
+
+- `claude-opus-5`
+- `claude-sonnet-5`
+- `claude-haiku-4.5`
+- `gpt-5.6-sol`
+- `gpt-5.6-terra`
+- `gpt-5.6-luna`
+
+All six run the base text/Read E2E. Core Agent→Read behavior has also been
+validated across all six during compatibility testing. The broad feature suite
+(Edit, Write, NotebookEdit, Bash, hooks, skills, plugins, MCP, plan, image,
+PDF, cron, and structured output) uses `claude-haiku-4.5` as the default
+representative model, with `claude-sonnet-5` as the default image/PDF model.
+
+Other models may appear in the GitHub Copilot catalog and may work through the
+generic protocol adapter, but this project does **not** guarantee compatibility
+for model IDs outside the six listed above until they are added to the live
+test matrix.
 
 ## Implementable and Local Feature Groups
 
@@ -56,7 +78,7 @@ Copilot SDK. They must be recalculated when either product changes.
 | 14 | Skills and slash commands | E2E | Project skill fixture |
 | 15 | Plugins | E2E | Local plugin skill fixture |
 | 16 | Local MCP tools | E2E | Deterministic stdio MCP server fixture |
-| 17 | MCP tool search | E2E | 35-tool local MCP fixture crosses the SDK defer threshold; native Claude `tool_reference` blocks remain provider-specific |
+| 17 | MCP tool search | Partial | Native deferral stalls with declaration-only tools; 35-tool full-schema fallback is E2E-verified |
 | 18 | CLAUDE.md, memory, and rules | Unit/manual | Loaded by Claude Code; no dedicated live fixture yet |
 | 19 | Built-in and custom subagents | E2E | Six-model Agent→Read and feature E2E |
 | 20 | Dynamic workflows and local agent teams | Partial | Core subagent primitives pass; broad fan-out/team messaging E2E absent |
@@ -64,8 +86,8 @@ Copilot SDK. They must be recalculated when either product changes.
 | 22 | In-session cron and goal loops | E2E | Cron create/list/delete E2E; goal loop shares local scheduler |
 | 23 | Worktrees | E2E | Isolated temporary Git repository E2E |
 | 24 | Output styles | Partial | Local system-prompt feature; no dedicated E2E |
-| 25 | Images | E2E | Real PNG Read/vision path with bounded retry |
-| 26 | PDF/document attachments | E2E | Valid PDF fixture through the live Read/document path |
+| 25 | Images | E2E | Real PNG initial image content block |
+| 26 | PDF/document attachments | E2E | Valid PDF initial document content block; binary tool-result continuation remains partial |
 | 27 | Session resume and fork | E2E | `test:e2e:session` |
 | 28 | Checkpoint, rewind, compact | Partial | History shrink reconciliation and cache invalidation implemented; native boundary mapping is not exact |
 | 29 | Structured output | E2E | Claude Code JSON Schema validator/retry verified live |

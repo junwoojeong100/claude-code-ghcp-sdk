@@ -21,19 +21,40 @@
 현재 정규화된 개수:
 
 - 구현 가능/local 그룹: **34**
-- E2E 그룹: **23**
+- E2E 그룹: **22**
 - 구현 완료 unit/manual 그룹: **5**
-- partial 그룹: **6**
+- partial 그룹: **7**
 - structural 그룹: **11**
 
 계산:
 
-- **구현 가능 범위 커버리지:** `(23 + 5 + 6 × 0.5) / 34 = 91.2%`
-- **재현 가능한 live E2E 커버리지:** `23 / 34 = 67.6%`
-- **전체 제품 동등성:** `(23 + 5 + 6 × 0.5) / (34 + 11) = 68.9%`
+- **구현 가능 범위 커버리지:** `(22 + 5 + 7 × 0.5) / 34 = 89.7%`
+- **재현 가능한 live E2E 커버리지:** `22 / 34 = 64.7%`
+- **전체 제품 동등성:** `(22 + 5 + 7 × 0.5) / (34 + 11) = 67.8%`
 
 이 비율은 Claude Code 2.1.241과 현재 고정 Copilot SDK 기준의 versioned
 estimate입니다. 어느 쪽이든 변경되면 다시 계산해야 합니다.
+
+## 검증 모델 경계
+
+저장소의 live 검증은 다음 6개 model ID를 대상으로 합니다.
+
+- `claude-opus-5`
+- `claude-sonnet-5`
+- `claude-haiku-4.5`
+- `gpt-5.6-sol`
+- `gpt-5.6-terra`
+- `gpt-5.6-luna`
+
+6개 모델 모두 기본 text/Read E2E를 실행합니다. 핵심 Agent→Read 동작도 호환성
+검증 과정에서 6개 모델 전체로 확인했습니다. 확장 feature suite(Edit, Write,
+NotebookEdit, Bash, hook, skill, plugin, MCP, plan, image, PDF, cron,
+structured output)는 `claude-haiku-4.5`를 기본 대표 모델로 사용하고 image/PDF는
+`claude-sonnet-5`를 기본 모델로 사용합니다.
+
+GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapter를 통해
+동작할 수는 있지만, 위 6개 이외 모델은 live test matrix에 추가되기 전까지 이
+프로젝트가 호환성을 **보증하지 않습니다**.
 
 ## 구현 가능·local 기능 그룹
 
@@ -55,7 +76,7 @@ estimate입니다. 어느 쪽이든 변경되면 다시 계산해야 합니다.
 | 14 | Skills와 slash command | E2E | Project skill fixture |
 | 15 | Plugins | E2E | Local plugin skill fixture |
 | 16 | Local MCP tool | E2E | Deterministic stdio MCP server |
-| 17 | MCP tool search | E2E | 35-tool local MCP fixture로 SDK defer threshold 검증; native Claude `tool_reference` block은 provider 의존 |
+| 17 | MCP tool search | Partial | Declaration-only tool에서 native deferral이 stall해 35-tool full-schema fallback을 E2E 검증 |
 | 18 | CLAUDE.md, memory, rules | Unit/manual | Claude Code가 load; 전용 live fixture는 없음 |
 | 19 | Built-in/custom subagent | E2E | 6모델 Agent→Read와 feature E2E |
 | 20 | Dynamic workflow와 local agent team | Partial | 핵심 subagent primitive는 통과, 대규모 fan-out/team messaging E2E 없음 |
@@ -63,8 +84,8 @@ estimate입니다. 어느 쪽이든 변경되면 다시 계산해야 합니다.
 | 22 | In-session cron과 goal loop | E2E | Cron create/list/delete E2E, goal은 같은 local scheduler |
 | 23 | Worktree | E2E | 격리된 임시 Git repository E2E |
 | 24 | Output style | Partial | Local system-prompt 기능, 전용 E2E 없음 |
-| 25 | Images | E2E | 실제 PNG Read/vision 경로, bounded retry |
-| 26 | PDF/document attachment | E2E | 유효 PDF fixture를 live Read/document 경로로 검증 |
+| 25 | Images | E2E | 실제 PNG initial image content block |
+| 26 | PDF/document attachment | E2E | 유효 PDF initial document content block; binary tool-result continuation은 partial |
 | 27 | Session resume와 fork | E2E | `test:e2e:session` |
 | 28 | Checkpoint, rewind, compact | Partial | History 축소 reconciliation과 cache invalidation 구현, native boundary mapping은 부정확 |
 | 29 | Structured output | E2E | Claude Code JSON Schema validator/retry live 검증 |

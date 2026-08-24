@@ -112,6 +112,10 @@ npx copilot login
 
 세 모델은 Copilot catalog 기준 1,050,000 토큰 컨텍스트로 설정됩니다.
 
+Live test로 보증하는 범위는 `claude-opus-5`, `claude-sonnet-5`,
+`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+6종입니다. 다른 catalog 모델은 live test matrix에 추가되기 전까지 보증하지 않습니다.
+
 ### 5. 선택: `claude` 명령을 PATH에 추가
 
 어느 디렉터리에서나 실행하려면 저장소 루트에서 `bin`을 PATH에 추가합니다. Zsh 예시:
@@ -269,7 +273,7 @@ selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트
 | SDK resume | Resume/fork와 history 축소 reconciliation 구현; in-flight crash recovery는 best-effort |
 | Token counting | Call 이후 실제 SDK usage; `/count_tokens` preflight는 명시적 추정 |
 | Sampling과 생성 제어 | 미지원 native control은 진단으로 노출; `tool_choice`는 bounded filtering/prompt emulation |
-| MCP tool search | Copilot SDK-side tool search 활성; native Claude `tool_reference` round-trip은 provider 의존 |
+| MCP tool search | Native search 미지원; 35개 MCP tool의 안전한 full-schema fallback 검증 |
 | `--json-schema` structured output | Claude Code validator/retry를 bridge 경유 live E2E로 확인 |
 | Remote Control | Custom `ANTHROPIC_BASE_URL`에서 Claude Code가 비활성화 |
 | `--background`/agent view | Private persistent bridge daemon으로 지원 |

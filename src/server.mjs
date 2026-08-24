@@ -44,6 +44,10 @@ const maxBodyBytes = readPositiveIntegerEnv(
   "MAX_BODY_BYTES",
   25 * 1024 * 1024,
 );
+const cleanupTimeoutMs = readPositiveIntegerEnv(
+  "CLEANUP_TIMEOUT_MS",
+  5_000,
+);
 const maxReplayBytes = readPositiveIntegerEnv(
   "MAX_REPLAY_BYTES",
   256 * 1024,
@@ -76,6 +80,7 @@ const manager = new SessionManager({
   baseDirectory: copilotHome,
   preferredModel,
   logLevel,
+  cleanupTimeoutMs,
   maxReplayBytes,
   maxStates,
   maxToolResults,
@@ -135,7 +140,7 @@ const server = http.createServer(async (req, res) => {
       capabilities: {
         actualUsageAfterCall: true,
         backgroundBridge: true,
-        mcpToolSearch: "copilot-sdk",
+        mcpToolSearch: "full-schema-fallback",
         structuredOutput: "claude-code-validator",
         tokenCounting: "estimated-preflight",
         unsupportedNativeControls: [

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { CopilotClient, defineTool } from "@github/copilot-sdk";
 
@@ -33,6 +33,7 @@ const DEFAULT_STATE_IDLE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_PENDING_TOOL_WAIT_MS = 10_000;
 const DEFAULT_MAX_TOOL_RESULTS = 32;
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -65,7 +66,7 @@ function createSdkTools(tools = []) {
       description: tool.description,
       parameters: tool.input_schema || { type: "object", properties: {} },
       skipPermission: true,
-      defer: "auto",
+      defer: "never",
       overridesBuiltInTool: true,
     }),
   );
@@ -76,9 +77,24 @@ function firstHeaderValue(headers, name) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function createStateIdentity({ headers, model, systemMessage, tools }) {
+function claudeSessionFamily(headers, anonymousSessionId) {
+  return [
+    firstHeaderValue(headers, "x-claude-code-session-id") ||
+      `anonymous:${anonymousSessionId}`,
+    firstHeaderValue(headers, "x-claude-code-agent-id") || "root",
+  ].join(":");
+}
+
+function createStateIdentity({
+  anonymousSessionId,
+  headers,
+  model,
+  systemMessage,
+  tools,
+}) {
   const claudeSessionId =
-    firstHeaderValue(headers, "x-claude-code-session-id") || "default";
+    firstHeaderValue(headers, "x-claude-code-session-id") ||
+    `anonymous:${anonymousSessionId}`;
   const claudeAgentId =
     firstHeaderValue(headers, "x-claude-code-agent-id") || "root";
   const parts = {
@@ -105,6 +121,20 @@ function createAbortError() {
   const error = new Error("The Claude Code request was aborted.");
   error.name = "AbortError";
   return error;
+}
+
+async function bestEffortWithin(operation, timeoutMs) {
+  let timer;
+  try {
+    await Promise.race([
+      Promise.resolve().then(operation).catch(() => {}),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function aggregateUsage(events) {
@@ -182,6 +212,7 @@ export class SessionManager {
     maxToolResults = DEFAULT_MAX_TOOL_RESULTS,
     onDiagnostic,
     abortTimeoutMs = DEFAULT_ABORT_TIMEOUT_MS,
+    cleanupTimeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
     pendingToolWaitMs = DEFAULT_PENDING_TOOL_WAIT_MS,
     stateIdleTtlMs = DEFAULT_STATE_IDLE_TTL_MS,
     client,
@@ -199,12 +230,17 @@ export class SessionManager {
     this.maxStates = maxStates;
     this.maxToolResults = maxToolResults;
     this.abortTimeoutMs = abortTimeoutMs;
+    this.cleanupTimeoutMs = cleanupTimeoutMs;
     this.onDiagnostic = onDiagnostic || (() => {});
     this.pendingToolWaitMs = pendingToolWaitMs;
     this.stateIdleTtlMs = stateIdleTtlMs;
     this.models = [];
+    this.anonymousSessionId = randomUUID();
+    this.familyQueues = new Map();
     this.knownSessionIds = new Set();
+    this.sessionGenerations = new Map();
     this.stateCreations = new Map();
+    this.stateEvictions = new Map();
     this.states = new Map();
   }
 
@@ -224,6 +260,7 @@ export class SessionManager {
     for (const [key, state] of this.states) {
       await this.#evictState(key, state, { abort: true });
     }
+    await Promise.allSettled(this.stateEvictions.values());
     await this.client.stop();
   }
 
@@ -241,6 +278,28 @@ export class SessionManager {
   }
 
   async execute(body, headers, { onReady, onEvent, signal } = {}) {
+    const familyKey = claudeSessionFamily(
+      headers,
+      this.anonymousSessionId,
+    );
+    const previous = this.familyQueues.get(familyKey) || Promise.resolve();
+    const run = previous.then(() =>
+      this.#executeForFamily(body, headers, {
+        onReady,
+        onEvent,
+        signal,
+      }),
+    );
+    const tracked = run.catch(() => {}).finally(() => {
+      if (this.familyQueues.get(familyKey) === tracked) {
+        this.familyQueues.delete(familyKey);
+      }
+    });
+    this.familyQueues.set(familyKey, tracked);
+    return run;
+  }
+
+  async #executeForFamily(body, headers, { onReady, onEvent, signal }) {
     if (signal?.aborted) throw createAbortError();
     await this.#evictExpiredStates();
     body = applyRequestPolicy(body, this.onDiagnostic);
@@ -282,23 +341,34 @@ export class SessionManager {
     state.historySnapshot = currentHistory;
     state.lastUsedAt = Date.now();
     onReady?.({ model: state.model });
+    if (state.firstTurnReserved) {
+      state.firstTurnReserved = false;
+    } else {
+      state.activeTurns += 1;
+    }
     const run = state.queue.then(() =>
       this.#executeLocked(state, body, reasoningEffort, onEvent, signal),
     );
     // A rejected turn must not prevent later requests from using this session.
-    state.activeTurns += 1;
-    state.queue = run
-      .catch(() => {})
-      .finally(() => {
-        state.activeTurns -= 1;
-        state.lastUsedAt = Date.now();
-      });
-    return run;
+    state.queue = run.catch(() => {});
+    try {
+      return await run;
+    } finally {
+      state.activeTurns -= 1;
+      state.lastUsedAt = Date.now();
+      if (state.invalidated) {
+        await this.#evictState(state.identity.key, state, {
+          deletePersisted: true,
+        });
+      }
+      await this.#enforceStateLimit();
+    }
   }
 
   async #getOrCreateState(body, headers, { model, reasoningEffort }) {
     const systemMessage = extractSystem(body.system);
     const identity = createStateIdentity({
+      anonymousSessionId: this.anonymousSessionId,
       headers,
       model,
       systemMessage,
@@ -306,6 +376,8 @@ export class SessionManager {
     });
     const { key } = identity;
 
+    const eviction = this.stateEvictions.get(key);
+    if (eviction) await eviction;
     const existing = this.states.get(key);
     if (existing) return existing;
     const inFlight = this.stateCreations.get(key);
@@ -327,12 +399,15 @@ export class SessionManager {
 
     const creation = (async () => {
     const tools = createSdkTools(body.tools);
-    const sessionId = `claude-ghcp-${hash(key).slice(0, 32)}`;
+    const generation = this.sessionGenerations.get(key) || 0;
+    const sessionId = `claude-ghcp-${hash(
+      `${this.anonymousSessionId}:${key}:${generation}`,
+    ).slice(0, 32)}`;
     const sessionOptions = {
       model,
       availableTools: tools.map((tool) => `custom:${tool.name}`),
       tools,
-      toolSearch: { enabled: true, deferThreshold: 30 },
+      toolSearch: { enabled: false },
       streaming: true,
       infiniteSessions: { enabled: false },
       systemMessage: {
@@ -366,11 +441,13 @@ export class SessionManager {
 
     const state = {
       model,
-      activeTurns: 0,
+      activeTurns: 1,
       reasoningEffort,
       session,
       sessionId,
       fresh: !resumed,
+      firstTurnReserved: true,
+      generation,
       identity,
       historySnapshot: null,
       lastUsedAt: Date.now(),
@@ -378,6 +455,7 @@ export class SessionManager {
       pendingByToolCallId: new Map(),
       pendingRequestWaiters: new Map(),
       completedToolCalls: new Map(),
+      invalidated: false,
     };
 
     session.on("external_tool.requested", (event) => {
@@ -618,22 +696,33 @@ export class SessionManager {
       let triggerFinished = false;
       let deferredCompletion = null;
       let aborting = false;
-      const onAbort = () => {
+      const terminate = (error) => {
         if (settled || aborting) return;
         aborting = true;
         let abortTimer;
         const abortDeadline = new Promise((resolve) => {
-          abortTimer = setTimeout(resolve, this.abortTimeoutMs);
+          abortTimer = setTimeout(
+            () => resolve({ acknowledged: false }),
+            this.abortTimeoutMs,
+          );
         });
         void Promise.race([
-          abortSession(state.session).catch(() => {}),
+          abortSession(state.session)
+            .then(() => ({ acknowledged: true }))
+            .catch(() => ({ acknowledged: false })),
           abortDeadline,
         ])
           .finally(() => clearTimeout(abortTimer))
-          .then(() => settle(createAbortError()));
+          .then(({ acknowledged }) => {
+            if (!acknowledged) state.invalidated = true;
+            settle(error);
+          });
       };
+      const onAbort = () => terminate(createAbortError());
       const timeout = setTimeout(() => {
-        finish(new Error("Timed out waiting for the GitHub Copilot model turn."));
+        terminate(
+          new Error("Timed out waiting for the GitHub Copilot model turn."),
+        );
       }, this.turnTimeoutMs);
 
       const settle = (error, message) => {
@@ -854,18 +943,52 @@ export class SessionManager {
     state,
     { abort = false, deletePersisted = false } = {},
   ) {
-    for (const waiters of state.pendingRequestWaiters.values()) {
-      for (const waiter of waiters) {
-        waiter.reject(new Error("Copilot session state was evicted."));
+    const existingEviction = this.stateEvictions.get(key);
+    if (existingEviction) return existingEviction;
+    if (this.states.get(key) !== state) return;
+
+    this.states.delete(key);
+    if (deletePersisted) {
+      this.sessionGenerations.set(
+        key,
+        Math.max(
+          this.sessionGenerations.get(key) || 0,
+          state.generation + 1,
+        ),
+      );
+    }
+    const eviction = (async () => {
+      for (const waiters of state.pendingRequestWaiters.values()) {
+        for (const waiter of waiters) {
+          waiter.reject(new Error("Copilot session state was evicted."));
+        }
+      }
+      state.pendingRequestWaiters.clear();
+      if (abort) {
+        await bestEffortWithin(
+          () => abortSession(state.session),
+          this.cleanupTimeoutMs,
+        );
+      }
+      await bestEffortWithin(
+        () => disconnectSession(state.session),
+        this.cleanupTimeoutMs,
+      );
+      if (deletePersisted) {
+        await bestEffortWithin(
+          () => deleteClientSession(this.client, state.sessionId),
+          this.cleanupTimeoutMs,
+        );
+        this.knownSessionIds.delete(state.sessionId);
+      }
+    })();
+    this.stateEvictions.set(key, eviction);
+    try {
+      await eviction;
+    } finally {
+      if (this.stateEvictions.get(key) === eviction) {
+        this.stateEvictions.delete(key);
       }
     }
-    state.pendingRequestWaiters.clear();
-    if (abort) await abortSession(state.session).catch(() => {});
-    await disconnectSession(state.session).catch(() => {});
-    if (deletePersisted) {
-      await deleteClientSession(this.client, state.sessionId).catch(() => {});
-      this.knownSessionIds.delete(state.sessionId);
-    }
-    this.states.delete(key);
   }
 }

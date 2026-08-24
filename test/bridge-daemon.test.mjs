@@ -79,8 +79,12 @@ test("does not terminate an unverified process from a stale registry", async () 
       port: 9,
       token: "test-only",
     });
-    assert.equal(await stopDaemon(env), true);
+    await assert.rejects(
+      stopDaemon(env),
+      /instance could not be verified/,
+    );
     assert.doesNotThrow(() => process.kill(child.pid, 0));
+    assert.notEqual(readDaemonRegistry(paths), null);
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => child.once("close", resolve));
