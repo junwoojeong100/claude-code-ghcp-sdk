@@ -270,7 +270,7 @@ selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트
 | Reasoning effort, Ultracode `xhigh` routing | 단위 테스트와 로컬 프로토콜 확인 |
 | `Edit`, `Write`, `NotebookEdit`, `Bash`, hooks, plugins, skills, local MCP | Feature E2E 확인 |
 | Image/document 변환 | Image와 유효 PDF live E2E 확인 |
-| Root/subagent 세션 분리 | Unit test와 6모델 Agent→`Read` E2E 확인 |
+| Root/subagent 세션 분리 | Unit test와 7모델 Agent→`Read` E2E 확인 |
 | SDK resume | Resume/fork와 history 축소 reconciliation 구현; in-flight crash recovery는 best-effort |
 | Token counting | Call 이후 실제 SDK usage; `/count_tokens` preflight는 명시적 추정 |
 | Sampling과 생성 제어 | 미지원 native control은 진단으로 노출; `tool_choice`는 bounded filtering/prompt emulation |

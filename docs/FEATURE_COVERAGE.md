@@ -55,6 +55,10 @@ PDF, cron, and structured output) uses `claude-haiku-4.5` as the default
 representative model, with `claude-sonnet-5` as the default image/PDF model.
 The 35-tool MCP fallback also uses `claude-sonnet-5` as its default
 representative model to reduce provider-selection variance.
+Those representative defaults describe a standalone feature-suite run. The
+[exhaustive matrix](EXHAUSTIVE_TESTING_KO.md) sets the primary, multimodal, and
+MCP model to each selected model in turn; all seven passed the same-model
+feature, MCP, image, and PDF assertions on 2026-08-25.
 
 Other models may appear in the GitHub Copilot catalog and may work through the
 generic protocol adapter, but this project does **not** guarantee compatibility
@@ -69,7 +73,7 @@ from the guaranteed primary matrix.
 | 2 | Print/headless execution | E2E | Standard and feature E2E |
 | 3 | stream-json input/output and replay | E2E | `npm run test:e2e:stream` |
 | 4 | Text Messages API and SSE | E2E | Standard E2E and protocol tests |
-| 5 | Model discovery, aliases, strict selection | E2E | Six-model E2E; explicit unknown models fail |
+| 5 | Model discovery, aliases, strict selection | E2E | Seven-model E2E; explicit unknown models fail |
 | 6 | Reasoning effort and Ultracode routing | Unit/manual | Model capability tests; no signed thinking |
 | 7 | Read, Glob, Grep-style exploration | E2E | Read/Glob live E2E; Grep shares the tool path |
 | 8 | Edit and Write | E2E | Feature E2E with file assertions |
@@ -80,10 +84,10 @@ from the guaranteed primary matrix.
 | 13 | Hooks | E2E | PostToolUse hook fixture |
 | 14 | Skills and slash commands | E2E | Project skill fixture |
 | 15 | Plugins | E2E | Local plugin skill fixture |
-| 16 | Local MCP tools | E2E | Deterministic stdio MCP server fixture |
-| 17 | MCP tool search | Partial | Native deferral stalls with declaration-only tools; 35-tool full-schema fallback is E2E-verified |
+| 16 | Local MCP tools | E2E | Deterministic stdio MCP fixture and seven-model same-model exhaustive matrix |
+| 17 | MCP tool search | Partial | Native deferral stalls with declaration-only tools; the 35-tool fallback passed the seven-model same-model matrix |
 | 18 | CLAUDE.md, memory, and rules | Unit/manual | Loaded by Claude Code; no dedicated live fixture yet |
-| 19 | Built-in and custom subagents | E2E | Six-model Agent→Read and feature E2E |
+| 19 | Built-in and custom subagents | E2E | Seven-model Agent→Read and feature E2E |
 | 20 | Dynamic workflows and local agent teams | Partial | Core subagent primitives pass; broad fan-out/team messaging E2E absent |
 | 21 | Background agents and agent view | E2E | Persistent bridge daemon and `test:e2e:background`; Claude Code's own transient daemon/workers may persist for re-adoption |
 | 22 | In-session cron and goal loops | E2E | Cron create/list/delete E2E; goal loop shares local scheduler |
