@@ -237,7 +237,7 @@ The table below shows the current status for the Direct SDK path.
 | Reasoning effort, Ultracode `xhigh` routing | Verified by unit tests and local protocol checks |
 | `Edit`, `Write`, `NotebookEdit`, `Bash`, hooks, plugins, skills, local MCP | Verified by feature E2E |
 | Image/document translation | Image and valid PDF verified by live E2E |
-| Root/subagent session isolation | Verified by unit tests and six-model Agent→`Read` E2E |
+| Root/subagent session isolation | Verified by unit tests and seven-model Agent→`Read` E2E |
 | SDK resume | Resume/fork and history-shrink reconciliation implemented; in-flight crash recovery remains best-effort |
 | Token counting | Actual post-call SDK usage; `/count_tokens` preflight remains an explicit estimate |
 | Sampling and generation controls | Unsupported native controls are diagnosed; `tool_choice` has bounded filtering/prompt emulation |

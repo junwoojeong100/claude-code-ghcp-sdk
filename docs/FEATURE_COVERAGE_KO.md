@@ -54,6 +54,10 @@ structured output)는 `claude-haiku-4.5`를 기본 대표 모델로 사용하고
 `claude-sonnet-5`를 기본 모델로 사용합니다.
 35-tool MCP fallback도 provider 선택 편차를 줄이기 위해 `claude-sonnet-5`를
 기본 대표 모델로 사용합니다.
+이 대표 모델은 단독 feature suite 실행의 기본값을 설명합니다.
+[전수검사 절차](EXHAUSTIVE_TESTING_KO.md)는 primary, multimodal, MCP model을
+선택한 각 모델과 동일하게 지정하며, 2026-08-25에 7개 모델 모두 same-model feature,
+MCP, image, PDF assertion을 통과했습니다.
 
 GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapter를 통해
 동작할 수는 있지만, 위 7개 이외 모델은 이 프로젝트가 호환성을 **보증하지
@@ -67,7 +71,7 @@ GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapt
 | 2 | Print/headless 실행 | E2E | 기본·feature E2E |
 | 3 | stream-json 입출력과 replay | E2E | `npm run test:e2e:stream` |
 | 4 | Text Messages API와 SSE | E2E | 기본 E2E와 protocol test |
-| 5 | Model discovery, alias, strict selection | E2E | 6모델 E2E, 명시적 unknown model 실패 |
+| 5 | Model discovery, alias, strict selection | E2E | 7모델 E2E, 명시적 unknown model 실패 |
 | 6 | Reasoning effort와 Ultracode routing | Unit/manual | Model capability test, signed thinking은 제외 |
 | 7 | Read, Glob, Grep 계열 탐색 | E2E | Read/Glob live E2E, Grep은 같은 tool 경로 |
 | 8 | Edit와 Write | E2E | File assertion feature E2E |
@@ -78,10 +82,10 @@ GitHub Copilot catalog에 다른 model ID가 표시되고 generic protocol adapt
 | 13 | Hooks | E2E | PostToolUse hook fixture |
 | 14 | Skills와 slash command | E2E | Project skill fixture |
 | 15 | Plugins | E2E | Local plugin skill fixture |
-| 16 | Local MCP tool | E2E | Deterministic stdio MCP server |
-| 17 | MCP tool search | Partial | Declaration-only tool에서 native deferral이 stall해 35-tool full-schema fallback을 E2E 검증 |
+| 16 | Local MCP tool | E2E | Deterministic stdio MCP fixture와 7모델 same-model 전수검사 |
+| 17 | MCP tool search | Partial | Native deferral은 stall하지만 35-tool fallback은 7모델 same-model matrix 통과 |
 | 18 | CLAUDE.md, memory, rules | Unit/manual | Claude Code가 load; 전용 live fixture는 없음 |
-| 19 | Built-in/custom subagent | E2E | 6모델 Agent→Read와 feature E2E |
+| 19 | Built-in/custom subagent | E2E | 7모델 Agent→Read와 feature E2E |
 | 20 | Dynamic workflow와 local agent team | Partial | 핵심 subagent primitive는 통과, 대규모 fan-out/team messaging E2E 없음 |
 | 21 | Background agent와 agent view | E2E | Persistent bridge daemon과 `test:e2e:background`; Claude Code 자체 transient daemon/worker는 재연결을 위해 남을 수 있음 |
 | 22 | In-session cron과 goal loop | E2E | Cron create/list/delete E2E, goal은 같은 local scheduler |
