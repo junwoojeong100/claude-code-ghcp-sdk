@@ -306,6 +306,8 @@ E2E는 실제 GitHub Copilot AI Credits를 사용합니다. 실행 전후
 
 각 명령이 확인하는 정확한 범위는
 [아키텍처 문서의 검증 범위](docs/ARCHITECTURE_KO.md#검증-범위)를 참고합니다.
+주력 7모델 전체를 안전하게 병렬 검증하는 절차는
+[7모델 전수 E2E 빠른 실행 가이드](docs/EXHAUSTIVE_TESTING_KO.md)를 참고합니다.
 
 ## 지원 상태
 
