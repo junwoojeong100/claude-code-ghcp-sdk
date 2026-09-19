@@ -33,12 +33,12 @@ Calculations:
 - **Reproducible live E2E coverage:** `22 / 34 = 64.7%`
 - **Whole-product equivalence:** `(22 + 5 + 7 × 0.5) / (34 + 11) = 67.8%`
 
-These percentages are versioned estimates for Claude Code 2.1.241 and the pinned
-Copilot SDK. They must be recalculated when either product changes.
+These percentages are historical estimates for Claude Code 2.1.241 and
+Copilot SDK 1.0.10-preview.0. They have not been recalculated for SDK 1.0.14.
 
 ## Tested Model Boundary
 
-The repository's guaranteed primary matrix covers these seven model IDs:
+The current live-validation matrix targets exactly these seven model IDs:
 
 - `claude-opus-5`
 - `claude-sonnet-5`
@@ -46,7 +46,7 @@ The repository's guaranteed primary matrix covers these seven model IDs:
 - `gpt-5.6-sol`
 - `gpt-5.6-terra`
 - `gpt-5.6-luna`
-- `gemini-3.7-flash`
+- `gpt-6-astra`
 
 All seven run the base text/Read E2E. Core Agent→Read behavior has also been
 validated across all seven during compatibility testing. The broad feature suite
@@ -58,12 +58,62 @@ representative model to reduce provider-selection variance.
 Those representative defaults describe a standalone feature-suite run. The
 [exhaustive matrix](EXHAUSTIVE_TESTING_KO.md) sets the primary, multimodal, and
 MCP model to each selected model in turn; all seven passed the same-model
-feature, MCP, image, and PDF assertions on 2026-08-25.
+feature, MCP, image, and PDF assertions in the SDK 1.0.14 verification below.
 
-Other models may appear in the GitHub Copilot catalog and may work through the
-generic protocol adapter, but this project does **not** guarantee compatibility
-for model IDs outside the seven listed above. `gpt-5.5` is explicitly excluded
-from the guaranteed primary matrix.
+Catalog visibility alone is not proof of compatibility. `gpt-5.5` and models
+outside the explicit validation targets have not been verified by this matrix.
+`npm run test:e2e:astra` remains a text/Read smoke test; it is not the full matrix.
+
+### SDK 1.0.14 verification, 2026-09-18–19
+
+Claude Code 2.1.276 and stable SDK 1.0.14 (bundled runtime 1.0.85) were checked
+against the seven models listed above.
+
+- **Final outcome:** all seven suites passed for each model: base text/Read,
+  features, stream, session, worktree, background, and a Korean coding task.
+- **Totals:** 50 top-level cases passed: 49 per-model suites (7 × 7) plus one
+  shared unit-suite run containing 87 tests.
+- **Coding task:** each model passed five visible tests and 49 holdout tests.
+
+Native SDK usage events were audited against requested model IDs. Passing
+cases had no observed SDK model substitution; Claude Code's expected auxiliary
+Haiku calls were retained.
+
+These are final-pass results, not first-attempt perfection. In the first SDK
+1.0.14 run, Luna's PDF step timed out twice at the existing 180-second limit
+and passed on its third allowed attempt. In the second run, Haiku's feature
+suite failed its first attempt at `mcp_tool_search` and passed on retry. No
+timeout or pass threshold was relaxed. The historical external real-task
+runner was unavailable, so the documented isolation/holdout method was
+reproduced with a new task shared identically across all seven models.
+
+The 2026-08-25 matrix used a different target set and environment. Its aggregate
+results are outside the current scope and are not relabeled as verification
+of this seven-model set or included in the totals above.
+
+### Recorded UI rerun, 2026-09-19
+
+The subsequent run used Claude Code 2.1.277 with the same SDK 1.0.14 and
+seven-model target set. The shared unit suite passed 88 tests, and every model
+passed the six integration suites (base, features, stream, session, worktree,
+and background).
+
+The final coding-task outcomes were not uniformly successful: six models
+passed all 49 holdouts, while Haiku 4.5 passed 48/49 in both fresh attempts.
+Its first attempt accepted a null numeric option; the second accepted a numeric
+SKU instead of rejecting it. Sol's first CLI implementation failed stdin
+handling and passed a single fresh retry. The original failures were retained,
+and neither the generated solutions nor the holdouts were edited to force a
+pass. The latest per-case outcome is therefore **49 passed, one failed** across
+50 top-level cases.
+
+Separate interactive Claude Code recordings demonstrated Read/Edit/Bash/Write
+workflows for all seven models; each passed four independent UI-fixture tests
+and an actual SDK model-identity check. The resulting local MP4 is an edited
+browser replay of those genuine terminal captures, not a native desktop screen
+recording or footage of every full-suite case. Recordings and raw logs are not
+tracked in Git. This small two-source-file task and one-subagent workflow do
+not establish large-repository, parallel multi-agent, or crash-recovery quality.
 
 ## Implementable and Local Feature Groups
 
@@ -131,6 +181,7 @@ group.
 | `npm test` | Protocol, launch, session, daemon, request policy, replay, usage |
 | `npm run test:e2e` | Text and Read |
 | `npm run test:e2e:gpt-5.6` | GPT-5.6 text and Read |
+| `npm run test:e2e:astra` | GPT-6 Astra text and Read smoke test |
 | `npm run test:e2e:primary` | Primary seven-model text and Read matrix |
 | `npm run test:e2e:features` | Structured output, Edit, Write, NotebookEdit, Bash, hook, skill, plugin, MCP, plan, subagent, image, cron |
 | `npm run test:e2e:session` | Resume and fork |

@@ -25,6 +25,7 @@
     "models": "node src/list-models.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "bash scripts/e2e.sh",
+    "test:e2e:astra": "GHCP_E2E_MODEL=gpt-6-astra bash scripts/e2e.sh",
     "test:e2e:background": "bash scripts/e2e-background.sh",
     "test:e2e:features": "bash scripts/e2e-features.sh",
     "test:e2e:session": "bash scripts/e2e-session.sh",
@@ -35,7 +36,7 @@
     "test:e2e:litellm": "bash scripts/e2e-litellm.sh"
   },
   "dependencies": {
-    "@github/copilot-sdk": "1.0.10-preview.0",
+    "@github/copilot-sdk": "1.0.14",
     "proper-lockfile": "4.1.2"
   }
 }
