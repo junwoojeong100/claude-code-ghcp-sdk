@@ -53,6 +53,19 @@ test("sets the GPT 5.6 Copilot context window", () => {
   }
 });
 
+test("sets the GPT 6 Astra context window for launch and picker IDs", () => {
+  for (const model of [
+    "gpt-6-astra",
+    "github-copilot/claude-gpt-6-astra[1m]",
+  ]) {
+    const settings = writeSettings(model);
+    assert.equal(settings.env.ANTHROPIC_MODEL, model);
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, model);
+    assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "1178000");
+    assert.equal(settings.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, "1");
+  }
+});
+
 test("does not override context limits for recognized Claude models", () => {
   const settings = writeSettings("claude-sonnet-5");
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);

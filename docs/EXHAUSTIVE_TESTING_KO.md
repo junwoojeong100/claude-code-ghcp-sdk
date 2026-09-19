@@ -13,7 +13,7 @@ AI Credits를 소비합니다.
 - `gpt-5.6-sol`
 - `gpt-5.6-terra`
 - `gpt-5.6-luna`
-- `gemini-3.7-flash`
+- `gpt-6-astra`
 
 ## 병렬화 원칙
 
@@ -68,7 +68,7 @@ MODELS=(
   gpt-5.6-sol
   gpt-5.6-terra
   gpt-5.6-luna
-  gemini-3.7-flash
+  gpt-6-astra
 )
 
 case "$CONCURRENCY" in
@@ -191,6 +191,9 @@ exit "$((FAILURES > 0))"
 - 모델 lane: 7모델 × 5개 command = 35
 - 순차 background: 7모델 × 1개 command = 7
 
+한국어 real-task runner까지 지정하면 모델별 suite는 7개가 됩니다. 이 경우
+7모델 × 7개 suite와 공유 unit suite 1회를 합쳐 top-level case는 50개입니다.
+
 `test:e2e:primary`와 `test:e2e:gpt-5.6`은 각각의 모델 lane에서 실행하는
 `test:e2e`와 겹치므로 위 script에서는 중복 실행하지 않습니다. 모델별
 `test:e2e:features`에는 반드시 같은 모델을 `GHCP_E2E_MODEL`,
@@ -225,10 +228,9 @@ holdout을 모델 종료 후 실행하는 방식을 권장합니다.
 7. 실행 전후 Git working tree와 `~/.claude/settings.json` state가 동일
 8. 최종 `bin/claude-ghcp-status`의 `running=false`
 
-`gpt-5.6-*`와 `gemini-3.7-flash`의 `claude-code:unrecognized_model`은 Claude
-Code가 custom model 이름을 자체 catalog에서 찾지 못했다는 진단입니다. 테스트가
-PASS하고 bridge가 요청한 Copilot backend ID를 선택했다면 기능 실패로 세지 않습니다.
-다만 Gemini의 200k context fallback warning은 장문 context 제한으로 별도 기록합니다.
+`claude-code:unrecognized_model`은 Claude Code가 custom model 이름을 자체
+catalog에서 찾지 못했다는 진단입니다. 테스트가 PASS하고 bridge가 요청한 Copilot
+backend ID를 선택했다면 기능 실패로 세지 않습니다.
 
 ## 시간과 비용
 
@@ -236,22 +238,37 @@ PASS하고 bridge가 요청한 Copilot backend ID를 선택했다면 기능 실�
 순차 실행보다 2~3배 빠르지만 계정 rate limit, 모델 부하와 retry에 따라 달라집니다.
 429 또는 timeout이 반복되면 `GHCP_E2E_CONCURRENCY=2`로 낮춥니다.
 
-2026-08-25에 동시성 3으로 정규 matrix와 모델별 한국어 real-task/holdout을 함께
-실행한 결과는 다음과 같습니다.
+## SDK 1.0.14 검증 결과, 2026-09-18–19
 
-- command: **50**
-- pass/fail: **50/0**
-- 총 시간: **26분 29초**
-- 실행 전후 Git working tree와 Claude settings state: 동일
-- 최종 private GHCP bridge: 종료
-- 남은 테스트 fixture: 없음
+Claude Code 2.1.276과 SDK 1.0.14(내장 runtime 1.0.85)에서 위 7개 모델의
+base, features, stream, session, worktree, background, real-task를 검증했습니다.
+
+- 최종 통과: 모델별 7개 suite 전체
+- 집계: 7모델 × 7개 suite + 공유 unit suite 1회 = **top-level case 50개 통과**
+- 공유 unit suite: **87개 테스트 통과**
+- 모델별 한국어 코딩 과제: **공개 테스트 5개와 holdout 49개 통과**
+
+첫 SDK 1.0.14 실행에서 Luna의 PDF 단계는 기존 180초 제한에서 두 차례 timeout
+후 세 번째 허용된 시도에 통과했습니다. 두 번째 실행에서는 Haiku의 feature suite가
+첫 시도에 `mcp_tool_search`에서 실패한 후 재시도에 통과했습니다. 제한 시간이나
+통과 기준은 완화하지 않았으며, 최종 통과를 첫 시도 전부 성공으로 해석하면 안 됩니다.
+
+이 집계는 Claude Code 2.1.276에서의 실행 기록입니다. 이후 2026-09-19의
+Claude Code 2.1.277 UI 녹화 재검증에서는 단위 테스트 88개와 연동 suite가
+통과했지만 Haiku 실전 코딩 과제에 holdout 실패 1건이 남았습니다.
+최신 집계(49/50)와 재시도 내역은
+[실제 UI 녹화 재검증](FEATURE_COVERAGE_KO.md#실제-ui-녹화-재검증-2026-09-19)에
+별도로 기록했으며, 위 과거 통과 집계와 합산하지 않습니다.
+
+2026-08-25의 집계와 소요 시간은 당시 대상·환경의 기록으로 현재 범위에서 제외합니다.
+그 결과를 현재 7개 모델의 검증 결과로 바꾸어 표기하지 않습니다.
 
 ## 일반 바이브코딩 결론
 
-이 50/0 전수검사는 7개 모델 각각에서 root agent의 subagent 호출과 nested `Read`,
+위 SDK 1.0.14 검증은 7개 모델 각각에서 root agent의 subagent 호출과 nested `Read`,
 local stdio MCP, 35-tool full-schema fallback, background agent와 agent view를
-포함합니다. 따라서 검증한 범위의 일반적인 **코드 조사 → subagent 위임 → local MCP
-조회 → 수정 → 테스트** 흐름에는 차단성 호환성 문제가 발견되지 않았습니다.
+포함합니다. 명시한 재시도 후 검증한 범위의 일반적인 **코드 조사 → subagent 위임 →
+local MCP 조회 → 수정 → 테스트** 흐름을 통과했습니다.
 
 이 결론은 수백 개 이상의 MCP tool, 대규모 agent fan-out/team messaging, Anthropic
 계정 관리형 MCP connector/Channels 또는 process crash 중 in-flight 복구까지

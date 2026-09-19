@@ -23,7 +23,8 @@ const availableIds = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
-  "gemini-3.6-flash",
+  "gpt-6-astra",
+  "example-model-3.6",
   "auto",
   "gpt-5-mini",
 ];
@@ -48,13 +49,35 @@ test("maps GPT 5.6 models to picker-safe Claude gateway IDs", () => {
 });
 
 test("maps every non-Claude Copilot model through a picker-safe ID", () => {
-  for (const copilotModel of ["gpt-5-mini", "gemini-3.6-flash", "auto"]) {
+  for (const copilotModel of ["gpt-5-mini", "example-model-3.6", "auto"]) {
     const pickerModel = `github-copilot/claude-${copilotModel}`;
     assert.equal(pickerModelFor(copilotModel), pickerModel);
     assert.equal(copilotModelForFrontend(pickerModel), copilotModel);
     assert.equal(
       resolveCopilotModel({ requested: pickerModel, availableIds }),
       copilotModel,
+    );
+  }
+});
+
+test("maps GPT 6 Astra launch and picker IDs without losing its context limit", () => {
+  const model = "gpt-6-astra";
+  const pickerModel = "github-copilot/claude-gpt-6-astra";
+  assert.equal(frontendModelFor(model), model);
+  assert.equal(pickerModelFor(model), pickerModel);
+
+  for (const requested of [model, pickerModel, `${pickerModel}[1m]`]) {
+    assert.equal(copilotModelForFrontend(requested), model);
+    assert.equal(resolveCopilotModel({ requested, availableIds }), model);
+    assert.equal(contextWindowTokensFor(requested), 1_178_000);
+    assert.throws(
+      () =>
+        resolveCopilotModel({
+          requested,
+          availableIds: ["claude-sonnet-5"],
+          preferredModel: "claude-sonnet-5",
+        }),
+      ModelUnavailableError,
     );
   }
 });
@@ -126,7 +149,8 @@ test("lists every visible Copilot model once", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gemini-3.6-flash",
+      "gpt-6-astra",
+      "example-model-3.6",
       "auto",
     ],
   );
@@ -201,8 +225,15 @@ test("formats available Copilot adapter models for gateway discovery", () => {
       name: "GPT-5.6 Luna",
       capabilities: extendedContext,
     },
+    {
+      id: "gpt-6-astra",
+      name: "GPT-6 Astra",
+      capabilities: {
+        limits: { max_context_window_tokens: 1_178_000 },
+      },
+    },
     { id: "gpt-5-mini", name: "GPT-5 mini" },
-    { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
+    { id: "example-model-3.6", name: "Example Model 3.6" },
     { id: "auto", name: "Auto" },
     { id: "gpt-5-mini", name: "GPT-5 mini duplicate" },
   ]);
@@ -241,15 +272,20 @@ test("formats available Copilot adapter models for gateway discovery", () => {
         display_name: "GitHub Copilot · GPT-5.6 Luna (gpt-5.6-luna)",
       },
       {
+        id: "github-copilot/claude-gpt-6-astra[1m]",
+        backend_id: "gpt-6-astra",
+        display_name: "GitHub Copilot · GPT-6 Astra (gpt-6-astra)",
+      },
+      {
         id: "github-copilot/claude-gpt-5-mini",
         backend_id: "gpt-5-mini",
         display_name: "GitHub Copilot · GPT-5 mini (gpt-5-mini)",
       },
       {
-        id: "github-copilot/claude-gemini-3.6-flash",
-        backend_id: "gemini-3.6-flash",
+        id: "github-copilot/claude-example-model-3.6",
+        backend_id: "example-model-3.6",
         display_name:
-          "GitHub Copilot · Gemini 3.6 Flash (gemini-3.6-flash)",
+          "GitHub Copilot · Example Model 3.6 (example-model-3.6)",
       },
       {
         id: "github-copilot/claude-auto",
@@ -331,4 +367,21 @@ test("validates reasoning effort against Copilot model capabilities", () => {
     () => resolveReasoningEffort({ requested: "extreme", model }),
     /Supported reasoning efforts: none, low, medium, high, xhigh, max/,
   );
+});
+
+test("respects the reasoning effort levels advertised by the SDK for Astra", () => {
+  const model = {
+    id: "gpt-6-astra",
+    capabilities: {
+      supports: {
+        reasoningEffort: true,
+        reasoning_effort: ["low", "medium", "high", "xhigh", "max"],
+      },
+    },
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+  };
+
+  assert.equal(resolveReasoningEffort({ requested: "xhigh", model }), "xhigh");
+  assert.equal(resolveReasoningEffort({ requested: "max", model }), "xhigh");
+  assert.equal(resolveReasoningEffort({ requested: "none", model }), "low");
 });

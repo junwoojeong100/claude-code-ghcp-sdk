@@ -27,7 +27,7 @@ An Anthropic Messages API bridge that routes Claude Code's model calls to GitHub
 
 **Using GitHub Copilot models from Claude Code is possible, but not by registering the Copilot SDK as a model provider plugin inside Claude Code.** Claude Code sends requests in Anthropic Messages format to `ANTHROPIC_BASE_URL`, while the Copilot SDK communicates with the Copilot CLI server over JSON-RPC. This repository's bridge is therefore required to translate messages, SSE, and tool calls between the two protocols.
 
-Claude Code documents connecting to third-party gateways that implement the supported API format, but Anthropic explicitly states it does not support routing non-Claude models through a gateway. The GitHub Copilot SDK itself is currently GA, but this repository pins `@github/copilot-sdk@1.0.10-preview.0`, which includes the required APIs. This combination is therefore a technically working unofficial integration and is not jointly supported by Anthropic or GitHub. For detailed translation boundaries, see [Architecture](docs/ARCHITECTURE.md#integration-rationale-and-boundaries).
+Claude Code documents connecting to third-party gateways that implement the supported API format, but Anthropic explicitly states it does not support routing non-Claude models through a gateway. This repository pins the stable `@github/copilot-sdk@1.0.14` release. The combination remains a technically working unofficial integration and is not jointly supported by Anthropic or GitHub. For detailed translation boundaries, see [Architecture](docs/ARCHITECTURE.md#integration-rationale-and-boundaries).
 
 ## Direct SDK Quick Start
 
@@ -42,6 +42,7 @@ Claude Code
 
 - macOS or Linux
 - Claude Code's `claude` command
+- GitHub Copilot CLI's `copilot` command for sign-in and launcher checks
 - Node.js `^20.19.0` or `>=22.12.0`
 - Git
 - GitHub Copilot access
@@ -59,11 +60,23 @@ npm install
 
 ### 2. GitHub Copilot Sign-in
 
+If the Copilot CLI is not already installed:
+
 ```bash
-npx copilot login
+npm install -g @github/copilot
+```
+
+```bash
+copilot login
 ```
 
 No separate Anthropic API key is required.
+
+SDK 1.0.14 includes its own platform-specific Copilot runtime (1.0.85); it no
+longer installs the `@github/copilot` CLI package as a dependency. Install the
+Copilot CLI separately if `copilot` is not on PATH. The bridge uses the SDK's
+bundled runtime by default; `COPILOT_CLI_PATH` can explicitly select an existing
+CLI installation. Changing the runtime requires repeating compatibility checks.
 
 ### 3. Verify Environment and Models
 
@@ -89,20 +102,37 @@ Confirm that both commands succeed and that the model you intend to use appears 
   -p "Describe the structure of this repository"
 ```
 
-If permitted by your account and organization policy, the following GPT-5.6 models are also available:
+If permitted by your account and organization policy, GPT-6 Astra and the following GPT-5.6 models are also available:
 
 ```bash
+./bin/claude-ghcp --ghcp-model gpt-6-astra
 ./bin/claude-ghcp --ghcp-model gpt-5.6-sol
 ./bin/claude-ghcp --ghcp-model gpt-5.6-terra
 ./bin/claude-ghcp --ghcp-model gpt-5.6-luna
 ```
 
-All three models are configured with a 1,050,000-token context as listed in the Copilot catalog.
+GPT-6 Astra is configured with a 1,178,000-token context; the three GPT-5.6
+models use 1,050,000 tokens, as listed in the Copilot catalog.
 
-The guaranteed live-test boundary is `claude-opus-5`, `claude-sonnet-5`,
+The model list is discovered dynamically, not limited to a fixed set of 16.
+When available to your account, `/model` includes
+`GitHub Copilot · GPT-6 Astra (gpt-6-astra)`. Restart an existing Claude Code
+session to refresh discovery after new models become available.
+
+The current full-feature validation matrix is exactly `claude-opus-5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
-`gemini-3.7-flash`. These seven are the primary model matrix. `gpt-5.5` and
-other catalog models are not part of the guaranteed matrix.
+`gpt-6-astra`. Earlier SDK 1.0.14 runs with Claude Code 2.1.276 on 2026-09-18–19 passed all seven suites
+per model, including same-model feature checks and a Korean coding task, plus
+the shared 87-test unit suite. These are final-pass results with retries, not
+a first-attempt guarantee. A subsequent 2026-09-19 run with Claude Code 2.1.277
+passed the integration suites but retained one Haiku coding-task failure
+(48/49 holdouts). See the dated results and retry observations in the
+[tested model boundary](docs/FEATURE_COVERAGE.md#tested-model-boundary).
+`gpt-5.5` and other catalog models are not part of that verification.
+GPT-6 Astra has a separate text/Read smoke test (`npm run test:e2e:astra`);
+that command alone does not replace the full-feature matrix. Catalog visibility
+alone does not guarantee tool, image, reasoning, or other feature compatibility
+for every model.
 
 ### 5. Optional: Add `claude` to PATH
 
@@ -262,6 +292,9 @@ npm run test:e2e
 # GPT-5.6 Sol, Terra, Luna E2E
 npm run test:e2e:gpt-5.6
 
+# GPT-6 Astra text + Read smoke test
+npm run test:e2e:astra
+
 # Running local LiteLLM E2E
 npm run test:e2e:litellm
 ```
@@ -272,7 +305,7 @@ For the exact scope each command validates, see the [Validation Scope in the Arc
 
 ## Support Status
 
-This project is a verified working prototype and is not an officially supported integration jointly maintained by GitHub and Anthropic. The Copilot SDK upstream is GA, but the package pinned by this project is a preview release.
+This project is a verified working prototype and is not an officially supported integration jointly maintained by GitHub and Anthropic. The project pins the stable Copilot SDK 1.0.14 release; a stable SDK does not make this bridge an officially supported Claude Code integration.
 
 For implementation scope, security, and production constraints, see the [Architecture document](docs/ARCHITECTURE.md).
 

@@ -51,10 +51,15 @@ Copilot SDK는 HTTP Anthropic API를 제공하지 않고 Copilot CLI server와 J
 
 Claude Code 공식 문서는 지원 API 형식을 구현한 third-party gateway 연결을 허용하지만,
 Anthropic이 gateway를 통한 non-Claude model routing을 지원하지는 않는다고 명시합니다.
-Copilot SDK upstream은 GA이며 Copilot CLI와 같은 runtime을 programmatic하게 노출하지만,
+정식 Copilot SDK는 Copilot runtime을 programmatic하게 노출하지만,
 Claude Code integration을 제공하지는 않습니다. 이 저장소가 pin한
-`@github/copilot-sdk@1.0.10-preview.0`과 전체 조합은 별도의 비공식 compatibility
+`@github/copilot-sdk@1.0.14`와 전체 조합은 별도의 비공식 compatibility
 layer입니다.
+
+SDK 1.0.14는 별도 `@github/copilot` CLI package에 의존하는 대신 플랫폼별
+`@github/copilot-sdk-*` package로 runtime 1.0.85를 포함합니다. `CopilotClient`는
+`COPILOT_CLI_PATH`로 다른 설치본을 명시하지 않으면 이 내장 runtime을 사용합니다.
+따라서 전역 CLI 버전과 bridge 요청을 처리하는 runtime 버전은 다를 수 있습니다.
 
 ## 역할 분리
 
@@ -108,9 +113,10 @@ Claude Code와 Copilot 모델 ID의 version separator 차이를 변환합니다.
 | `gpt-5.6-sol` | `gpt-5.6-sol` |
 | `gpt-5.6-terra` | `gpt-5.6-terra` |
 | `gpt-5.6-luna` | `gpt-5.6-luna` |
+| `gpt-6-astra` | `gpt-6-astra` |
 
 `sonnet`, `opus`, `haiku` alias는 현재 계정에서 허용된 family 모델로 해석합니다.
-GPT-5.6 모델은 full ID를 사용합니다.
+GPT-5.6 모델과 GPT-6 Astra는 full ID를 사용합니다.
 
 ### 모델 discovery와 context
 
@@ -128,8 +134,10 @@ GPT-5.6 모델은 full ID를 사용합니다.
 - Display name에는 정확한 backend 모델 ID를 포함합니다.
 
 Bridge는 picker ID의 prefix와 suffix를 제거해 원래 Copilot 모델 ID를 복원합니다.
-Claude Code가 unknown 모델을 200k context로 제한하지 않도록 catalog의 1,050,000 token
-context도 임시 settings에 전달합니다.
+Astra는 `github-copilot/claude-gpt-6-astra[1m]`으로 표시됩니다. Claude Code가
+unknown 모델을 200k context로 제한하지 않도록 GPT-5.6 Sol/Terra/Luna의
+1,050,000 token과 GPT-6 Astra의 1,178,000 token catalog context를 임시 launch
+settings에 전달합니다.
 
 ### Reasoning effort
 
@@ -215,8 +223,8 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 ## 알려진 제약
 
 - GitHub와 Anthropic이 공동 지원하는 공식 backend integration은 아닙니다.
-- Copilot SDK upstream은 GA이지만 pin된 `@github/copilot-sdk` package는 preview이며,
-  사용 중인 public pending tool-call API도 향후 변경될 수 있습니다.
+- 고정된 Copilot SDK 1.0.14는 정식 릴리스입니다. Bridge는 SDK가 노출한 pending-tool
+  RPC에도 의존하므로 SDK나 runtime을 업데이트할 때 호환성 검증이 필요합니다.
 - Bridge가 해석하는 주요 request field는 model, system text, messages, tools,
   attachments, `output_config.effort`, `tool_choice`와 stream 여부입니다.
   Copilot SDK에 없는 native `max_tokens`, `temperature`, `top_p`, `stop_sequences`
@@ -263,7 +271,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 - Anthropic Messages text, attachment, tool result와 SSE 변환
 - Claude/Copilot model ID와 family alias 변환
-- GPT-5.6 context override와 gateway discovery row
+- GPT-5.6과 GPT-6 Astra context override와 gateway discovery row
 - `ultracode`에서 `xhigh`로의 변환과 model별 unsupported effort 조정
 - SDK session 생성과 `session.setModel()`을 통한 reasoning effort 변경
 - Claude Code root session과 subagent의 SDK session 분리
@@ -280,7 +288,10 @@ E2E 스크립트는 실제 모델을 호출합니다.
   `GHCP_E2E_MODEL`로 model 변경 가능
 - `npm run test:e2e:gpt-5.6`: GPT-5.6 Sol, Terra, Luna 각각의 text response, `Read` tool
   loop와 user settings 파일 존재 여부 및 content hash 불변
-- `npm run test:e2e:primary`: 보증하는 주력 7모델의 text response와 `Read` loop
+- `npm run test:e2e:astra`: GPT-6 Astra text response와 `Read` smoke test
+- `npm run test:e2e:primary`: GPT-6 Astra를 포함한
+  [현재 7모델 검증 대상](FEATURE_COVERAGE_KO.md#검증-모델-경계)의 text response와
+  `Read` loop. 이 명령 하나를 전체 기능 matrix와 동일시하지 않음
 - `npm run test:e2e:litellm`: LiteLLM health, model discovery, token counting, text response,
   Claude Code native `Read` tool loop와 user settings 파일 존재 여부 및 content hash 불변
 - `npm run test:e2e:features`: Structured output, Edit, Write, NotebookEdit, Bash, hook,

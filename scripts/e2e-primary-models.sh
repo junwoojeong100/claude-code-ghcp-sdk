@@ -10,8 +10,7 @@ for model in \
   gpt-5.6-sol \
   gpt-5.6-terra \
   gpt-5.6-luna \
-  gemini-3.7-flash
+  gpt-6-astra
 do
   GHCP_E2E_MODEL="$model" "$ROOT_DIR/scripts/e2e.sh"
 done
-

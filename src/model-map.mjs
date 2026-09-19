@@ -30,12 +30,13 @@ const CLAUDE_CODE_BUILT_IN_MODELS = new Set([
   "claude-sonnet-4.6",
   "claude-haiku-4.5",
 ]);
-const MODEL_CONTEXT_WINDOW_TOKENS = new Map(
-  ["sol", "terra", "luna"].map((variant) => [
+const MODEL_CONTEXT_WINDOW_TOKENS = new Map([
+  ...["sol", "terra", "luna"].map((variant) => [
     `gpt-5.6-${variant}`,
     GPT_56_CONTEXT_WINDOW_TOKENS,
   ]),
-);
+  ["gpt-6-astra", 1_178_000],
+]);
 
 function isAdapterModelId(modelId) {
   return typeof modelId === "string" && modelId.length > 0;

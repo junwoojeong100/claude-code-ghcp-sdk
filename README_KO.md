@@ -35,9 +35,8 @@ server와 JSON-RPC로 통신합니다. 따라서 두 프로토콜 사이에서 m
 변환하는 이 저장소의 bridge가 필요합니다.
 
 Claude Code는 호환 API 형식의 LLM gateway 연결을 문서화하지만, Anthropic은 gateway를
-통한 non-Claude model routing을 지원하지 않는다고 명시합니다. GitHub Copilot SDK
-자체는 현재 GA이지만, 이 저장소는 필요한 API가 포함된
-`@github/copilot-sdk@1.0.10-preview.0`을 고정해 사용합니다. 따라서 이 조합은 기술적으로
+통한 non-Claude model routing을 지원하지 않는다고 명시합니다. 이 저장소는 정식
+`@github/copilot-sdk@1.0.14`를 고정해 사용합니다. 이 조합은 여전히 기술적으로
 동작하는 비공식 integration이며, Anthropic 또는 GitHub의 공동 지원 대상이 아닙니다.
 자세한 변환 경계는 [아키텍처](docs/ARCHITECTURE_KO.md#통합-가능-근거와-경계)를 참고합니다.
 
@@ -54,6 +53,7 @@ Claude Code
 
 - macOS 또는 Linux
 - Claude Code의 `claude` 명령
+- 로그인과 launcher 확인에 사용할 GitHub Copilot CLI의 `copilot` 명령
 - Node.js `^20.19.0` 또는 `>=22.12.0`
 - Git
 - GitHub Copilot 사용 권한
@@ -72,11 +72,23 @@ npm install
 
 ### 2. GitHub Copilot 로그인
 
+Copilot CLI가 아직 설치되지 않았다면 먼저 설치합니다.
+
 ```bash
-npx copilot login
+npm install -g @github/copilot
+```
+
+```bash
+copilot login
 ```
 
 별도의 Anthropic API key는 필요하지 않습니다.
+
+SDK 1.0.14는 플랫폼별 Copilot runtime(1.0.85)을 포함하며, 더 이상
+`@github/copilot` CLI package를 의존성으로 설치하지 않습니다. PATH에 `copilot`이
+없다면 CLI를 별도로 설치해야 합니다. Bridge는 SDK 내장 runtime을 기본 사용하고,
+`COPILOT_CLI_PATH`로 기존 CLI 설치본을 명시적으로 선택할 수 있습니다. Runtime을
+바꾸면 호환성 검증도 다시 수행해야 합니다.
 
 ### 3. 환경과 모델 확인
 
@@ -102,20 +114,37 @@ npx copilot login
   -p "이 저장소의 구조를 설명해줘"
 ```
 
-계정과 조직 정책에서 허용한다면 다음 GPT-5.6 모델도 사용할 수 있습니다.
+계정과 조직 정책에서 허용한다면 GPT-6 Astra와 다음 GPT-5.6 모델도 사용할 수 있습니다.
 
 ```bash
+./bin/claude-ghcp --ghcp-model gpt-6-astra
 ./bin/claude-ghcp --ghcp-model gpt-5.6-sol
 ./bin/claude-ghcp --ghcp-model gpt-5.6-terra
 ./bin/claude-ghcp --ghcp-model gpt-5.6-luna
 ```
 
-세 모델은 Copilot catalog 기준 1,050,000 토큰 컨텍스트로 설정됩니다.
+Copilot catalog 기준으로 GPT-6 Astra는 1,178,000 토큰, GPT-5.6 세 모델은
+1,050,000 토큰 컨텍스트로 설정됩니다.
 
-Live test로 보증하는 범위는 `claude-opus-5`, `claude-sonnet-5`,
+모델 목록은 16개로 고정하지 않고 동적으로 조회합니다. 계정에서 사용할 수 있다면
+`/model`에 `GitHub Copilot · GPT-6 Astra (gpt-6-astra)`가 표시됩니다.
+새 모델이 추가된 후에는 실행 중인 Claude Code 세션을 다시 시작해 목록을 갱신합니다.
+
+현재 전체 기능 검증 대상은 정확히 `claude-opus-5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-`gemini-3.7-flash`의 주력 7종입니다. `gpt-5.5`와 다른 catalog 모델은 보증
-matrix에 포함하지 않습니다.
+`gpt-6-astra`의 7종입니다. 2026-09-18–19의 초기 검증(Claude Code 2.1.276,
+SDK 1.0.14)에서 same-model
+feature와 한국어 코딩 과제를 포함한 모델별 7개 suite 및 공유 unit suite의
+87개 테스트가 통과했습니다. 재시도를 포함한 최종 통과이며 첫 시도 전부 성공을
+뜻하지 않습니다. 이후 2026-09-19의 Claude Code 2.1.277 재검증에서는 연동 suite는
+통과했지만 Haiku 코딩 과제에 실패 1건(holdout 48/49)이 남았습니다. 날짜별 결과와
+재시도 관찰은
+[검증 모델 경계](docs/FEATURE_COVERAGE_KO.md#검증-모델-경계)에 기록했습니다.
+`gpt-5.5`와 다른 catalog 모델은 이 검증에 포함하지 않습니다.
+GPT-6 Astra에는 별도의 text/Read smoke test(`npm run test:e2e:astra`)가
+있으며, 이 명령 하나를 전체 기능 검증과 동일시하지 않습니다. Catalog에
+표시된다는 것만으로 모든 모델의 tool, image, reasoning 등 기능 호환성을 보증하지
+않습니다.
 
 ### 5. 선택: `claude` 명령을 PATH에 추가
 
@@ -297,6 +326,9 @@ npm run test:e2e
 # GPT-5.6 Sol, Terra, Luna E2E
 npm run test:e2e:gpt-5.6
 
+# GPT-6 Astra text + Read smoke test
+npm run test:e2e:astra
+
 # 실행 중인 로컬 LiteLLM E2E
 npm run test:e2e:litellm
 ```
@@ -312,8 +344,8 @@ E2E는 실제 GitHub Copilot AI Credits를 사용합니다. 실행 전후
 ## 지원 상태
 
 이 프로젝트는 검증된 working prototype이며 GitHub와 Anthropic이 공동 지원하는 공식
-integration이 아닙니다. Copilot SDK upstream은 GA이지만 이 프로젝트가 pin한 package는
-preview release입니다.
+integration이 아닙니다. 정식 Copilot SDK 1.0.14를 고정해 사용하지만, SDK의 정식
+릴리스 여부가 이 bridge를 Claude Code의 공식 지원 integration으로 만들지는 않습니다.
 
 구현 범위, 보안, production 제약은 [아키텍처 문서](docs/ARCHITECTURE_KO.md)를 참고합니다.
 

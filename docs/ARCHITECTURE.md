@@ -41,7 +41,13 @@ This integration is therefore an adapter between the following two public contra
 | Bridge → Copilot | Uses `@github/copilot-sdk` sessions, streaming events, and the pending external-tool RPC |
 | Tool execution | Registers Copilot tools as declaration-only and returns actual execution to Claude Code |
 
-Claude Code's official documentation permits connecting to third-party gateways that implement the supported API format, but Anthropic explicitly states it does not support routing non-Claude models through a gateway. The Copilot SDK upstream is GA and programmatically exposes the same runtime as the Copilot CLI, but does not provide a Claude Code integration. The pinned `@github/copilot-sdk@1.0.10-preview.0` and the overall combination form a separate, unofficial compatibility layer.
+Claude Code's official documentation permits connecting to third-party gateways that implement the supported API format, but Anthropic explicitly states it does not support routing non-Claude models through a gateway. The stable Copilot SDK programmatically exposes the Copilot runtime, but does not provide a Claude Code integration. The pinned `@github/copilot-sdk@1.0.14` and the overall combination form a separate, unofficial compatibility layer.
+
+SDK 1.0.14 uses a platform-specific `@github/copilot-sdk-*` package containing
+runtime 1.0.85 rather than depending on the separate `@github/copilot` CLI
+package. `CopilotClient` uses that bundled runtime unless `COPILOT_CLI_PATH`
+explicitly selects another installation. A globally installed CLI version is
+therefore not necessarily the version serving bridge requests.
 
 ## Role Separation
 
@@ -96,8 +102,9 @@ Translates the version-separator difference between Claude Code and Copilot mode
 | `gpt-5.6-sol` | `gpt-5.6-sol` |
 | `gpt-5.6-terra` | `gpt-5.6-terra` |
 | `gpt-5.6-luna` | `gpt-5.6-luna` |
+| `gpt-6-astra` | `gpt-6-astra` |
 
-The `sonnet`, `opus`, and `haiku` aliases resolve to the permitted family model for the current account. GPT-5.6 models use their full ID.
+The `sonnet`, `opus`, and `haiku` aliases resolve to the permitted family model for the current account. GPT-5.6 models and GPT-6 Astra use their full ID.
 
 ### Model Discovery and Context
 
@@ -110,7 +117,7 @@ The launch scripts enable `/v1/models` discovery via `CLAUDE_CODE_ENABLE_GATEWAY
 - Non-native models that declare a context of 1M or more receive a `[1m]` suffix.
 - Display names include the exact backend model ID.
 
-The bridge removes the prefix and suffix from picker IDs to recover the original Copilot model ID. To prevent Claude Code from capping unknown models at 200k context, the catalog's 1,050,000-token context is also written to the temporary settings.
+The bridge removes the prefix and suffix from picker IDs to recover the original Copilot model ID. Astra is advertised as `github-copilot/claude-gpt-6-astra[1m]`. To prevent Claude Code from capping unknown models at 200k context, temporary launch settings include the catalog context for GPT-5.6 Sol/Terra/Luna (1,050,000 tokens) and GPT-6 Astra (1,178,000 tokens).
 
 ### Reasoning Effort
 
@@ -184,7 +191,7 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 ## Known Constraints
 
 - This is not an official backend integration jointly supported by GitHub and Anthropic.
-- The Copilot SDK upstream is GA, but the pinned `@github/copilot-sdk` package is a preview release, and the public pending tool-call API it uses may change in the future.
+- The pinned Copilot SDK 1.0.14 is a stable release. The bridge also relies on SDK-exposed pending-tool RPCs; SDK or runtime upgrades still require compatibility testing.
 - The primary request fields the bridge interprets are model, system text,
   messages, tools, attachments, `output_config.effort`, `tool_choice`, and
   whether streaming is enabled. Native `max_tokens`, `temperature`, `top_p`,
@@ -224,7 +231,7 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 - Anthropic Messages text, attachment, and tool-result translation and SSE conversion
 - Claude/Copilot model ID and family alias translation
-- GPT-5.6 context override and gateway discovery row
+- GPT-5.6 and GPT-6 Astra context overrides and gateway discovery rows
 - `ultracode` → `xhigh` normalization and per-model unsupported-effort adjustment
 - SDK session creation and reasoning-effort changes via `session.setModel()`
 - Claude Code root session and subagent SDK session isolation
@@ -238,8 +245,10 @@ E2E scripts call real models:
 
 - `npm run test:e2e`: Direct SDK text response for the default `claude-haiku-4.5`, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash. The model can be changed with `GHCP_E2E_MODEL`.
 - `npm run test:e2e:gpt-5.6`: Text response, `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash for each of GPT-5.6 Sol, Terra, and Luna.
+- `npm run test:e2e:astra`: GPT-6 Astra text response and `Read` smoke test.
 - `npm run test:e2e:primary`: Text response and `Read` loop for the
-  guaranteed primary seven-model matrix.
+  [current seven-model validation set](FEATURE_COVERAGE.md#tested-model-boundary),
+  including GPT-6 Astra. This command alone is not the full-feature matrix.
 - `npm run test:e2e:litellm`: LiteLLM health check, model discovery, token counting, text response, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash.
 - `npm run test:e2e:features`: Structured output, Edit, Write, NotebookEdit,
   Bash, hooks, skills, plugins, local MCP, plan mode, subagents, image input,
