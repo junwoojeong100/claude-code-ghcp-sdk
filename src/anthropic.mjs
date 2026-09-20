@@ -7,8 +7,21 @@ export function extractText(content) {
     .join("\n");
 }
 
-export function extractSystem(system) {
-  return extractText(system) || "You are a helpful coding assistant.";
+export function extractSystem(system, messages = []) {
+  const context = [];
+  for (const message of messages) {
+    if (message?.role !== "system") continue;
+    // Budget telemetry changes every request; agent/style/permission instructions do not.
+    const text = extractText(message.content)
+      .replace(/<system-reminder>\s*<total_tokens>\d+ tokens left<\/total_tokens>\s*<\/system-reminder>/g, "")
+      .replace(/<total_tokens>\d+ tokens left<\/total_tokens>/g, "")
+      .trim();
+    if (!text) continue;
+    const previous = context.indexOf(text);
+    if (previous >= 0) context.splice(previous, 1);
+    context.push(text);
+  }
+  return [extractText(system) || "You are a helpful coding assistant.", ...context].join("\n\n");
 }
 
 export function extractReasoningEffort(body) {
@@ -52,6 +65,10 @@ function toolResultValue(block) {
   for (const item of Array.isArray(content) ? content : []) {
     if (item?.type === "text" && typeof item.text === "string") {
       textParts.push(item.text);
+      continue;
+    }
+    if (item?.type === "tool_reference" && typeof item.tool_name === "string") {
+      textParts.push(`[tool_reference ${JSON.stringify(item.tool_name)}]`);
       continue;
     }
 
@@ -122,10 +139,12 @@ export function serializeConversation(messages = []) {
         .map((block) => {
           if (block?.type === "text") return block.text;
           if (block?.type === "tool_use") {
-            return `[tool_use ${block.name} ${JSON.stringify(block.input || {})}]`;
+            const id = typeof block.id === "string" ? ` id=${JSON.stringify(block.id)}` : "";
+            return `[tool_use ${block.name}${id} ${JSON.stringify(block.input || {})}]`;
           }
           if (block?.type === "tool_result") {
-            return `[tool_result ${block.tool_use_id} ${extractText(block.content)}]`;
+            const error = block.is_error ? " is_error=true" : "";
+            return `[tool_result ${block.tool_use_id}${error} ${toolResultValue(block).textResultForLlm}]`;
           }
           return `[${block?.type || "content"}]`;
         })
@@ -135,7 +154,7 @@ export function serializeConversation(messages = []) {
     .join("\n\n");
 }
 
-export function serializeConversationTail(messages = [], maxBytes = 262_144) {
+export function serializeConversationTail(messages = [], maxBytes = 268_435_456) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error("maxBytes must be a positive integer.");
   }

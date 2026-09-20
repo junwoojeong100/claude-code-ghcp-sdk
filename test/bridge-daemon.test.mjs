@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import test from "node:test";
 
 import {
@@ -39,7 +40,23 @@ test("writes persistent bridge registry with private permissions", () => {
   }
 });
 
-test("stopping a stale daemon removes its registry", async () => {
+async function unverifiedDaemonPort(t) {
+  const server = createServer((_request, response) => {
+    response.writeHead(503);
+    response.end();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  }));
+  return server.address().port;
+}
+
+test("stopping a stale daemon removes its registry", async (t) => {
+  const port = await unverifiedDaemonPort(t);
   const directory = mkdtempSync(path.join(tmpdir(), "ghcp-daemon-"));
   const env = { GHCP_DAEMON_DIR: directory };
   const paths = daemonPaths(env);
@@ -50,7 +67,7 @@ test("stopping a stale daemon removes its registry", async () => {
       instanceId: "instance-1",
       model: "claude-sonnet-5",
       pid: 999_999,
-      port: 4142,
+      port,
       token: "test-only",
     });
 
@@ -61,7 +78,8 @@ test("stopping a stale daemon removes its registry", async () => {
   }
 });
 
-test("does not terminate an unverified process from a stale registry", async () => {
+test("does not terminate an unverified process from a stale registry", async (t) => {
+  const port = await unverifiedDaemonPort(t);
   const directory = mkdtempSync(path.join(tmpdir(), "ghcp-daemon-"));
   const env = { GHCP_DAEMON_DIR: directory };
   const paths = daemonPaths(env);
@@ -76,7 +94,7 @@ test("does not terminate an unverified process from a stale registry", async () 
       instanceId: "not-the-bridge",
       model: "claude-sonnet-5",
       pid: child.pid,
-      port: 9,
+      port,
       token: "test-only",
     });
     await assert.rejects(

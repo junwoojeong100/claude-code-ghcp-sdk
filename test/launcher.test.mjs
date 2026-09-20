@@ -108,8 +108,8 @@ test("claude-litellm passes temporary gateway settings to upstream Claude", () =
     assert.equal(settings.env.ANTHROPIC_BASE_URL, "https://litellm.example.com");
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-test-only");
     assert.equal(settings.env.ANTHROPIC_MODEL, "claude-sonnet-5");
-    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
     const temporarySettingsPath = readFileSync(capturedSettingsPath, "utf8");
     assert.equal(existsSync(temporarySettingsPath), false);
     assert.equal(readFileSync(userSettingsPath, "utf8"), userSettings);

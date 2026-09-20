@@ -17,7 +17,7 @@ LiteLLM: Claude Code -> LiteLLM -> LiteLLM에 구성된 provider
 GitHub Copilot 제공 모델을 LiteLLM으로 사용하려면 LiteLLM model이
 `github_copilot/claude-*` backend로 구성돼 있어야 합니다.
 
-이 저장소의 LiteLLM mapping과 E2E는 Claude Sonnet 5만 검증했습니다. GPT-5.6 Sol, Terra,
+이 저장소의 LiteLLM 예제는 Claude Sonnet 5를 대상으로 합니다. GPT-5.6 Sol, Terra,
 Luna를 사용하려면 검증된 Direct `claude-ghcp` 경로를 선택합니다.
 
 사용 환경에 맞는 절차 하나만 수행합니다.
@@ -141,14 +141,17 @@ export LITELLM_MODEL="claude-sonnet-5"
 code가 표시됩니다. 60초 안에 승인합니다. 이 인증은 Copilot CLI의 `copilot login`과
 별개이며 기본 저장 위치는 `~/.config/litellm/github_copilot`입니다.
 
-### 4. 선택: E2E 실행
+### 4. 선택: 생성된 settings 확인
 
 ```bash
-npm run test:e2e:litellm
+npm test
 ```
 
-실제 GitHub Copilot AI Credits를 사용합니다. 검증 범위는
-[아키텍처 문서의 검증 범위](ARCHITECTURE_KO.md#검증-범위)를 참고합니다.
+LiteLLM settings 경로, 즉 gateway routing 값, mode `0600`, 실행 인자 처리,
+provider detection을 AI Credit 없이 확인합니다. 70슬롯 `npm run verify`
+matrix는 LiteLLM이 아니라 Direct bridge를 대상으로 합니다. 각 명령이 무엇을
+확인하는지는 [아키텍처 문서의 검증 범위](ARCHITECTURE_KO.md#검증-범위)를
+참고합니다.
 
 ## Gateway 관리자 설정
 

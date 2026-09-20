@@ -8,8 +8,17 @@ export const CLAUDE_PROVIDER_SELECTORS = Object.freeze([
   "CLAUDE_CODE_USE_VERTEX",
 ]);
 
+export const CLAUDE_INHERITED_MODEL_OPTIONS = Object.freeze([
+  "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION",
+]);
+
 export const CLAUDE_GATEWAY_ENV_OVERRIDES = Object.freeze({
   ...Object.fromEntries(CLAUDE_PROVIDER_SELECTORS.map((name) => [name, ""])),
+  ...Object.fromEntries(
+    CLAUDE_INHERITED_MODEL_OPTIONS.map((name) => [name, ""]),
+  ),
   ENABLE_TOOL_SEARCH: "",
 });
 
@@ -22,13 +31,16 @@ export function createGatewaySettings({
   description,
   extraEnv = {},
 }) {
-  const customModelEnv = Object.values(familyModels).includes(model)
-    ? {}
-    : {
-        ANTHROPIC_CUSTOM_MODEL_OPTION: model,
-        ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: displayNames.custom,
-        ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: description,
-      };
+  const usesFamilyModel = Object.values(familyModels).includes(model);
+  const customModelEnv = {
+    ANTHROPIC_CUSTOM_MODEL_OPTION: usesFamilyModel ? "" : model,
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: usesFamilyModel
+      ? ""
+      : displayNames.custom,
+    ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: usesFamilyModel
+      ? ""
+      : description,
+  };
 
   return {
     env: {

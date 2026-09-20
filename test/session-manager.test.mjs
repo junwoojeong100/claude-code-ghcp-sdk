@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SessionManager } from "../src/session-manager.mjs";
+import { PRIMARY_MODELS } from "../scripts/verify/scenarios.mjs";
 
 class FakeSession {
   constructor() {
@@ -114,6 +115,48 @@ function request(effort, model = "gpt-5.6-sol") {
     output_config: { effort },
   };
 }
+
+function transientBudget(tokens) {
+  return `<system-reminder>\n<total_tokens>${tokens} tokens left</total_tokens>\n</system-reminder>`;
+}
+
+test("cold recovery defaults to 256 MiB and preserves an explicit replay limit", async () => {
+  const history = "x".repeat(300 * 1024);
+  for (const maxReplayBytes of [undefined, 256 * 1024]) {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const diagnostics = [];
+    const manager = new SessionManager({
+      baseDirectory: "/tmp",
+      preferredModel: "gpt-5.6-sol",
+      client,
+      maxReplayBytes,
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+
+    await manager.start();
+    try {
+      assert.equal(manager.maxReplayBytes, maxReplayBytes ?? 268_435_456);
+      await manager.execute({
+        ...request(),
+        messages: [
+          { role: "user", content: history },
+          { role: "assistant", content: "retained reply" },
+          { role: "user", content: "continue" },
+        ],
+      }, { "x-claude-code-session-id": "replay-limit" });
+
+      const prompt = client.session.sendCalls[0].prompt;
+      const truncated = diagnostics.filter((event) => event.event === "bridge.history_replay_truncated");
+      assert.equal(prompt.includes(history), maxReplayBytes === undefined);
+      assert.match(prompt, /ASSISTANT: retained reply/);
+      assert.equal(prompt.endsWith("continue"), true);
+      assert.equal(truncated.length, maxReplayBytes === undefined ? 0 : 1);
+      if (truncated.length) assert.equal(truncated[0].maxBytes, maxReplayBytes);
+    } finally {
+      await manager.stop();
+    }
+  }
+});
 
 test("applies initial and updated Claude Code effort to the Copilot session", async () => {
   const client = new FakeClient([
@@ -712,6 +755,161 @@ test("recreates Copilot state when same-length Claude history diverges", async (
   }
 });
 
+test("retains pending tool calls when Claude moves transient system annotations", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const sessions = [];
+  const diagnostics = [];
+  client.createSessionImplementation = async () => {
+    const session = new FakeSession();
+    sessions.push(session);
+    session.sendImplementation = async () => {
+      session.emit("assistant.message", {
+        content: "",
+        toolRequests: [{ toolCallId: "read-1", name: "Read", arguments: { file_path: "/tmp/input" } }],
+      });
+      session.emit("external_tool.requested", {
+        requestId: "pending-1", toolCallId: "read-1", toolName: "Read",
+      });
+      session.emit("session.idle");
+    };
+    session.handlePendingToolCallImplementation = async () => {
+      session.emit("assistant.message", { content: "completed", toolRequests: [] });
+      session.emit("session.idle");
+      return { success: true };
+    };
+    return session;
+  };
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  const headers = { "x-claude-code-session-id": "annotated-session" };
+  const body = {
+    ...request(),
+    tools: [{ name: "Read", description: "Read a file", input_schema: { type: "object", properties: {} } }],
+  };
+  const user = { role: "user", content: "Read the input." };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...body,
+      messages: [user, { role: "system", content: transientBudget(1000) }],
+    }, headers);
+    const result = await manager.execute({
+      ...body,
+      messages: [
+        { role: "system", content: transientBudget(900) },
+        user,
+        { role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "/tmp/input" } }] },
+        { role: "system", content: transientBudget(800) },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "actual input" }] },
+        { role: "system", content: transientBudget(700) },
+      ],
+    }, headers);
+    assert.equal(client.created.length, 1);
+    assert.equal(sessions[0].handledToolCalls.length, 1);
+    assert.equal(sessions[0].handledToolCalls[0].requestId, "pending-1");
+    assert.equal(sessions[0].sendCalls.length, 1);
+    assert.equal(result.message.content, "completed");
+    assert.ok(!diagnostics.some((event) => event.event === "bridge.history_reconciled"));
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("retains user turns when transient system annotations are inserted or replaced", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "annotated-chat" };
+  const user = { role: "user", content: "First user turn." };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...request(),
+      messages: [user, { role: "system", content: transientBudget(1000) }],
+    }, headers);
+    await manager.execute({
+      ...request(),
+      messages: [
+        user, { role: "system", content: transientBudget(900) },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "Second user turn." },
+        { role: "system", content: transientBudget(800) },
+      ],
+    }, headers);
+    assert.equal(client.created.length, 1);
+    assert.equal(client.session.sendCalls[1].prompt, "Second user turn.");
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("applies meaningful native inline system changes instead of dropping them as telemetry", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "inline-instructions" };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...request(),
+      messages: [...request().messages, { role: "system", content: "Available custom agents: worker, auditor." }],
+    }, headers);
+    assert.match(client.created[0].systemMessage.content, /Available custom agents: worker, auditor/);
+    await manager.execute({
+      ...request(),
+      messages: [...request().messages, { role: "system", content: "Available custom agents: worker, auditor.\nOutput style: concise." }],
+    }, headers);
+    assert.equal(client.created.length, 2);
+    assert.match(client.created[1].systemMessage.content, /Output style: concise/);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("does not restart when native cache-control markers move between content blocks", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "cache-markers" };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...request(), messages: [{ role: "user", content: [
+        { type: "text", text: "first", cache_control: { type: "ephemeral" } },
+      ] }],
+    }, headers);
+    await manager.execute({
+      ...request(), messages: [
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "text", text: "next", cache_control: { type: "ephemeral" } }] },
+      ],
+    }, headers);
+    assert.equal(client.created.length, 1);
+    assert.equal(client.session.sendCalls[1].prompt, "next");
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("cache normalization does not hide edits to tool input data named cache_control", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "cache-input-data" };
+  const history = (value) => [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "id-1", name: "custom",
+      input: { cache_control: value } }] },
+    { role: "user", content: "continue" },
+  ];
+  await manager.start();
+  try {
+    await manager.execute({ ...request(), messages: history("first") }, headers);
+    await manager.execute({ ...request(), messages: history("changed") }, headers);
+    assert.equal(client.created.length, 2);
+  } finally {
+    await manager.stop();
+  }
+});
 test("applies a supported effort independently for each model", async () => {
   const client = new FakeClient([
     {
@@ -999,7 +1197,7 @@ test("returns a live tool result to its pending Copilot request", async () => {
           },
           {
             role: "system",
-            content: "Tool execution completed.",
+            content: transientBudget(1000),
           },
         ],
       },
@@ -1022,7 +1220,7 @@ test("returns a live tool result to its pending Copilot request", async () => {
           },
           {
             role: "system",
-            content: "Tool execution completed.",
+            content: transientBudget(1000),
           },
         ],
       },
@@ -1591,3 +1789,118 @@ test("rejects a tool result that the Copilot session does not accept", async () 
     await manager.stop();
   }
 });
+
+for (const model of PRIMARY_MODELS) {
+  test(`${model}: interleaved root and three workers keep colliding tool IDs isolated`, async () => {
+    const actors = ["root", "alpha", "beta", "gamma"];
+    const sessions = new Map();
+    const client = new FakeClient(PRIMARY_MODELS.map((id) => ({ id })));
+    client.createSessionImplementation = async () => {
+      const actor = actors[sessions.size];
+      const session = new FakeSession();
+      sessions.set(actor, session);
+      session.sendImplementation = async () => {
+        session.emit("assistant.message", {
+          content: "",
+          toolRequests: [{ toolCallId: "shared-tool", name: "Read", arguments: {} }],
+        });
+        session.emit("external_tool.requested", {
+          requestId: "shared-request", toolCallId: "shared-tool", toolName: "Read",
+        });
+        session.emit("session.idle");
+      };
+      session.handlePendingToolCallImplementation = async ({ result }) => {
+        await new Promise((resolve) => setTimeout(resolve, actors.indexOf(actor) * 2));
+        session.emit("assistant.message", {
+          content: `${actor}:${result.textResultForLlm}`, toolRequests: [],
+        });
+        session.emit("session.idle");
+        return { success: true };
+      };
+      return session;
+    };
+    const manager = new SessionManager({
+      baseDirectory: "/tmp", preferredModel: model, turnTimeoutMs: 1000, client,
+    });
+    const headers = (actor) => ({
+      "x-claude-code-session-id": "shared-conversation",
+      ...(actor !== "root" ? { "x-claude-code-agent-id": actor } : {}),
+    });
+    const body = (actor) => ({
+      ...request(undefined, model),
+      messages: [{ role: "user", content: `Task for ${actor}` }],
+      tools: [{ name: "Read", description: "Read", input_schema: { type: "object", properties: {} } }],
+    });
+    await manager.start();
+    try {
+      const initial = await Promise.all(actors.map((actor) =>
+        manager.execute(body(actor), headers(actor))
+      ));
+      assert.equal(new Set(client.created.map((config) => config.sessionId)).size, 4);
+      assert.ok(client.created.every((config) => config.model === model));
+      assert.ok(initial.every((result) => result.message.toolRequests[0].toolCallId === "shared-tool"));
+      const reversed = [...actors].reverse();
+      const completed = await Promise.all(reversed.map((actor) => manager.execute({
+        ...body(actor),
+        messages: [
+          ...body(actor).messages,
+          { role: "assistant", content: [{ type: "tool_use", id: "shared-tool", name: "Read", input: {} }] },
+          { role: "user", content: [{
+            type: "tool_result", tool_use_id: "shared-tool",
+            content: `PRIVATE_${actor}`, is_error: actor === "beta",
+          }] },
+        ],
+      }, headers(actor))));
+      assert.deepEqual(completed.map((result) => result.message.content),
+        reversed.map((actor) => `${actor}:PRIVATE_${actor}`));
+      for (const actor of actors) {
+        const calls = sessions.get(actor).handledToolCalls;
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].requestId, "shared-request");
+        assert.equal(calls[0].result.textResultForLlm, `PRIVATE_${actor}`);
+        assert.equal(calls[0].result.resultType, actor === "beta" ? "failure" : "success");
+      }
+    } finally {
+      await manager.stop();
+    }
+    assert.ok([...sessions.values()].every((session) => session.disconnectCalls === 1));
+  });
+
+  test(`${model}: cancelling one worker leaves its sibling and later turns usable`, async () => {
+    const client = new FakeClient([{ id: model }]);
+    const slow = new FakeSession();
+    const healthy = new FakeSession();
+    const sessions = [slow, healthy];
+    client.createSessionImplementation = async () => sessions.shift();
+    slow.sendImplementation = async () => {};
+    const manager = new SessionManager({
+      baseDirectory: "/tmp", preferredModel: model, turnTimeoutMs: 1000, client,
+    });
+    const headers = (agent) => ({
+      "x-claude-code-session-id": "shared-conversation", "x-claude-code-agent-id": agent,
+    });
+    const controller = new AbortController();
+    await manager.start();
+    try {
+      const cancelled = assert.rejects(
+        manager.execute(request(undefined, model), headers("slow"), { signal: controller.signal }),
+        { name: "AbortError" },
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal((await manager.execute(request(undefined, model), headers("healthy"))).message.content, "ok");
+      controller.abort();
+      await cancelled;
+      slow.emit("assistant.message", { content: "LATE_CANCELLED_WORKER", toolRequests: [] });
+      slow.emit("session.idle");
+      assert.equal((await manager.execute(request(undefined, model), headers("healthy"))).message.content, "ok");
+      slow.sendImplementation = null;
+      assert.equal((await manager.execute(request(undefined, model), headers("slow"))).message.content, "ok");
+      assert.equal(slow.abortCalls, 1);
+      assert.equal(healthy.abortCalls, 0);
+      assert.equal(healthy.disconnectCalls, 0);
+      assert.equal(client.created.length, 2);
+    } finally {
+      await manager.stop();
+    }
+  });
+}

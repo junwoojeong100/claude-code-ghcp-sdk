@@ -20,23 +20,22 @@
     "bridge": "node src/server.mjs",
     "current-provider": "node src/provider-detection.mjs",
     "doctor": "node src/doctor.mjs",
+    "models": "node src/list-models.mjs",
     "litellm:setup": "bash scripts/setup-litellm.sh",
     "litellm:start": "bash scripts/start-litellm.sh",
-    "models": "node src/list-models.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:e2e": "bash scripts/e2e.sh",
-    "test:e2e:astra": "GHCP_E2E_MODEL=gpt-6-astra bash scripts/e2e.sh",
-    "test:e2e:background": "bash scripts/e2e-background.sh",
-    "test:e2e:features": "bash scripts/e2e-features.sh",
-    "test:e2e:session": "bash scripts/e2e-session.sh",
-    "test:e2e:stream": "bash scripts/e2e-stream.sh",
-    "test:e2e:worktree": "bash scripts/e2e-worktree.sh",
-    "test:e2e:gpt-5.6": "bash scripts/e2e-gpt-5.6.sh",
-    "test:e2e:primary": "bash scripts/e2e-primary-models.sh",
-    "test:e2e:litellm": "bash scripts/e2e-litellm.sh"
+    "verify": "node scripts/verify/run.mjs",
+    "verify:plan": "node scripts/verify/scenarios.mjs",
+    "verify:report": "node scripts/verify/report.mjs",
+    "verify:doc": "node scripts/verify/report.mjs --markdown > docs/VERIFICATION.md && node scripts/verify/report.mjs --markdown=ko > docs/VERIFICATION_KO.md"
   },
   "dependencies": {
     "@github/copilot-sdk": "1.0.14",
     "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.269",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@playwright/mcp": "0.0.80"
   }
 }

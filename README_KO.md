@@ -24,7 +24,7 @@ LiteLLM으로 연결합니다. 기존 permissions, hooks, MCP, skills도 계속 
 | LiteLLM client 또는 gateway 구성 | [LiteLLM 설정 가이드](docs/LITELLM_KO.md) |
 | 구현, 보안 경계, 검증 범위 확인 | [아키텍처](docs/ARCHITECTURE_KO.md) |
 | 구현 가능한 공백과 구조적 한계 구분 | [호환성](docs/COMPATIBILITY_KO.md) |
-| 기능별 근거와 커버리지 비율 확인 | [기능 커버리지](docs/FEATURE_COVERAGE_KO.md) |
+| 기능별 근거와 커버리지 비율 확인 | [검증 결과](docs/VERIFICATION_KO.md) |
 
 ## 가능 여부와 공식 지원 경계
 
@@ -132,17 +132,10 @@ Copilot catalog 기준으로 GPT-6 Astra는 1,178,000 토큰, GPT-5.6 세 모델
 
 현재 전체 기능 검증 대상은 정확히 `claude-opus-5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-`gpt-6-astra`의 7종입니다. 2026-09-18–19의 초기 검증(Claude Code 2.1.276,
-SDK 1.0.14)에서 same-model
-feature와 한국어 코딩 과제를 포함한 모델별 7개 suite 및 공유 unit suite의
-87개 테스트가 통과했습니다. 재시도를 포함한 최종 통과이며 첫 시도 전부 성공을
-뜻하지 않습니다. 이후 2026-09-19의 Claude Code 2.1.277 재검증에서는 연동 suite는
-통과했지만 Haiku 코딩 과제에 실패 1건(holdout 48/49)이 남았습니다. 날짜별 결과와
-재시도 관찰은
-[검증 모델 경계](docs/FEATURE_COVERAGE_KO.md#검증-모델-경계)에 기록했습니다.
-`gpt-5.5`와 다른 catalog 모델은 이 검증에 포함하지 않습니다.
-GPT-6 Astra에는 별도의 text/Read smoke test(`npm run test:e2e:astra`)가
-있으며, 이 명령 하나를 전체 기능 검증과 동일시하지 않습니다. Catalog에
+`gpt-6-astra`의 7종입니다. 과거 검증 기록은 초기화했으며 새 실행의 증거로만
+호환성을 판단합니다. 7종 모두 동일한 10개 시나리오를 받으며, 축소된 smoke test
+등급을 두는 모델은 없습니다. [검증 결과](docs/VERIFICATION_KO.md)를 참고합니다.
+`gpt-5.5`와 다른 catalog 모델은 이 검증에 포함하지 않습니다. Catalog에
 표시된다는 것만으로 모든 모델의 tool, image, reasoning 등 기능 호환성을 보증하지
 않습니다.
 
@@ -272,6 +265,12 @@ GitHub Copilot 모델을 사용하려면 model alias가 `github_copilot/claude-*
 | Direct SDK | 없음 | `--ghcp-model` / `GHCP_MODEL`, `--bridge-port` / `GHCP_BRIDGE_PORT` |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_API_KEY` | `--litellm-model` / `LITELLM_MODEL` |
 
+Direct SDK bridge의 HTTP 요청 본문(`MAX_BODY_BYTES`)과 대화 이력 재생
+(`MAX_REPLAY_BYTES`) 한도는 모두 기본 **256 MiB(268,435,456바이트)**입니다.
+각 환경 변수를 `export`해 한도를 바꿀 수 있습니다. 한도를 높이면 메모리 사용량이
+늘 수 있지만 모델의 컨텍스트 한도는 늘어나지 않습니다. 변경은 다음 bridge 시작부터
+적용되며, 이미 실행 중인 bridge에는 적용되지 않습니다.
+
 ## 설정과 지원 범위
 
 ### 설정 보존
@@ -294,17 +293,17 @@ selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트
 | 기능 | 상태 |
 |---|---|
 | Terminal UI, permissions, user/project settings | Claude Code가 담당 |
-| Text, native `Read` tool | 실제 모델 E2E 확인 |
-| SSE, Anthropic Messages 변환 | 단위 테스트 확인 |
-| Reasoning effort, Ultracode `xhigh` routing | 단위 테스트와 로컬 프로토콜 확인 |
-| `Edit`, `Write`, `NotebookEdit`, `Bash`, hooks, plugins, skills, local MCP | Feature E2E 확인 |
-| Image/document 변환 | Image와 유효 PDF live E2E 확인 |
-| Root/subagent 세션 분리 | Unit test와 7모델 Agent→`Read` E2E 확인 |
+| Text, native `Read` tool | 구현됨; 새 실행 증거 필요 |
+| SSE, Anthropic Messages 변환 | 구현됨; 회귀 테스트 제공 |
+| Reasoning effort, Ultracode `xhigh` routing | Model capability에 맞춰 전달 |
+| `Edit`, `Write`, `NotebookEdit`, `Bash`, hooks, plugins, skills, local MCP | Native feature E2E runner 제공 |
+| Image/document 변환 | Initial attachment 구현; provider 제약 적용 |
+| Root/subagent 세션 분리 | Claude session/agent ID 기반으로 구현 |
 | SDK resume | Resume/fork와 history 축소 reconciliation 구현; in-flight crash recovery는 best-effort |
 | Token counting | Call 이후 실제 SDK usage; `/count_tokens` preflight는 명시적 추정 |
 | Sampling과 생성 제어 | 미지원 native control은 진단으로 노출; `tool_choice`는 bounded filtering/prompt emulation |
-| MCP tool search | Native search 미지원; 35개 MCP tool의 안전한 full-schema fallback 검증 |
-| `--json-schema` structured output | Claude Code validator/retry를 bridge 경유 live E2E로 확인 |
+| MCP tool search | Full-schema 기본값; native ToolSearch는 명시적 opt-in |
+| `--json-schema` structured output | Claude Code native validator/retry 사용 |
 | Remote Control | Custom `ANTHROPIC_BASE_URL`에서 Claude Code가 비활성화 |
 | `--background`/agent view | Private persistent bridge daemon으로 지원 |
 | Claude web/cloud, `--cloud`, `--teleport`, cloud ultrareview | 로컬 실행 경로 밖이므로 GHCP bridge를 사용하지 않음 |
@@ -317,33 +316,56 @@ VS Code나 JetBrains의 통합 터미널에서 실행 스크립트를 직접 실
 ## 검증
 
 ```bash
-# 단위 테스트
+# 단위·구조 테스트. 모델 호출도 크레딧 소모도 없습니다.
 npm test
 
-# Direct SDK E2E: text + Read tool
-npm run test:e2e
+# 전체 검증 매트릭스: 10개 시나리오 x 7개 모델 = 70개 실행 슬롯
+npm run verify
 
-# GPT-5.6 Sol, Terra, Luna E2E
-npm run test:e2e:gpt-5.6
+# 드라이버를 다듬는 동안 한 칸만 실행
+npm run verify -- --models claude-opus-5 --scenarios v04-shell-ops
 
-# GPT-6 Astra text + Read smoke test
-npm run test:e2e:astra
+# 계획·커버리지·예상 소요 시간만 출력. 아무것도 실행하지 않습니다.
+npm run verify -- --dry-run
 
-# 실행 중인 로컬 LiteLLM E2E
-npm run test:e2e:litellm
+# 슬롯 작업 디렉터리를 지우지 않고 남겨 사후 분석
+npm run verify -- --scenarios v08-hooks-memory --keep-workspaces
+
+# 최신 실행을 그 실행의 기록에서 다시 읽기
+npm run verify:report
+
+# docs/VERIFICATION.md와 docs/VERIFICATION_KO.md 재생성
+npm run verify:doc
 ```
 
-E2E는 실제 GitHub Copilot AI Credits를 사용합니다. 실행 전후
-`~/.claude/settings.json`의 존재 여부나 content hash가 달라지면 실패합니다.
+`npm run verify`는 실제 GitHub Copilot AI Credits를 사용합니다. 모든 슬롯은
+실제 Claude Code 바이너리 → bridge → Copilot SDK → 실제 모델의 전체 경로를
+그대로 실행하며, mock도 replay도 없습니다. 슬롯마다 bridge, port, token,
+`CLAUDE_CONFIG_DIR`, git 작업 디렉터리를 따로 받기 때문에 한 모델의 지연이 다른
+모델의 실패로 읽히지 않고, 사용자의 `~/.claude`는 읽지도 쓰지도 않습니다.
 
-각 명령이 확인하는 정확한 범위는
+판정은 1차 증거 — 디스크의 파일, git 기록, hook 로그, 스트림이 남긴 도구 호출
+기록 — 으로만 합니다. 모델이 쓴 문장은 심어 둔 토큰이 있는지만 확인하며 문체나
+구성, 동의 여부로는 판정하지 않습니다. 실제로 응답한 모델은 `result.modelUsage`
+에서 되읽기 때문에 backend가 조용히 바뀌면 통과가 아니라 실패가 됩니다.
+
+`blocked`는 통과가 아닙니다. timeout, bridge 중단, 짝이 맞지 않는
+`tool_use`/`tool_result`는 그 슬롯이 모델에 대해 아무것도 말해 주지 못한다는
+뜻이므로 분모에 그대로 남습니다. 통과 수가 기준(70개 중 67개)에 미치지 못하면
+실행기는 0이 아닌 코드로 종료합니다.
+
+[검증 결과](docs/VERIFICATION_KO.md)에 최신 전체 매트릭스, 각 시나리오의 의도,
+그리고 각 시나리오가 bridge에서 잡아내려는 결함을 기록합니다. 실행 기록에서
+생성하므로 다시 생성하면 덮어씁니다.
+
+각 명령이 확인하는 범위는
 [아키텍처 문서의 검증 범위](docs/ARCHITECTURE_KO.md#검증-범위)를 참고합니다.
-주력 7모델 전체를 안전하게 병렬 검증하는 절차는
-[7모델 전수 E2E 빠른 실행 가이드](docs/EXHAUSTIVE_TESTING_KO.md)를 참고합니다.
+`GHCP_NATIVE_TOOL_SEARCH=1`로 Claude Code의 native ToolSearch를 명시적으로
+활성화할 수 있으며, 기본값은 기존 full-schema fallback을 유지합니다.
 
 ## 지원 상태
 
-이 프로젝트는 검증된 working prototype이며 GitHub와 Anthropic이 공동 지원하는 공식
+이 프로젝트는 working prototype이며 GitHub와 Anthropic이 공동 지원하는 공식
 integration이 아닙니다. 정식 Copilot SDK 1.0.14를 고정해 사용하지만, SDK의 정식
 릴리스 여부가 이 bridge를 Claude Code의 공식 지원 integration으로 만들지는 않습니다.
 

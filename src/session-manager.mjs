@@ -27,7 +27,7 @@ const BACKGROUND_TOOL_WAIT_MESSAGE =
 const TOOL_RESULT_UPDATE_PROMPT =
   "A previously started external tool has produced an additional result. " +
   "Use the update below to continue the current task.";
-const DEFAULT_MAX_REPLAY_BYTES = 256 * 1024;
+const DEFAULT_MAX_REPLAY_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_STATES = 64;
 const DEFAULT_STATE_IDLE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_PENDING_TOOL_WAIT_MS = 10_000;
@@ -166,9 +166,26 @@ function aggregateUsage(events) {
   );
 }
 
+function historyContentBlock(block) {
+  if (!block || typeof block !== "object" || Array.isArray(block)) return block;
+  const { cache_control, ...content } = block;
+  if (block.type === "tool_result" && Array.isArray(block.content)) {
+    content.content = block.content.map(historyContentBlock);
+  }
+  return content;
+}
+
+function historyMessage(message) {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return message;
+  const { cache_control, ...content } = message;
+  if (Array.isArray(message.content)) content.content = message.content.map(historyContentBlock);
+  return content;
+}
+
 function historySnapshot(messages = []) {
-  return messages.map((message) => ({
-    hash: hash(JSON.stringify(message)),
+  // Claude moves transient system annotations between requests; they are not turns.
+  return messages.filter((message) => message?.role !== "system").map((message) => ({
+    hash: hash(JSON.stringify(historyMessage(message))),
     role: message?.role,
     toolResultIds: Array.isArray(message?.content)
       ? message.content
@@ -366,7 +383,7 @@ export class SessionManager {
   }
 
   async #getOrCreateState(body, headers, { model, reasoningEffort }) {
-    const systemMessage = extractSystem(body.system);
+    const systemMessage = extractSystem(body.system, body.messages);
     const identity = createStateIdentity({
       anonymousSessionId: this.anonymousSessionId,
       headers,

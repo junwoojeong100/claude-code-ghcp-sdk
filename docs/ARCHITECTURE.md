@@ -82,6 +82,18 @@ The bridge separates root sessions and subagents using the following Claude Code
 - `x-claude-code-session-id`
 - `x-claude-code-agent-id`
 
+History identity excludes moving `cache_control` transport annotations and
+inline `system` entries from the conversational-turn comparison. Meaningful
+inline system text, including native custom-agent definitions and output styles,
+is merged into the SDK system message instead of being discarded. Only recognized
+per-request token-budget annotations are removed from that inline context.
+Changes to real user/assistant content, tool input data, or system instructions
+still trigger the existing reconciliation/state-split behavior.
+
+Cold replay retains tool-use IDs, tool-result error status, and native
+`tool_reference` names. Pending ToolSearch results retain their references as
+tool-result text, preserving the discovered tool identity through the SDK.
+
 The Copilot SDK session ID is determined by a bridge-instance namespace plus
 the Claude session, agent, resolved model, tool schema signature, and system
 prompt signature. A persistent daemon can resume evicted sessions within the
@@ -199,7 +211,7 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
   reported as degraded controls.
 - The Claude Code gateway contract is an open contract to which new headers and body fields may be added. Because this bridge translates to Copilot SDK format rather than forwarding to an Anthropic upstream unchanged, new Claude Code capabilities are not automatically supported and require per-release compatibility review.
 - Extended-thinking signatures, encrypted reasoning content, reasoning summaries, server tools, citations, and prompt-cache metadata do not round-trip completely.
-- Initial image/document content blocks are E2E-verified. Binary image/document
+- Initial image/document content blocks are translated by the bridge. Binary image/document
   results returned from a local tool remain provider-dependent and may require
   a text or initial-attachment fallback.
 - `/v1/messages/count_tokens` remains a preflight estimate derived from JSON
@@ -235,48 +247,48 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 - `ultracode` → `xhigh` normalization and per-model unsupported-effort adjustment
 - SDK session creation and reasoning-effort changes via `session.setModel()`
 - Claude Code root session and subagent SDK session isolation
+- Seven-model interleaved root/worker tool-result isolation and sibling survival
+  after cancellation
 - Inherited history recovery for forked subagents and pending tool-call handoff with `agentId`
 - Gateway routing values in the Direct/LiteLLM temporary settings
 - Mode `0600`, argument handling, and provider detection for LiteLLM settings
 - Request cancellation, state eviction, bounded replay, actual usage, strict
   model selection, request policy, daemon registry, and tool-result idempotency
 
-E2E scripts call real models:
+`npm run verify` drives the real path with real models:
 
-- `npm run test:e2e`: Direct SDK text response for the default `claude-haiku-4.5`, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash. The model can be changed with `GHCP_E2E_MODEL`.
-- `npm run test:e2e:gpt-5.6`: Text response, `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash for each of GPT-5.6 Sol, Terra, and Luna.
-- `npm run test:e2e:astra`: GPT-6 Astra text response and `Read` smoke test.
-- `npm run test:e2e:primary`: Text response and `Read` loop for the
-  [current seven-model validation set](FEATURE_COVERAGE.md#tested-model-boundary),
-  including GPT-6 Astra. This command alone is not the full-feature matrix.
-- `npm run test:e2e:litellm`: LiteLLM health check, model discovery, token counting, text response, Claude Code native `Read` tool loop, and invariance of `~/.claude/settings.json` existence and content hash.
-- `npm run test:e2e:features`: Structured output, Edit, Write, NotebookEdit,
-  Bash, hooks, skills, plugins, local MCP, plan mode, subagents, image input,
-  and cron.
-- `npm run test:e2e:session`: Resume and fork.
-- `npm run test:e2e:background`: Background agent, agent view, and daemon
-  cleanup.
-- `npm run test:e2e:stream`: stream-json input/output and replay.
-- `npm run test:e2e:worktree`: Git worktree isolation.
+- 10 scenarios x 7 models = 70 slots. Every slot launches the real `claude`
+  binary with `-p --output-format stream-json`, routed through a bridge of its
+  own, against a real Copilot model.
+- The scenarios: repository reconnaissance, surgical edit and file creation,
+  failing-test diagnose and fix, background shell and git workflow, a four-step
+  plan across file types, subagent delegation, headless MCP browser automation,
+  hooks/memory/commands/skills, session resume across processes, and
+  long-context retrieval.
+- Each slot is judged from primary evidence: files on disk, git history, hook
+  logs, and the stream's own record of which tools ran. Model prose is only ever
+  checked for a specific planted token, never for style or agreement.
+- The model that served a slot is read from `result.modelUsage`, not from the
+  displayed label. A slot whose wire protocol is unsound — unpaired
+  `tool_use`/`tool_result`, or the wrong model served — is `blocked`, not
+  `fail`, and stays in the denominator. Blocked is never a pass.
+- Each slot gets its own workspace, `settings.json`, and `CLAUDE_CONFIG_DIR`.
+  The user's `~/.claude` is never read or written.
+- `npm run verify:report` renders the latest run, and `npm run verify:doc`
+  regenerates [Verification Results](VERIFICATION.md) in both languages.
 
-All E2E tests consume real GitHub Copilot AI Credits.
+`npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
 
-Large multi-page PDF corpora, broad workflow fan-out, exact compact/rewind boundary
-mapping, and crash-time in-flight tool recovery are not included in the
-automated E2E scope.
+Large multi-page PDF corpora, broad workflow fan-out, exact compact/rewind
+boundary mapping, and crash-time in-flight tool recovery are outside the
+automated scope.
 
-### Additional Manual Validation
+### Evidence Boundary
 
-The following items were verified during development but are not automatically reproducible using only the repository's commands:
-
-- Connected real Claude Code 2.1.235 to a local fake Anthropic gateway
-- `output_config.effort: "ultracode"` and `thinking.type: "adaptive"` in an `--effort ultracode` request
-- Workflow, subagent, and task-management tool schemas in an Ultracode request
-- GPT-5.6 Sol, Terra, and Luna context from the Copilot catalog, and `none`, `low`, `medium`, `high`, `xhigh`, `max` reasoning effort metadata
-- Non-streaming and streaming Messages responses for both Direct SDK and LiteLLM
-- GPT-5.6 Sol root calling an Agent, Explore subagent's `Read` tool loop, and result forwarding to the parent
-
-The bridge's observable scope ends where reasoning effort is delivered to the Copilot SDK session configuration. Provider-internal reasoning token usage and a complete multi-agent Ultracode workflow on a real GPT-5.6 model are not included in the automated E2E scope.
+Historical manual validation records have been removed. Fresh verification must
+use real Claude Code routed through the Copilot SDK, with native transcript and
+actual SDK model/session evidence. A mock protocol test is not live compatibility
+evidence. Provider-internal behavior beyond exposed SDK fields is not inferred.
 
 ## References
 

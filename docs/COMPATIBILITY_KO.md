@@ -39,9 +39,12 @@
   preflight token count
 - History 축소 reconciliation, completed-tool cache invalidation, bounded cold
   replay, state split 진단, state LRU/TTL cleanup
-- 이 bridge를 통과하는 Claude Code native structured-output validator/retry의
-  실제 model 검증
-- Local MCP의 안전한 full-schema fallback; native tool search는 문서화된 호환성 공백
+- 이 bridge를 통과하는 Claude Code native structured-output validator/retry
+- Local MCP의 안전한 full-schema fallback과 `GHCP_NATIVE_TOOL_SEARCH=1`의 native
+  Claude Code ToolSearch opt-in. 도구 참조는 보존하지만 provider-side deferral 전체의
+  동등성은 여전히 문서화된 한계
+- Custom agent 정의와 output style 등 native inline system 지시 전달. Token-budget이나
+  cache-control metadata 변경을 대화 rewind로 잘못 처리하지 않음
 - `CopilotSession.abort()`까지 전달되는 request cancellation
 - Edit, Write, NotebookEdit, Bash, permission, hook, skill, plugin, MCP,
   multimodal input, worktree, session, stream, cron, subagent 실제 E2E
