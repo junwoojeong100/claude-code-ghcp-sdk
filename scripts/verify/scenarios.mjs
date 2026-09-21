@@ -1,12 +1,12 @@
 /**
- * Ten verification scenarios for Claude Code driven through the GHCP bridge.
+ * Eleven verification scenarios for Claude Code driven through the GHCP bridge.
  *
  * Question they answer: running Claude Code against GitHub Copilot models
  * through this bridge, do the features people actually use behave the way they
  * do on a native Anthropic connection?
  *
  * Design rules:
- *  - Ten scenarios, each deliberately dense. Coverage comes from stacking
+ *  - Eleven scenarios, each deliberately dense. Coverage comes from stacking
  *    several real features into one honest task, not from counting tasks.
  *  - Every slot runs the real path: real Claude Code binary -> bridge ->
  *    Copilot SDK -> Copilot model. Nothing is stubbed or replayed.
@@ -16,11 +16,23 @@
  *  - Wire-protocol correctness (SSE framing, tool_use/tool_result pairing,
  *    stop_reason, usage) gets no scenario of its own: it is asserted inside
  *    every scenario that would break if it were wrong.
+ *  - v01-v10 drive `claude --settings` against a bridge the harness started.
+ *    v11 drives `bin/claude-ghcp` instead, because the launcher and the daemon
+ *    it leaves running are what users actually invoke, and nothing else here
+ *    touches them.
  *
- * budgetSeconds is a HARD TIMEOUT, not an expected duration.
+ * budgetSeconds is a base ceiling per Claude Code invocation, not per slot.
+ * run.mjs applies --timeout-scale before handing it to the driver. Every
+ * runHeadless call re-arms that limit, so v09 can spend it three times over.
+ * v11 never calls runHeadless and uses independent launcher/file-wait caps.
+ * planRun() counts just one scaled catalogue budget per scenario: a single-turn
+ * scheduling estimate, not a worst-case bound or runtime deadline. Startup,
+ * extra turns and cleanup can take longer. WALL_CLOCK_LIMIT_SECONDS checks
+ * the default catalogue's estimate; nothing stops a run that exceeds it.
  */
 
 import { COVERAGE_TARGET, coverage } from "./features.mjs";
+import { scaleTimeoutMs } from "./timeouts.mjs";
 
 export const PRIMARY_MODELS = Object.freeze([
   "claude-opus-5",
@@ -48,6 +60,9 @@ export const DEFAULT_PLAN = Object.freeze({
   overheadSeconds: 180,
 });
 
+// Compared against planRun()'s estimate in the suite. It is a design bar for
+// the matrix, not a runtime kill switch: no part of run.mjs measures elapsed
+// wall clock or stops a run that passes it.
 export const WALL_CLOCK_LIMIT_SECONDS = 3600;
 
 function scenario(id, name, nameKo, spec) {
@@ -71,14 +86,17 @@ export const SCENARIOS = Object.freeze([
       "Large tool_result payloads truncated or re-encoded in transit; multi-call turns reordered so the model cites a path it never read.",
     bridgeRiskKo:
       "큰 tool_result가 전송 중 잘리거나 재인코딩되는 경우, 또는 다중 호출 턴 순서가 뒤바뀌어 읽지도 않은 경로를 답하는 경우.",
-    covers: ["read", "glob", "grep", "parallel-tools", "headless", "streaming", "result-envelope", "model-identity"],
+    covers: ["read", "bash", "parallel-tools", "headless", "streaming", "stream-input", "result-envelope", "model-identity"],
     pass: [
-      "A search tool (Glob, Grep or Bash) was actually used.",
+      "The prompt went in as a stream-json envelope and the CLI replayed it back.",
+      "A search tool was actually used (Bash — this build offers no Glob or Grep).",
       "The answer names the planted file, not either decoy.",
       "Every tool_use in the transcript has a matching tool_result.",
       "result carries a stop_reason and non-zero usage, and modelUsage names the expected backend.",
     ],
-    budgetSeconds: 150,
+    // Slots passed at 130s and were killed at 151s: the old budget cut the
+    // distribution in half rather than bounding a hang.
+    budgetSeconds: 240,
   }),
 
   scenario("v02-surgical-edit", "Surgical edit and file creation", "정밀 편집과 파일 생성", {
@@ -89,14 +107,15 @@ export const SCENARIOS = Object.freeze([
       "Whitespace or newline normalisation in the tool_use payload makes Edit's exact-match fail, or silently matches the wrong line.",
     bridgeRiskKo:
       "tool_use 페이로드의 공백·개행 정규화로 Edit의 정확 일치가 실패하거나 엉뚱한 줄에 조용히 매칭되는 경우.",
-    covers: ["read", "edit", "write", "permission-mode", "settings", "headless", "streaming", "result-envelope", "model-identity"],
+    covers: ["read", "edit", "write", "permission-mode", "plan-mode", "settings", "headless", "streaming", "result-envelope", "model-identity"],
     pass: [
+      "A plan-mode turn finished on its own and left the file untouched.",
       "The second marked line holds the new value.",
       "The first and third marked lines are byte-for-byte unchanged.",
       "The requested new file exists with the requested export.",
       "The Edit tool was used; the file was not rewritten wholesale.",
     ],
-    budgetSeconds: 150,
+    budgetSeconds: 240,
   }),
 
   scenario("v03-test-fix-loop", "Failing test diagnose and fix", "실패 테스트 진단과 수정", {
@@ -125,14 +144,18 @@ export const SCENARIOS = Object.freeze([
       "A backgrounded shell's handle is lost across turns, so the model never sees it finish and the process is orphaned.",
     bridgeRiskKo:
       "백그라운드 셸 핸들이 턴을 넘기며 유실되어 모델이 완료를 확인하지 못하고 프로세스가 고아로 남는 경우.",
-    covers: ["bash", "git", "tool-loop", "error-recovery", "headless", "streaming", "result-envelope", "model-identity"],
+    covers: ["bash", "git", "worktree", "tool-loop", "error-recovery", "headless", "streaming", "result-envelope", "model-identity"],
     pass: [
       "A long-running process was started and watched to completion.",
       "The tick log reached at least three lines.",
       "git log shows exactly the requested commit subject.",
+      "A second worktree is registered on its own branch.",
+      "The worktree's file exists there and never appears in the primary checkout.",
       "No ticker process survives the slot.",
     ],
-    budgetSeconds: 210,
+    // Three slots passed at 297-328s while three more were killed 24-43s past
+    // the old 300s line. The spread is this scenario's, not a hang.
+    budgetSeconds: 420,
   }),
 
   scenario("v05-multi-step", "Four-step plan across file types", "파일 종류를 넘나드는 4단계 계획", {
@@ -144,13 +167,14 @@ export const SCENARIOS = Object.freeze([
       "The plan is lost as the tool loop lengthens, so early steps land and the last ones are silently dropped.",
     bridgeRiskKo:
       "도구 루프가 길어지며 계획이 유실되어 앞쪽 단계만 반영되고 뒤쪽 단계가 조용히 누락되는 경우.",
-    covers: ["edit", "write", "notebook", "tool-loop", "headless", "streaming", "result-envelope", "model-identity"],
+    covers: ["edit", "write", "notebook", "multimodal", "tool-loop", "headless", "streaming", "result-envelope", "model-identity"],
     pass: [
       "All four changes are present on disk.",
       "The notebook still parses as a valid nbformat 4 document.",
       "No step was reported done without the file backing it.",
+      "The tokens inside the attached PDF and PNG both came back.",
     ],
-    budgetSeconds: 240,
+    budgetSeconds: 300,
   }),
 
   scenario("v06-subagent", "Subagent delegation", "서브에이전트 위임", {
@@ -196,14 +220,16 @@ export const SCENARIOS = Object.freeze([
       "A hook denial arrives as an ordinary tool_result instead of a refusal, so the model treats a blocked action as done.",
     bridgeRiskKo:
       "훅 차단이 거부가 아닌 평범한 tool_result로 전달되어 모델이 막힌 동작을 수행된 것으로 오인하는 경우.",
-    covers: ["hooks", "hook-deny", "memory", "slash-commands", "skills", "settings", "permission-mode", "error-recovery", "bash", "write", "headless", "streaming", "result-envelope", "model-identity"],
+    covers: ["hooks", "hook-deny", "memory", "slash-commands", "skills", "plugins", "cron", "settings", "permission-mode", "error-recovery", "bash", "write", "headless", "streaming", "result-envelope", "model-identity"],
     pass: [
       "The CLAUDE.md rule was obeyed: the record landed at the path the project mandates.",
       "The PreToolUse hook fired and left its log.",
       "The forbidden command was denied and never ran.",
       "The custom command and skill are advertised in the init event.",
+      "A plugin loaded from --plugin-dir contributes a command and a skill, both advertised.",
+      "A cron job was created and came back out of the job list, carrying the id or the prompt it was created with.",
     ],
-    budgetSeconds: 240,
+    budgetSeconds: 330,
   }),
 
   scenario("v09-session-resume", "Session resume across processes", "프로세스 간 세션 재개", {
@@ -214,13 +240,14 @@ export const SCENARIOS = Object.freeze([
       "Session state is keyed on the upstream connection, so resuming re-opens an empty conversation that answers from nothing.",
     bridgeRiskKo:
       "세션 상태가 업스트림 연결에 묶여 있어 재개 시 빈 대화가 열리고 아무 근거 없이 답하는 경우.",
-    covers: ["session-resume", "session-id", "headless", "streaming", "result-envelope", "model-identity"],
+    covers: ["session-resume", "session-id", "session-fork", "headless", "streaming", "result-envelope", "model-identity"],
     pass: [
       "The resumed process reports the same session id.",
       "It recalls the planted build id.",
       "It used no file-reading tool: the answer came from conversation context.",
+      "A forked resume inherits the same context under a session id of its own.",
     ],
-    budgetSeconds: 210,
+    budgetSeconds: 300,
   }),
 
   scenario("v10-long-context", "Long context retrieval and reasoning", "대형 컨텍스트 검색과 추론", {
@@ -234,28 +261,57 @@ export const SCENARIOS = Object.freeze([
     // "thinking" is deliberately absent: no Copilot model emitted a single
     // thinking block over this transport in any run, so claiming it would be
     // a coverage number that describes nothing. It sits in the remainder.
-    covers: ["long-context", "multi-hop", "headless", "streaming", "result-envelope", "model-identity"],
+    covers: ["long-context", "multi-hop", "structured-output", "headless", "streaming", "result-envelope", "model-identity"],
     pass: [
+      "The result carries a schema-valid structured object, not just prose.",
       "The arithmetic answer is exactly right, which needs both facts.",
       "Reported input usage reflects the whole corpus, not a truncated prefix.",
       "The answer came from the prompt itself: no file-reading tool was used.",
     ],
     budgetSeconds: 240,
   }),
+
+  scenario("v11-daemon-background", "Launcher, daemon and background agent", "런처·데몬·백그라운드 에이전트", {
+    intent:
+      "The front door this project actually ships: the bin/claude-ghcp launcher, the bridge daemon it leaves running, and a detached agent that keeps being served after the launcher exits.",
+    intentKo:
+      "이 프로젝트가 실제로 배포하는 진입점 — bin/claude-ghcp 런처, 그것이 남기는 상주 브리지 데몬, 런처가 종료된 뒤에도 계속 응답받는 분리형 에이전트.",
+    bridgeRisk:
+      "The daemon outlives the process that started it, so its lifetime is owned by a registry file rather than a parent. A stale registry hands out a dead port; a second launch quietly starts a rival daemon instead of reusing the live one; stop leaves the port bound. None of that is visible to a scenario that spawns its own short-lived bridge.",
+    bridgeRiskKo:
+      "데몬은 자신을 띄운 프로세스보다 오래 살기 때문에 수명이 부모가 아니라 레지스트리 파일에 묶인다. 레지스트리가 낡으면 죽은 포트를 건네고, 두 번째 실행이 살아 있는 데몬을 재사용하지 않고 조용히 경쟁 데몬을 띄우며, 종료가 포트를 남긴다. 슬롯마다 단명 브리지를 직접 띄우는 시나리오로는 보이지 않는 영역이다.",
+    covers: ["launcher", "daemon", "background-agent", "read", "write", "headless"],
+    pass: [
+      "The launcher's own preflight passed and it reported a backgrounded session id.",
+      "claude-ghcp-status reports the daemon running, with a pid and port, under the requested model.",
+      "The detached agent wrote a value that exists only in a file it had to read.",
+      "claude agents lists the background session against the slot's workspace.",
+      "A foreground launch answers from its own ephemeral bridge and leaves the daemon undisturbed.",
+      "A launch that asks for the persistent bridge goes through the daemon and reuses the same pid and port instead of starting a rival.",
+      "claude-ghcp-stop reports stopped, status goes not-running, and the registry and log are gone.",
+    ],
+    budgetSeconds: 420,
+  }),
 ]);
 
 export const SCENARIO_IDS = Object.freeze(SCENARIOS.map((s) => s.id));
 
-/** Worst-case schedule, assuming every slot runs to its hard timeout. */
+/**
+ * Single-turn scheduling estimate, counting one scaled budgetSeconds per slot.
+ * Multi-turn drivers re-arm the ceiling on each call; bridge startup, v11's
+ * independent waits and cleanup are not modelled. This is not a time limit.
+ */
 export function planRun({
   scenarios = SCENARIOS,
   models = PRIMARY_MODELS,
   modelConcurrency = DEFAULT_PLAN.modelConcurrency,
   scenarioConcurrency = DEFAULT_PLAN.scenarioConcurrency,
   overheadSeconds = DEFAULT_PLAN.overheadSeconds,
+  timeoutScale = 1,
 } = {}) {
-  const serial = scenarios.reduce((sum, s) => sum + s.budgetSeconds, 0);
-  const longest = scenarios.reduce((max, s) => Math.max(max, s.budgetSeconds), 0);
+  const budgets = scenarios.map((s) => scaleTimeoutMs(s.budgetSeconds * 1000, timeoutScale) / 1000);
+  const serial = budgets.reduce((sum, seconds) => sum + seconds, 0);
+  const longest = budgets.reduce((max, seconds) => Math.max(max, seconds), 0);
   // With n workers the critical path cannot beat either an even split of the
   // total or the single longest scenario.
   const perModel = Math.max(Math.ceil(serial / Math.max(1, scenarioConcurrency)), longest);
@@ -280,8 +336,8 @@ export function validateCatalog(scenarios = SCENARIOS) {
   const problems = [];
   const seen = new Set();
 
-  if (scenarios.length !== 10) {
-    problems.push(`Expected 10 scenarios, found ${scenarios.length}.`);
+  if (scenarios.length !== 11) {
+    problems.push(`Expected 11 scenarios, found ${scenarios.length}.`);
   }
   for (const s of scenarios) {
     if (seen.has(s.id)) problems.push(`Duplicate scenario id: ${s.id}`);
@@ -329,7 +385,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`scenarios: ${SCENARIOS.length}   models: ${PRIMARY_MODELS.length}   slots: ${run.slots}`);
     console.log(`coverage:  ${cov.percent}% weighted (${cov.coveredWeight}/${cov.totalWeight})`);
     console.log(`uncovered: ${cov.missed.join(", ") || "none"}`);
-    console.log(`schedule:  ~${Math.round(run.wallClockSeconds / 60)} min worst case, peak ${run.peakClaudeProcesses} Claude processes`);
+    console.log(`schedule:  ~${Math.round(run.wallClockSeconds / 60)} min single-turn estimate, peak ${run.peakClaudeProcesses} Claude processes`);
     for (const problem of problems) console.error(`  PROBLEM: ${problem}`);
   }
   process.exit(ok ? 0 : 1);

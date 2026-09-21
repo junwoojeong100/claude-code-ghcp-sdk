@@ -2,23 +2,23 @@
 
 > **Language / 언어:** English | [한국어](README_KO.md)
 
-An Anthropic Messages API bridge that routes Claude Code's model calls to GitHub Copilot models via the GitHub Copilot SDK or LiteLLM. Claude Code's UI, tool execution, permissions, hooks, MCP, and skills remain unchanged.
+An Anthropic Messages API bridge that routes Claude Code's model calls to GitHub Copilot models via the GitHub Copilot SDK, either directly or through a LiteLLM proxy placed in front of the same bridge. Claude Code's UI, tool execution, permissions, hooks, MCP, and skills remain unchanged.
 
 ## Path Selection
 
 | Situation | Path | Command |
 |---|---|---|
 | Use your GitHub Copilot account and organization model policy as-is | **Direct SDK** | `./bin/claude-ghcp` |
-| Use an existing gateway, virtual key, or a different provider | **LiteLLM** | `./bin/claude-litellm` |
+| Put an existing gateway, virtual keys, budgets, or request logging in front of the bridge | **LiteLLM** | `./bin/claude-litellm` |
 
-**Most users should choose the Direct SDK path.** Choose LiteLLM only when your organization already operates a LiteLLM gateway or requires a different provider. There is no need to configure both paths.
+**Most users should choose the Direct SDK path.** Choose LiteLLM only when your organization already operates a LiteLLM gateway, or when you need its virtual keys, budgets, and request logging. LiteLLM sits in front of the same bridge and adds a hop, not a capability. There is no need to configure both paths.
 
 ## Documentation
 
 | Purpose | Document |
 |---|---|
 | Initial installation and first run | This README's [Direct SDK Quick Start](#direct-sdk-quick-start) |
-| Configure a LiteLLM client or gateway | [LiteLLM Setup Guide](docs/LITELLM.md) |
+| Put a LiteLLM proxy in front of the bridge | [LiteLLM Setup Guide](docs/LITELLM.md) |
 | Review implementation, security boundaries, and validation scope | [Architecture](docs/ARCHITECTURE.md) |
 | Distinguish implementable gaps from structural limits | [Compatibility](docs/COMPATIBILITY.md) |
 | Review feature-by-feature evidence and coverage percentages | [Verification Results](docs/VERIFICATION.md) |
@@ -122,7 +122,7 @@ session to refresh discovery after new models become available.
 The current full-feature validation matrix is exactly `claude-opus-5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
 `gpt-6-astra`. Historical validation records have been reset; only fresh
-execution evidence establishes compatibility. All seven carry the same ten
+execution evidence establishes compatibility. All seven carry the same eleven
 scenarios — there is no reduced smoke-test tier for any model. See the
 [verification results](docs/VERIFICATION.md).
 `gpt-5.5` and other catalog models are not part of that verification. Catalog
@@ -188,15 +188,19 @@ stop it with `claude-ghcp-status` and `claude-ghcp-stop`.
 
 ## LiteLLM Quick Start
 
-LiteLLM is a separate path that does not use the local Node.js bridge or `@github/copilot-sdk`.
+LiteLLM is a proxy placed in front of this repository's bridge. It does not replace the bridge or `@github/copilot-sdk`; it adds virtual keys, budgets, and request logging in front of them.
 
 ```text
 Claude Code
   -> LiteLLM /v1/messages
-  -> provider configured in LiteLLM
+  -> this repository's local bridge
+  -> @github/copilot-sdk
+  -> GitHub Copilot model
 ```
 
-When connecting to an existing LiteLLM gateway, only clone the repository — `npm install` and `copilot login` are not required.
+LiteLLM reaches the bridge through its `anthropic/*` provider, with `api_base` set to the bridge root. LiteLLM's own `github_copilot/*` provider is not used, and there is no separate LiteLLM-side GitHub device OAuth.
+
+Whoever operates the gateway also operates the bridge, and therefore needs `npm install`, a `copilot login` session, and a running bridge daemon. When you are only connecting to a gateway that someone else operates, clone the repository — `npm install` and `copilot login` are not required.
 
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
@@ -213,9 +217,13 @@ export LITELLM_MODEL="claude-sonnet-5"
 ./bin/claude-litellm
 ```
 
-To use GitHub Copilot models, the model alias must be connected to a `github_copilot/claude-*` backend. Aliases connected to other providers do not use GitHub Copilot.
+`LITELLM_MODEL` is a `model_name` alias from the gateway's configuration. To serve GitHub Copilot models, that alias must resolve to `model: anthropic/<copilot-model-id>` with `api_base` set to this repository's bridge root. Aliases pointing anywhere else do not use GitHub Copilot.
 
-For local gateway installation, GitHub device OAuth, model mapping, multi-user authentication, and troubleshooting, follow the [LiteLLM Guide](docs/LITELLM.md).
+The bridge binds to loopback unless `ALLOW_NON_LOOPBACK=1` is set, so LiteLLM runs on the same host as the bridge it fronts. If that host also runs `claude-ghcp`, export the same `GHCP_BRIDGE_PORT` in both shells. The requested port is part of the daemon's configuration fingerprint, so a launcher started without it stops the pinned daemon and starts a new one on a new port with a new token, and LiteLLM gets connection refused.
+
+LiteLLM is outside this repository's verification scope. The `npm run verify` matrix (7 models x 11 scenarios = 77 slots) starts `src/server.mjs` directly and never starts LiteLLM, so the LiteLLM path is a configuration reference, not a validated path.
+
+For the bridge daemon, its pinned port and token, the example configuration, model mapping, multi-user authentication, and troubleshooting, follow the [LiteLLM Guide](docs/LITELLM.md).
 
 ## Command Reference
 
@@ -283,14 +291,18 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 # Unit and structural tests. No model calls, no credits.
 npm test
 
-# Full verification matrix: 10 scenarios x 7 models = 70 live slots
+# Full verification matrix: 11 scenarios x 7 models = 77 live slots (timeout scale: 1)
 npm run verify
+
+# Longer verification waits; overrides apply only to this command
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2
 
 # One cell, while iterating on a driver
 npm run verify -- --models claude-opus-5 --scenarios v04-shell-ops
 
-# Plan, coverage and wall-clock estimate. Starts nothing.
+# Plan, coverage and single-turn schedule estimate. Starts nothing.
 npm run verify -- --dry-run
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --dry-run
 
 # Keep slot workspaces for a post-mortem instead of deleting them
 npm run verify -- --scenarios v08-hooks-memory --keep-workspaces
@@ -301,6 +313,23 @@ npm run verify:report
 # Regenerate docs/VERIFICATION.md and docs/VERIFICATION_KO.md
 npm run verify:doc
 ```
+
+`--timeout-scale` defaults to `1`, so the unchanged `npm run verify` command
+keeps the existing verification budgets. `2` doubles the verification runner's
+model-facing waits (headless turns, plan turns and v11 launcher/output waits)
+and its bridge-health wait. For v01–v10, a scenario timeout applies **per headless
+turn/invocation, not per slot**; multi-turn slots can use several such waits.
+v11's catalog-derived `scenarioMs` value is **planning only**: its actual waits
+use the independent launcher/output limits. Status/list/stop/final-cleanup
+wrappers, polls/probes, the local-test limit, SIGKILL grace and operational
+launcher/daemon startup defaults stay unchanged.
+
+The command-scoped `PENDING_TOOL_WAIT_MS=30000` override sets a separate 30-second
+pending-tool wait; it is not multiplied by `--timeout-scale` or saved as a runtime
+default. It is a precaution for verification, **not an established fix for
+no-result exits**. `--model-concurrency` and `--scenario-concurrency` control model
+workers and scenario workers per model (defaults: `7` and `2`). Dry-run single-turn
+schedule estimates are planning aids, **not deadlines or true worst-case bounds**.
 
 `npm run verify` consumes real GitHub Copilot AI Credits. Every slot runs the
 real path end to end: the real Claude Code binary, the bridge, the Copilot SDK,
@@ -317,11 +346,19 @@ the slot instead of passing it.
 `blocked` is not a pass. A timeout, a dead bridge, or an unpaired
 `tool_use`/`tool_result` means the slot says nothing about the model, so it stays
 in the denominator. The runner exits non-zero unless passes clear the gate
-(67 of 70).
+(74 of 77).
+
+Neither command covers LiteLLM. `npm run verify` starts `src/server.mjs`
+directly and never starts LiteLLM, so the LiteLLM path is a configuration
+reference rather than a validated one.
 
 [Verification results](docs/VERIFICATION.md) records the latest full matrix, what
 each scenario is for, and the bridge defect each one is built to catch. It is
-generated from a run's own record; regenerating overwrites it.
+generated from a run's own record; regenerating overwrites it. Terminal and EN/KO
+reports also read `summary.execution` to show the recorded timeout scale,
+pending-tool wait, concurrency and actual configured per-scenario/per-step limits.
+Reproduction commands include those recorded overrides; older runs without this
+metadata are marked as not recorded rather than filled with today's defaults.
 
 For the scope each command validates, see the
 [Validation Scope in the Architecture document](docs/ARCHITECTURE.md#validation-scope).

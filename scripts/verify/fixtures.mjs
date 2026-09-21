@@ -8,8 +8,11 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+
+import { buildPdf, buildPng } from "./media.mjs";
 
 const write = (dir, rel, content) => {
   const target = path.join(dir, rel);
@@ -172,6 +175,11 @@ function fixtureSurgicalEdit(dir) {
     untouched: ["inboundRetries: 3,", "scheduledRetries: 3,"],
     newFile: "config/timeouts.mjs",
     newExport: "timeouts",
+    // Plan mode is asked for a DIFFERENT line than the edit turn changes, so
+    // the two turns cannot be confused for one another: if the plan turn wrote
+    // anything, this line moved, and it is already in `untouched`.
+    planTargetKey: "inboundRetries",
+    planNewValue: "9",
   };
 }
 
@@ -280,6 +288,14 @@ const timer = setInterval(() => {
     minTicks: 3,
     commitSubject: `chore: record ${token} ticks`,
     recordFile: "TICKS.md",
+    // A worktree is a sibling of the workspace, so it lands inside the slot's
+    // own temp root and is removed with it. The branch carries the slot token:
+    // worktree branch names are global to the repository they belong to, and a
+    // shared name would collide between concurrent slots.
+    worktreeDir: "../review",
+    worktreeBranch: `review/${token}`,
+    worktreeFile: "REVIEW.md",
+    worktreeMarker: `REVIEWED-${token}`,
   };
 }
 
@@ -337,6 +353,26 @@ function fixtureMultiStep(dir, { token }) {
     ) + "\n",
   );
 
+  // Two binary attachments, each carrying a token drawn right here.
+  //
+  // They deliberately do NOT reuse `token`: step 3 prints that one in the
+  // prompt, so a model could answer "PDFDOC-<token>" from the prompt alone and
+  // score the attachment checks without opening either file. One did.
+  //
+  // Hex keeps every character inside the block font's alphabet, and a byte
+  // count fixes the width: a base-36 slice of Math.random() is not guaranteed
+  // to be six characters, and a short draw would leave a needle that matches
+  // almost any answer. The entropy here is the whole check. No separator
+  // appears in either token, because the image is read by segmenting glyphs:
+  // two models made the same mis-read of the rasterised prefix and only the
+  // separator they happened to type ("IMG TAG" vs "IMG-TAG") decided which of
+  // them passed. With no separator in the needle, that coin flip is gone.
+  const mediaToken = () => randomBytes(3).toString("hex").toUpperCase();
+  const pdfToken = `PDFDOC${mediaToken()}`;
+  const pngToken = `IMGTAG${mediaToken()}`;
+  fs.writeFileSync(path.join(dir, "invoice.pdf"), buildPdf(pdfToken));
+  fs.writeFileSync(path.join(dir, "banner.png"), buildPng(pngToken));
+
   return {
     steps: [
       { file: "src/greet.mjs", expect: "Good morning" },
@@ -346,6 +382,10 @@ function fixtureMultiStep(dir, { token }) {
     ],
     notebookFile: "analysis.ipynb",
     newRate: "0.08",
+    pdfFile: "invoice.pdf",
+    pngFile: "banner.png",
+    pdfToken,
+    pngToken,
     token,
   };
 }
@@ -361,7 +401,7 @@ function fixtureSubagent(dir, { token }) {
     `---
 name: scout
 description: Searches the repository for deprecation markers and reports the file paths that carry them.
-tools: Read, Grep, Glob
+tools: Read, Bash
 ---
 
 You are a code scout. You are given a marker string.
@@ -515,6 +555,31 @@ An audit record is Markdown:
 
   write(dir, "src/app.mjs", `export const app = "fixture";\n`);
 
+  // A plugin: the same kinds of surface the project already supplies, but
+  // arriving from --plugin-dir instead of from .claude/. Whether the bridge
+  // carries it is a separate question from whether it carries project files,
+  // because the init event advertises them through different keys.
+  const pluginDir = path.join(dir, "audit-plugin");
+  write(
+    pluginDir,
+    ".claude-plugin/plugin.json",
+    JSON.stringify(
+      { name: "audit-plugin", version: "0.1.0", description: "Audit helpers supplied as a plugin" },
+      null,
+      2,
+    ) + "\n",
+  );
+  write(
+    pluginDir,
+    "commands/audit-plugin-info.md",
+    "---\ndescription: Report which plugin supplies the audit helpers\n---\n\nReply with exactly: audit-plugin\n",
+  );
+  write(
+    pluginDir,
+    "skills/audit-retention/SKILL.md",
+    "---\nname: audit-retention\ndescription: Retention rules for audit records. Use when asked how long audit records are kept.\n---\n\n# Audit retention\n\nAudit records are retained for 90 days.\n",
+  );
+
   return {
     recordPath,
     hookLog,
@@ -522,6 +587,13 @@ An audit record is Markdown:
     forbiddenCommand: "curl",
     commandName: "audit-status",
     skillName: "audit-format",
+    pluginDir,
+    pluginCommandName: "audit-plugin-info",
+    pluginSkillName: "audit-retention",
+    // Pinned to a minute and a month, so it is unambiguously a one-shot the
+    // scheduler will not fire during the slot.
+    cronExpression: "37 4 1 1 *",
+    cronPrompt: `audit sweep ${token}`,
   };
 }
 
@@ -585,6 +657,66 @@ function fixtureLongContext(dir, { token }) {
 }
 
 /* ------------------------------------------------------------------ *
+ * v11 -- launcher, daemon and background agent
+ * ------------------------------------------------------------------ */
+
+function fixtureDaemonBackground(dir, { token }) {
+  // The background agent is detached: nothing of its stream reaches the
+  // harness. So the only evidence it did real work is a file it could not have
+  // written without reading another file first. The channel name is never in
+  // the prompt -- it exists only here.
+  const channel = `${token}-canary`;
+  write(
+    dir,
+    "src/release.mjs",
+    `/** Release channel this build publishes to. */
+export const DEPLOY_CHANNEL = "${channel}";
+
+export function isCanary() {
+  return DEPLOY_CHANNEL.endsWith("-canary");
+}
+`,
+  );
+  // A second fact for the foreground turn, so the daemon-reuse step also has
+  // to read something rather than answer from the prompt.
+  write(
+    dir,
+    "src/build.mjs",
+    `/** Build number stamped at release time. */
+export const BUILD_NUMBER = 8123;
+`,
+  );
+  write(dir, "README.md", `# ${token}-service\n\nA fixture repository.\n`);
+
+  // Two obstacles that have nothing to do with what this scenario measures,
+  // both found by running it.
+  //
+  // A background session refuses to edit a shared checkout: it demands
+  // EnterWorktree first, so its changes land in a linked worktree. That guard
+  // is real and v04 already covers worktrees; here it would only move the
+  // agent's output somewhere the driver is not looking. The guard's own error
+  // message names the way to turn it off, so the fixture takes it.
+  write(
+    dir,
+    ".claude/settings.json",
+    `${JSON.stringify({ worktree: { bgIsolation: "none" } }, null, 2)}\n`,
+  );
+  // And EnterWorktree could not have succeeded anyway: every fixture repo is
+  // `git init`-ed but not committed, so HEAD does not resolve and the agent
+  // burned its budget retrying. A checkout with no commits is not a realistic
+  // starting point regardless.
+  commitAll(dir, "chore: seed fixture");
+
+  return {
+    channelFile: "src/release.mjs",
+    channelValue: channel,
+    backgroundResult: "CHANNEL.txt",
+    buildFile: "src/build.mjs",
+    buildNumber: "8123",
+  };
+}
+
+/* ------------------------------------------------------------------ *
  * Dispatch
  * ------------------------------------------------------------------ */
 
@@ -599,6 +731,7 @@ const BUILDERS = {
   "v08-hooks-memory": fixtureHooksMemory,
   "v09-session-resume": fixtureSessionResume,
   "v10-long-context": fixtureLongContext,
+  "v11-daemon-background": fixtureDaemonBackground,
 };
 
 export const FIXTURE_IDS = Object.freeze(Object.keys(BUILDERS));

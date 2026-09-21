@@ -24,10 +24,14 @@ Used by `claude` and `claude-ghcp`. Respects the `copilot login` account and the
 ```text
 Claude Code
   -> LiteLLM /v1/messages
-  -> provider configured in LiteLLM
+  -> loopback Anthropic Messages bridge
+  -> @github/copilot-sdk mode="empty"
+  -> GitHub Copilot model
 ```
 
-Used by `claude-litellm`. Does not pass through the local Node.js bridge or `@github/copilot-sdk`. The GitHub Copilot backend uses LiteLLM's `github_copilot/` provider with a separate OAuth flow.
+Used by `claude-litellm`. LiteLLM is a proxy in front of the same local bridge, reached through its `anthropic/*` provider with `api_base` set to the bridge root. LiteLLM strips the `anthropic/` prefix and sends the remainder as the request body's model, and the configured `api_key` arrives as `x-api-key`. LiteLLM's own `github_copilot/` provider and its separate GitHub device OAuth flow are not used.
+
+Two Direct-path behaviors do not survive the extra hop: `/v1/models` returns LiteLLM's own aliases rather than the bridge's discovery rows, and `POST /v1/messages/count_tokens` is answered by LiteLLM's local estimate instead of reaching the bridge. The bridge binds to loopback unless `ALLOW_NON_LOOPBACK=1` is set, so LiteLLM runs on the same host. This path is outside the [Validation Scope](#validation-scope).
 
 ## Integration Rationale and Boundaries
 
@@ -120,7 +124,7 @@ The `sonnet`, `opus`, and `haiku` aliases resolve to the permitted family model 
 
 ### Model Discovery and Context
 
-The launch scripts enable `/v1/models` discovery via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`. The endpoint returns the results of `listModels()` from the Copilot SDK, deduplicated by backend ID.
+The Direct launch settings enable `/v1/models` discovery via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`; the LiteLLM settings do not, because LiteLLM answers `/v1/models` with its own aliases. The endpoint returns the results of `listModels()` from the Copilot SDK, deduplicated by backend ID.
 
 - Opus 5/4.8, Sonnet 5/4.6, and Haiku 4.5 already bundled with Claude Code 2.1.239 are not shown as duplicates.
 - Fable is excluded from the list.
@@ -257,14 +261,15 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 `npm run verify` drives the real path with real models:
 
-- 10 scenarios x 7 models = 70 slots. Every slot launches the real `claude`
+- 11 scenarios x 7 models = 77 slots. Every slot launches the real `claude`
   binary with `-p --output-format stream-json`, routed through a bridge of its
   own, against a real Copilot model.
 - The scenarios: repository reconnaissance, surgical edit and file creation,
   failing-test diagnose and fix, background shell and git workflow, a four-step
   plan across file types, subagent delegation, headless MCP browser automation,
-  hooks/memory/commands/skills, session resume across processes, and
-  long-context retrieval.
+  hooks/memory/commands/skills, session resume across processes,
+  long-context retrieval, and the `claude-ghcp` launcher with its persistent
+  daemon and a detached background agent.
 - Each slot is judged from primary evidence: files on disk, git history, hook
   logs, and the stream's own record of which tools ran. Model prose is only ever
   checked for a specific planted token, never for style or agreement.
@@ -282,6 +287,11 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 Large multi-page PDF corpora, broad workflow fan-out, exact compact/rewind
 boundary mapping, and crash-time in-flight tool recovery are outside the
 automated scope.
+
+LiteLLM is also outside the verification scope. Every slot starts
+`src/server.mjs` directly and never starts LiteLLM, so the LiteLLM path in
+[System Overview](#system-overview) and the [LiteLLM Guide](LITELLM.md) is a
+configuration reference, not a validated path.
 
 ### Evidence Boundary
 

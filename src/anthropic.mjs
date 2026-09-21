@@ -91,6 +91,17 @@ function toolResultValue(block) {
   };
 }
 
+function replayToolResultText(block) {
+  const value = toolResultValue(block);
+  // Replayed history is plain text, so a converted image or document becomes a
+  // placeholder naming its media type and size instead of disappearing.
+  const attachments = (value.binaryResultsForLlm || []).map(
+    (item) =>
+      `[attachment ${item.description} ${item.mimeType} ${Buffer.byteLength(item.data, "base64")} bytes]`,
+  );
+  return [value.textResultForLlm, ...attachments].filter(Boolean).join("\n");
+}
+
 export function extractTurnInput(body) {
   const messages = body.messages || [];
   const messageIndex = lastMessageIndex(messages);
@@ -144,7 +155,7 @@ export function serializeConversation(messages = []) {
           }
           if (block?.type === "tool_result") {
             const error = block.is_error ? " is_error=true" : "";
-            return `[tool_result ${block.tool_use_id}${error} ${toolResultValue(block).textResultForLlm}]`;
+            return `[tool_result ${block.tool_use_id}${error} ${replayToolResultText(block)}]`;
           }
           return `[${block?.type || "content"}]`;
         })
@@ -313,12 +324,13 @@ export class AnthropicSseStream {
       return;
     }
 
-    if (sdkEvent.type === "assistant.tool_call_delta") {
-      const data = sdkEvent.data;
-      if (data.toolName) {
-        this.#ensureToolBlock(data.toolCallId, data.toolName);
-      }
-    }
+    // assistant.tool_call_delta is deliberately not written through. Copilot
+    // also emits deltas for calls it never registers, and only the bridge's
+    // finishTurn knows which ones survive. A content_block_start cannot be
+    // retracted once it is on the wire, so opening a tool block here would
+    // frame a tool_use that later has no input and no "tool_use" stop reason.
+    // Nothing is lost by waiting: the input JSON was never streamed from the
+    // deltas either, finish() writes each surviving call in full.
   }
 
   finish({ model, message, usage }) {

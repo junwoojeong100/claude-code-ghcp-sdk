@@ -26,6 +26,7 @@
     "test": "node --test test/*.test.mjs",
     "verify": "node scripts/verify/run.mjs",
     "verify:plan": "node scripts/verify/scenarios.mjs",
+    "verify:probe": "node scripts/verify/probe.mjs",
     "verify:report": "node scripts/verify/report.mjs",
     "verify:doc": "node scripts/verify/report.mjs --markdown > docs/VERIFICATION.md && node scripts/verify/report.mjs --markdown=ko > docs/VERIFICATION_KO.md"
   },

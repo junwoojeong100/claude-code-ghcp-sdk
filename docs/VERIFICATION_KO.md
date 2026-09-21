@@ -1,4 +1,4 @@
-# 검증 결과 — 7개 모델 × 10개 시나리오
+# 검증 결과 — 7개 모델 × 11개 시나리오
 
 이 문서는 `scripts/verify/report.mjs`가 실행 기록(`slots.jsonl`)에서 생성합니다. 손으로 고치지 마세요 — 다시 생성하면 덮어쓰입니다.
 
@@ -7,9 +7,41 @@
 모든 슬롯은 실제 경로를 그대로 지납니다: 진짜 Claude Code 바이너리 → 브리지 → Copilot SDK → Copilot 모델. 목이나 스텁은 없습니다. 판정은 모델이 무엇을 말했는지가 아니라 **디스크 상태, git 이력, 훅 로그, stream-json 이벤트**로 합니다.
 
 - Claude Code: `2.1.278`
-- 실행 시각: 2026-09-20T16:37:45.541Z → 2026-09-20T16:40:38.648Z
-- 소요: 173초
+- 실행 시각: 2026-09-21T09:45:17.604Z → 2026-09-21T09:53:36.122Z
+- 소요: 499초
 - 호스트: darwin arm64 / node v22.16.0
+
+## 기록된 실행 설정
+
+| 설정 / 대기 | 기록된 값 | 적용 범위 |
+| --- | --- | --- |
+| `--timeout-scale` | 2 | 검증 전용 timeout 배율 |
+| `PENDING_TOOL_WAIT_MS` | 30000 ms (30 s) | 별도의 pending-tool 대기. --timeout-scale을 곱하지 않음 |
+| `--model-concurrency` | 7 | 동시에 실행할 모델 작업자 수 |
+| `--scenario-concurrency` | 2 | 모델별로 동시에 실행할 시나리오 작업자 수 |
+| `bridgeHealthMs` | 240000 ms (240 s) | 검증용 bridge health 대기 |
+| `planTurnMs` | 180000 ms (180 s) | plan-mode의 각 headless 턴 |
+| `backgroundLaunchMs` | 240000 ms (240 s) | v11 background launcher 호출 |
+| `foregroundLaunchMs` | 360000 ms (360 s) | v11 foreground launcher 호출 |
+| `persistentLaunchMs` | 240000 ms (240 s) | v11 persistent launcher 호출 |
+| `detachedOutputMs` | 480000 ms (480 s) | v11 detached 출력 대기 |
+| `scenarioMs.v01-repo-recon` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v02-surgical-edit` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v03-test-fix-loop` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v04-shell-ops` | 840000 ms (840 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v05-multi-step` | 600000 ms (600 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v06-subagent` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v07-mcp-playwright` | 600000 ms (600 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v08-hooks-memory` | 660000 ms (660 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v09-session-resume` | 600000 ms (600 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v10-long-context` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
+| `scenarioMs.v11-daemon-background` | 840000 ms (840 s) | 계획용 값만 기록. v11은 위의 별도 단계별 대기를 사용 |
+
+Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한, SIGKILL 유예 시간과 실제 운용 launcher/daemon 시작 기본값은 timeout 배율로 바뀌지 않습니다.
+
+명령 한정 PENDING_TOOL_WAIT_MS=30000(30초)은 검증 시의 예방 조치이지, 결과 없이 종료되는 현상의 확립된 해결책이 아닙니다.
+
+단일 턴 기준 일정 추정치는 계획용이며 deadline이나 실제 최악의 경우 상한이 아닙니다. 한 슬롯에 여러 호출이 있을 수 있고, v11은 scenarioMs 계획 예산이 아닌 별도의 단계별 대기를 사용합니다.
 
 ## 결과 매트릭스
 
@@ -19,14 +51,15 @@
 | `v02-surgical-edit` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `v03-test-fix-loop` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `v04-shell-ops` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v05-multi-step` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `v05-multi-step` | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ |
 | `v06-subagent` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `v07-mcp-playwright` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `v08-hooks-memory` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `v09-session-resume` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `v10-long-context` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `v11-daemon-background` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-**pass 70 / fail 0 / blocked 0** — 전체 70슬롯, 통과 기준 67.
+**pass 74 / fail 3 / blocked 0** — 전체 77슬롯, 통과 기준 74.
 
 ⚠️(blocked)는 통과가 아닙니다. 전송 계층이 깨져 모델에 대해 아무것도 말해주지 못한 슬롯이며, 분모에 그대로 남습니다.
 
@@ -39,7 +72,8 @@
 **이 시나리오가 잡아내려는 브리지 결함**: 큰 tool_result가 전송 중 잘리거나 재인코딩되는 경우, 또는 다중 호출 턴 순서가 뒤바뀌어 읽지도 않은 경로를 답하는 경우.
 
 판정 기준:
-- A search tool (Glob, Grep or Bash) was actually used.
+- The prompt went in as a stream-json envelope and the CLI replayed it back.
+- A search tool was actually used (Bash — this build offers no Glob or Grep).
 - The answer names the planted file, not either decoy.
 - Every tool_use in the transcript has a matching tool_result.
 - result carries a stop_reason and non-zero usage, and modelUsage names the expected backend.
@@ -51,6 +85,7 @@
 **이 시나리오가 잡아내려는 브리지 결함**: tool_use 페이로드의 공백·개행 정규화로 Edit의 정확 일치가 실패하거나 엉뚱한 줄에 조용히 매칭되는 경우.
 
 판정 기준:
+- A plan-mode turn finished on its own and left the file untouched.
 - The second marked line holds the new value.
 - The first and third marked lines are byte-for-byte unchanged.
 - The requested new file exists with the requested export.
@@ -78,6 +113,8 @@
 - A long-running process was started and watched to completion.
 - The tick log reached at least three lines.
 - git log shows exactly the requested commit subject.
+- A second worktree is registered on its own branch.
+- The worktree's file exists there and never appears in the primary checkout.
 - No ticker process survives the slot.
 
 ### `v05-multi-step` — 파일 종류를 넘나드는 4단계 계획
@@ -90,6 +127,7 @@
 - All four changes are present on disk.
 - The notebook still parses as a valid nbformat 4 document.
 - No step was reported done without the file backing it.
+- The tokens inside the attached PDF and PNG both came back.
 
 ### `v06-subagent` — 서브에이전트 위임
 
@@ -125,6 +163,8 @@ MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp
 - The PreToolUse hook fired and left its log.
 - The forbidden command was denied and never ran.
 - The custom command and skill are advertised in the init event.
+- A plugin loaded from --plugin-dir contributes a command and a skill, both advertised.
+- A cron job was created and came back out of the job list, carrying the id or the prompt it was created with.
 
 ### `v09-session-resume` — 프로세스 간 세션 재개
 
@@ -136,6 +176,7 @@ MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp
 - The resumed process reports the same session id.
 - It recalls the planted build id.
 - It used no file-reading tool: the answer came from conversation context.
+- A forked resume inherits the same context under a session id of its own.
 
 ### `v10-long-context` — 대형 컨텍스트 검색과 추론
 
@@ -144,13 +185,29 @@ MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp
 **이 시나리오가 잡아내려는 브리지 결함**: 업스트림에서 컨텍스트가 조용히 잘려 모델이 남은 절반만 보고 자신 있게 답하는 경우.
 
 판정 기준:
+- The result carries a schema-valid structured object, not just prose.
 - The arithmetic answer is exactly right, which needs both facts.
 - Reported input usage reflects the whole corpus, not a truncated prefix.
 - The answer came from the prompt itself: no file-reading tool was used.
 
+### `v11-daemon-background` — 런처·데몬·백그라운드 에이전트
+
+이 프로젝트가 실제로 배포하는 진입점 — bin/claude-ghcp 런처, 그것이 남기는 상주 브리지 데몬, 런처가 종료된 뒤에도 계속 응답받는 분리형 에이전트.
+
+**이 시나리오가 잡아내려는 브리지 결함**: 데몬은 자신을 띄운 프로세스보다 오래 살기 때문에 수명이 부모가 아니라 레지스트리 파일에 묶인다. 레지스트리가 낡으면 죽은 포트를 건네고, 두 번째 실행이 살아 있는 데몬을 재사용하지 않고 조용히 경쟁 데몬을 띄우며, 종료가 포트를 남긴다. 슬롯마다 단명 브리지를 직접 띄우는 시나리오로는 보이지 않는 영역이다.
+
+판정 기준:
+- The launcher's own preflight passed and it reported a backgrounded session id.
+- claude-ghcp-status reports the daemon running, with a pid and port, under the requested model.
+- The detached agent wrote a value that exists only in a file it had to read.
+- claude agents lists the background session against the slot's workspace.
+- A foreground launch answers from its own ephemeral bridge and leaves the daemon undisturbed.
+- A launch that asks for the persistent bridge goes through the daemon and reuses the same pid and port instead of starting a rival.
+- claude-ghcp-stop reports stopped, status goes not-running, and the registry and log are gone.
+
 ## 커버리지
 
-10개 시나리오가 Claude Code 핵심 기능 인벤토리의 **90.7%**(가중치 78/86)를 실제로 행사합니다. 이 숫자는 산문이 아니라 `scripts/verify/features.mjs`의 기능 목록과 각 시나리오의 `covers`에서 계산됩니다.
+11개 시나리오가 Claude Code 핵심 기능 인벤토리의 **92.2%**(가중치 94/102)를 실제로 행사합니다. 이 숫자는 산문이 아니라 `scripts/verify/features.mjs`의 기능 목록과 각 시나리오의 `covers`에서 계산됩니다.
 
 ### 커버하지 못한 기능 (정직한 잔여분)
 
@@ -161,16 +218,66 @@ MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp
 
 ### 이 빌드에 없는 도구 (분모에서 제외)
 
-Claude Code 2.1.278는 다음 도구를 제공하지 않습니다: `TodoWrite`, `BashOutput`, `KillShell`. 직접 호출을 시켜 확인했고, 모델이 "없다"고 답한 뒤 우회 수단을 택했습니다. 브리지의 결함이 아니라 CLI가 애초에 제공하지 않는 기능이므로, 커버한 것으로도 못 한 것으로도 세지 않고 분모에서 제외합니다.
+Claude Code 2.1.278는 다음 도구를 제공하지 않습니다: `TodoWrite`, `BashOutput`, `KillShell`, `Glob`, `Grep`. `scripts/verify/probe.mjs`가 측정합니다. 각 도구를 이름으로 지목해 호출시키고 스트림을 읽습니다 — 빌드가 제공하지 않는 도구는 아무리 강하게 요구해도 tool_use 블록을 만들 수 없기 때문입니다. 같은 턴에서 Read를 양성 대조군으로 함께 호출시키므로, 모델이 통째로 거부한 경우와 도구가 실제로 없는 경우를 구분할 수 있습니다. 브리지의 결함이 아니라 CLI가 애초에 제공하지 않는 기능이므로, 커버한 것으로도 못 한 것으로도 세지 않고 분모에서 제외합니다.
 
+- `glob` (가중치 3, `Glob` 필요) — Glob 경로 검색
+- `grep` (가중치 3, `Grep` 필요) — Grep 내용 검색
 - `bash-background` (가중치 2, `BashOutput` 필요) — 백그라운드 셸/출력 폴링
 - `todo` (가중치 2, `TodoWrite` 필요) — TodoWrite 작업 추적
 
+## 통과하지 못한 슬롯
+
+### gpt-5.6-terra × `v05-multi-step` — fail
+
+- ❌ the image's token came back — `looked for IMGTAG361B08 in: Completed: greeting updated to “Good morning”
+Completed: VERSION bumped to 0.2.0
+Completed: CHANGELOG.md created with release token S5PKSY
+Completed: RATE updated to `
+- the image's token came back: looked for IMGTAG361B08 in: Completed: greeting updated to “Good morning”
+Completed: VERSION bumped to 0.2.0
+Completed: CHANGELOG.md created with release token S5PKSY
+Completed: RATE updated to 0.08
+PDFDOCD0245E
+IMGTAG
+
+### claude-haiku-4.5 × `v05-multi-step` — fail
+
+- ❌ the image's token came back — `looked for IMGTAG2156A4 in: Perfect! I've completed all four changes:
+
+**Changes completed:**
+1. ✓ src/greet.mjs: Changed "Hello" to "Good morning"
+2. ✓ VERSION: Bumped to 0.2.0
+3. ✓ CHANGELOG.md: Cre`
+- the image's token came back: looked for IMGTAG2156A4 in: Perfect! I've completed all four changes:
+
+**Changes completed:**
+1. ✓ src/greet.mjs: Changed "Hello" to "Good morning"
+2. ✓ VERSION: Bumped to 0.2.0
+3. ✓ CHANGELOG.md: Created with first entry mentio
+
+### gpt-5.6-luna × `v05-multi-step` — fail
+
+- ❌ the image's token came back — `looked for IMGTAGF47F61 in: Completed all four changes:
+1. Greeting changed to “Good morning”.
+2. VERSION bumped to 0.2.0.
+3. Created CHANGELOG.md with release token INV2WO.
+4. RATE changed from 0.05 `
+- the image's token came back: looked for IMGTAGF47F61 in: Completed all four changes:
+1. Greeting changed to “Good morning”.
+2. VERSION bumped to 0.2.0.
+3. Created CHANGELOG.md with release token INV2WO.
+4. RATE changed from 0.05 to 0.08.
+
+PDF token: PDFDOC2
+
 ## 재현
 
+아래 명령은 기록된 설정을 다시 사용합니다. 기록되지 않은 설정에는 과거 값을 추정하지 않고 현재 기본값을 적용합니다.
+
 ```bash
-npm run verify              # 7개 모델 × 10개 시나리오
-npm run verify:plan         # 실행 없이 계획만
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 7 --scenario-concurrency 2 # 7개 모델 × 11개 시나리오
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 7 --scenario-concurrency 2 --dry-run # 실행 없이 계획만
+npm run verify:probe        # 없는 도구 목록의 근거가 되는 능력 프로브
 npm run verify:report       # 최근 실행 결과 요약
 ```
 

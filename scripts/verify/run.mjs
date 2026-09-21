@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Verification runner: 10 scenarios x 7 primary Copilot models.
+ * Verification runner: the full scenario catalog x 7 primary Copilot models.
  *
  * Contract:
  *  - Every slot runs the real path. Real Claude Code binary, real bridge, real
@@ -14,15 +14,18 @@
  *   node scripts/verify/run.mjs
  *   node scripts/verify/run.mjs --models claude-opus-5 --scenarios v01-repo-recon
  *   node scripts/verify/run.mjs --dry-run
+ *   PENDING_TOOL_WAIT_MS=30000 node scripts/verify/run.mjs --timeout-scale 2
  */
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { settingsFileState } from "../../src/settings-file-state.mjs";
 import { PRIMARY_MODELS, SCENARIOS, DEFAULT_PLAN, gateFor, planRun, validateCatalog } from "./scenarios.mjs";
 import { DRIVERS } from "./drivers.mjs";
 import { buildFixture } from "./fixtures.mjs";
+import { createTimeoutPolicy, parseTimeoutScale, readPendingToolWaitMs } from "./timeouts.mjs";
 import {
   ROOT_DIR,
   assertModelServed,
@@ -44,6 +47,7 @@ function parseArgs(argv) {
     scenarios: SCENARIOS.map((s) => s.id),
     modelConcurrency: DEFAULT_PLAN.modelConcurrency,
     scenarioConcurrency: DEFAULT_PLAN.scenarioConcurrency,
+    timeoutScale: 1,
     outDir: path.join(ROOT_DIR, ".verify-runs"),
     dryRun: false,
     keepWorkspaces: false,
@@ -57,6 +61,7 @@ function parseArgs(argv) {
     else if (arg === "--scenarios") opts.scenarios = list(next());
     else if (arg === "--model-concurrency") opts.modelConcurrency = Number(next());
     else if (arg === "--scenario-concurrency") opts.scenarioConcurrency = Number(next());
+    else if (arg === "--timeout-scale") opts.timeoutScale = parseTimeoutScale(next());
     else if (arg === "--out") opts.outDir = path.resolve(next());
     else if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === "--keep-workspaces") opts.keepWorkspaces = true;
@@ -76,15 +81,30 @@ function parseArgs(argv) {
  * Slot execution
  * ------------------------------------------------------------------ */
 
-async function runSlot({ model, scenario, runDir, claudeBin, keepWorkspaces }) {
+async function runSlot({ model, scenario, runDir, claudeBin, keepWorkspaces, timeouts }) {
   const slotId = `${model}__${scenario.id}`;
   const slotDir = path.join(runDir, "slots", slotId);
-  const workspace = path.join(slotDir, "workspace");
   const configDir = path.join(slotDir, "config");
   const settingsPath = path.join(slotDir, "settings.json");
   const bridgeLog = path.join(slotDir, "bridge.log");
 
   fs.mkdirSync(slotDir, { recursive: true });
+
+  // The workspace lives outside this checkout; only the artifacts stay in it.
+  //
+  // .verify-runs/ is inside the repository, so a workspace under it is a git
+  // repo nested in another one. A scenario that asks for `git worktree add
+  // ../wt` then resolves to the REAL repository -- under bypassPermissions that
+  // took a commit onto the working branch and left a stray branch behind. A
+  // temp dir has no parent repo to escape into.
+  //
+  // The temp dir is the slot's and the workspace sits inside it, because a
+  // scenario may legitimately create siblings of its workspace. Everything the
+  // slot makes is then under one root that cleanup removes whole.
+  const slotTmp = fs.mkdtempSync(
+    path.join(fs.realpathSync(os.tmpdir()), `verify-${scenario.id}-`),
+  );
+  const workspace = path.join(slotTmp, "workspace");
   const startedAt = Date.now();
 
   const record = {
@@ -98,7 +118,7 @@ async function runSlot({ model, scenario, runDir, claudeBin, keepWorkspaces }) {
 
   let bridge = null;
   try {
-    bridge = await startBridge({ model, logPath: bridgeLog });
+    bridge = await startBridge({ model, logPath: bridgeLog, healthTimeoutMs: timeouts.bridgeHealthMs });
     record.frontendModel = bridge.frontendModel;
     record.bridgePort = bridge.port;
 
@@ -120,7 +140,8 @@ async function runSlot({ model, scenario, runDir, claudeBin, keepWorkspaces }) {
       configDir,
       claudeBin,
       slotDir,
-      timeoutSeconds: scenario.budgetSeconds,
+      timeoutSeconds: timeouts.scenarioMs[scenario.id] / 1000,
+      timeouts,
     });
 
     Object.assign(record, outcome);
@@ -135,7 +156,11 @@ async function runSlot({ model, scenario, runDir, claudeBin, keepWorkspaces }) {
       try { await bridge.stop(); } catch {}
     }
     if (!keepWorkspaces && record.outcome === "pass") {
-      try { fs.rmSync(workspace, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(slotTmp, { recursive: true, force: true }); } catch {}
+    } else {
+      // Kept for inspection, and it is no longer next to the artifacts, so the
+      // record has to say where it went.
+      record.workspace = workspace;
     }
   }
 
@@ -182,18 +207,28 @@ async function main() {
   }
 
   const scenarios = SCENARIOS.filter((s) => opts.scenarios.includes(s.id));
+  const timeouts = createTimeoutPolicy(scenarios, opts.timeoutScale);
+  const execution = {
+    modelConcurrency: opts.modelConcurrency,
+    scenarioConcurrency: opts.scenarioConcurrency,
+    pendingToolWaitMs: readPendingToolWaitMs(process.env),
+    timeouts,
+  };
   const plan = planRun({
     scenarios,
     models: opts.models,
     modelConcurrency: opts.modelConcurrency,
     scenarioConcurrency: opts.scenarioConcurrency,
+    timeoutScale: timeouts.scale,
   });
 
   console.log(`models:    ${opts.models.length}  (${opts.models.join(", ")})`);
   console.log(`scenarios: ${scenarios.length}`);
   console.log(`slots:     ${plan.slots}`);
   console.log(`coverage:  ${catalog.coverage.percent}% weighted of Claude Code core features`);
-  console.log(`worst case ~${Math.round(plan.wallClockSeconds / 60)} min, peak ${plan.peakClaudeProcesses} Claude processes`);
+  console.log(`single-turn scheduling estimate ~${Math.round(plan.wallClockSeconds / 60)} min, peak ${plan.peakClaudeProcesses} Claude processes`);
+  console.log("Planning estimate only, not a deadline or worst-case bound; extra turns, startup and cleanup can take longer.");
+  console.log(`execution: ${JSON.stringify(execution)}`);
 
   if (opts.dryRun) {
     console.log("\n--dry-run: no calls made.");
@@ -203,6 +238,14 @@ async function main() {
   const claudeBin = resolveClaudeBin();
   const version = claudeVersion(claudeBin);
   console.log(`claude:    ${claudeBin} (${version})\n`);
+
+  // Every slot is handed its own --settings file and its own CLAUDE_CONFIG_DIR,
+  // so nothing here should ever touch the real one. That is a claim about the
+  // launcher and the CLI, not a wish, so it is measured: hash the user's
+  // settings before and after and fail the run if the two differ. A suite that
+  // silently rewrote the machine it ran on would still go green otherwise.
+  const userSettingsPath = path.join(os.homedir(), ".claude", "settings.json");
+  const userSettingsBefore = settingsFileState(userSettingsPath);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const runDir = path.join(opts.outDir, stamp);
@@ -222,6 +265,7 @@ async function main() {
         runDir,
         claudeBin,
         keepWorkspaces: opts.keepWorkspaces,
+        timeouts,
       });
       slotStream.write(JSON.stringify(record) + "\n");
       done += 1;
@@ -242,6 +286,9 @@ async function main() {
   const counts = { pass: 0, fail: 0, blocked: 0 };
   for (const record of flat) counts[record.outcome] = (counts[record.outcome] ?? 0) + 1;
 
+  const userSettingsAfter = settingsFileState(userSettingsPath);
+  const userSettingsIntact = userSettingsBefore === userSettingsAfter;
+
   const gate = gateFor(flat.length);
   const summary = {
     startedAt: new Date(startedAt).toISOString(),
@@ -252,11 +299,21 @@ async function main() {
     host: { platform: os.platform(), arch: os.arch(), release: os.release() },
     models: opts.models,
     scenarios: scenarios.map((s) => ({ id: s.id, name: s.name, covers: s.covers })),
+    execution,
     coverage: catalog.coverage,
     counts,
     total: flat.length,
     gate,
-    green: counts.pass >= gate,
+    userSettings: {
+      path: userSettingsPath,
+      intact: userSettingsIntact,
+      before: userSettingsBefore,
+      after: userSettingsAfter,
+    },
+    // A run that rewrote the machine it ran on is not green, however many slots
+    // passed. It is a separate failure from any slot's, so it is reported
+    // separately rather than folded into the counts.
+    green: counts.pass >= gate && userSettingsIntact,
     slotsFile: path.relative(ROOT_DIR, slotsPath),
   };
   fs.writeFileSync(path.join(runDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n", "utf8");
@@ -265,6 +322,13 @@ async function main() {
     `\npass ${counts.pass}  fail ${counts.fail}  blocked ${counts.blocked}  of ${flat.length}` +
       `   (gate: ${gate})`,
   );
+  if (!userSettingsIntact) {
+    console.log(
+      `\n  FAILED: ${userSettingsPath} changed during the run.\n` +
+        `  before ${userSettingsBefore}\n  after  ${userSettingsAfter}\n` +
+        "  Every slot is handed its own --settings and CLAUDE_CONFIG_DIR; nothing here may touch the real one.",
+    );
+  }
   console.log(`artifacts: ${path.relative(ROOT_DIR, runDir)}`);
   console.log(`report:    node scripts/verify/report.mjs ${path.relative(ROOT_DIR, runDir)}`);
 

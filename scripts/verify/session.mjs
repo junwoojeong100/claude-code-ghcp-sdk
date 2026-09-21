@@ -65,6 +65,11 @@ export function runHeadless({
   extraArgs = [],
   transcriptPath,
   env = process.env,
+  // "stream-json" sends the prompt as a user-message envelope instead of raw
+  // text, which is the input half of the stream protocol. Only the output half
+  // is exercised otherwise, and the two are separate code paths.
+  inputFormat = "text",
+  replayUserMessages = false,
 }) {
   // The prompt goes in on stdin, never in argv.
   //
@@ -80,6 +85,8 @@ export function runHeadless({
     "--model", frontendModel,
     "--output-format", "stream-json",
     "--verbose",
+    ...(inputFormat === "stream-json" ? ["--input-format", "stream-json"] : []),
+    ...(replayUserMessages ? ["--replay-user-messages"] : []),
     ...extraArgs,
     "-p",
   ];
@@ -103,8 +110,19 @@ export function runHeadless({
 
     // A closed stdin is how print mode knows the prompt is complete. If the
     // child is already gone, the write fails and the close handler reports it.
+    //
+    // Under stream-json input the same prompt goes in as a user-message
+    // envelope. That is a different parser on the far side, not a different
+    // spelling of the same one.
+    const payload =
+      inputFormat === "stream-json"
+        ? `${JSON.stringify({
+            type: "user",
+            message: { role: "user", content: [{ type: "text", text: prompt }] },
+          })}\n`
+        : prompt;
     child.stdin.on("error", () => {});
-    child.stdin.end(prompt, "utf8");
+    child.stdin.end(payload, "utf8");
 
     const events = [];
     const rawLines = [];
@@ -327,6 +345,39 @@ export class HeadlessRun {
 
   get mcpServers() {
     return this.init?.mcp_servers ?? [];
+  }
+
+  /**
+   * The schema-validated object a --json-schema turn produced.
+   *
+   * Claude Code validates and retries against the schema itself, so a parsed
+   * object here means the whole validator path survived the bridge. The
+   * envelope has carried it under more than one key across versions, and the
+   * string form is the fallback when only the prose made it.
+   */
+  get structuredOutput() {
+    const result = this.result;
+    for (const candidate of [result?.structured_output, result?.structuredOutput]) {
+      if (candidate && typeof candidate === "object") return candidate;
+    }
+    if (typeof result?.result === "string") {
+      try {
+        const parsed = JSON.parse(result.result);
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch {}
+    }
+    return null;
+  }
+
+  /**
+   * User messages the CLI echoed back under --replay-user-messages.
+   *
+   * A replay only exists if the input envelope was parsed, so its presence is
+   * the one piece of evidence that the stream-json INPUT path ran rather than
+   * the plain-text one.
+   */
+  get replayedUserMessages() {
+    return this.events.filter((event) => event.type === "user" && event.isReplay === true);
   }
 
   get permissionDenials() {

@@ -34,6 +34,16 @@ const DEFAULT_PENDING_TOOL_WAIT_MS = 10_000;
 const DEFAULT_MAX_TOOL_RESULTS = 32;
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
+// Claude can call a tool the client never declared (ExitPlanMode while in plan
+// mode). Such a call is expected never to be registered, so no result can ever
+// arrive -- but that is an expectation, not a guarantee: the runtime that
+// decides what to register is out of process, and the installed SDK only
+// forwards what it receives (dist/session.js, _handleBroadcastEvent). So the
+// drop below never assumes it, and checks pendingByToolCallId instead.
+const PENDING_TOOL_UNREGISTERED = "pending_tool_unregistered";
+// Copilot can still register a dropped tool call moments after the turn ended,
+// so a bounded number of dropped call ids is remembered to ignore it.
+const MAX_DROPPED_TOOL_CALLS = 64;
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -466,6 +476,10 @@ export class SessionManager {
       firstTurnReserved: true,
       generation,
       identity,
+      // The tool signature is part of the state key, so the declared names
+      // never change for the lifetime of this state.
+      declaredToolNames: new Set(tools.map((tool) => tool.name)),
+      droppedToolCallIds: new Set(),
       historySnapshot: null,
       lastUsedAt: Date.now(),
       queue: Promise.resolve(),
@@ -777,9 +791,28 @@ export class SessionManager {
           return;
         }
 
+        // A call to a tool the client never declared can never be registered,
+        // so drop it now instead of waiting out the pending tool timeout.
+        const declared = [];
+        const undeclared = [];
+        for (const request of combined.toolRequests) {
+          const target = this.#isDeclaredTool(state, request.name)
+            ? declared
+            : undeclared;
+          target.push(request);
+        }
+        // A call Copilot already registered comes back and is waited for like
+        // any declared call, because the client is the only party that can
+        // answer it.
+        declared.push(...this.#dropToolRequests(state, undeclared));
+        if (!declared.length) {
+          finish(null, { ...combined, toolRequests: declared });
+          return;
+        }
+
         completionStarted = true;
-        Promise.all(
-          combined.toolRequests.map((request) =>
+        Promise.allSettled(
+          declared.map((request) =>
             this.#waitForPendingRequest(
               state,
               request.toolCallId,
@@ -787,7 +820,42 @@ export class SessionManager {
             ),
           ),
         )
-          .then(() => finish(null, combined))
+          .then((outcomes) => {
+            const fatal = outcomes.find(
+              (outcome) =>
+                outcome.status === "rejected" &&
+                outcome.reason?.code !== PENDING_TOOL_UNREGISTERED,
+            );
+            if (fatal) {
+              finish(fatal.reason);
+              return;
+            }
+            // Dropping the phantom call keeps the content the model already
+            // produced instead of failing the whole turn over it. A call whose
+            // registration landed after its wait timed out is not a phantom,
+            // so it comes back here and stays in the turn.
+            const late = this.#dropToolRequests(
+              state,
+              declared.filter(
+                (request, index) => outcomes[index].status === "rejected",
+              ),
+            );
+            const kept = new Set(
+              declared
+                .filter((request, index) => outcomes[index].status === "fulfilled")
+                .concat(late)
+                .map((request) => request.toolCallId),
+            );
+            finish(null, {
+              ...combined,
+              toolRequests: combined.toolRequests.filter((request) =>
+                kept.has(request.toolCallId),
+              ),
+            });
+          })
+          // Nothing else awaits this chain, so without a terminal handler a
+          // throw here would surface as an unhandled rejection and the turn
+          // would hang until the turn timeout.
           .catch((error) => finish(error));
       };
 
@@ -864,7 +932,64 @@ export class SessionManager {
     };
   }
 
+  #isDeclaredTool(state, name) {
+    // An unnamed request can only be classified by waiting for Copilot.
+    if (typeof name !== "string" || !name) return true;
+    return state.declaredToolNames.has(name);
+  }
+
+  // Returns the requests that were NOT dropped because Copilot had already
+  // registered them, which the caller must keep in the turn.
+  #dropToolRequests(state, requests) {
+    const dropped = [];
+    const registered = [];
+    for (const request of requests) {
+      const { name, toolCallId } = request;
+      // Copilot is waiting on a result for a call it registered, and only the
+      // client can produce one. Deleting the pending entry here would answer
+      // nobody: the client never sees the call and Copilot waits forever.
+      if (state.pendingByToolCallId.has(toolCallId)) {
+        registered.push(request);
+        continue;
+      }
+      // An unregistered call is the case this drop exists for. The client never
+      // sees it, so it never returns a result, and a pending entry created by a
+      // late registration would keep this state from ever being evicted.
+      state.pendingByToolCallId.delete(toolCallId);
+      if (state.droppedToolCallIds.has(toolCallId)) continue;
+      if (state.droppedToolCallIds.size >= MAX_DROPPED_TOOL_CALLS) {
+        state.droppedToolCallIds.delete(
+          state.droppedToolCallIds.values().next().value,
+        );
+      }
+      state.droppedToolCallIds.add(toolCallId);
+      dropped.push({ name, toolCallId });
+    }
+
+    // The sink is caller-supplied and this runs on a turn-completion chain, so
+    // a broken reporter must not decide whether the turn resolves. State is
+    // already consistent above, which leaves nothing to unwind here.
+    for (const { name, toolCallId } of dropped) {
+      try {
+        this.onDiagnostic({
+          event: "bridge.unregistered_tool_call",
+          tool: name,
+          toolCallId,
+        });
+      } catch {}
+    }
+
+    return registered;
+  }
+
   #rememberPendingRequest(state, event) {
+    // The turn already dropped this call, so remembering it now would pin the
+    // state on a request that can never be answered. The marker is only read
+    // here, never consumed: Copilot can retry a registration, and a consuming
+    // test would let the retry create exactly the pending entry this guard
+    // exists to prevent. MAX_DROPPED_TOOL_CALLS already caps the marker set in
+    // #dropToolRequests, so leaving the marker in place cannot grow it.
+    if (state.droppedToolCallIds.has(event.data.toolCallId)) return;
     const pending = {
       requestId: event.data.requestId,
       toolName: event.data.toolName,
@@ -911,11 +1036,11 @@ export class SessionManager {
       };
       const onAbort = () => waiter.reject(createAbortError());
       const timeout = setTimeout(() => {
-        waiter.reject(
-          new Error(
-            `No pending GitHub Copilot tool call found for ${toolCallId}.`,
-          ),
+        const error = new Error(
+          `No pending GitHub Copilot tool call found for ${toolCallId}.`,
         );
+        error.code = PENDING_TOOL_UNREGISTERED;
+        waiter.reject(error);
       }, this.pendingToolWaitMs);
       waiters.add(waiter);
       state.pendingRequestWaiters.set(toolCallId, waiters);

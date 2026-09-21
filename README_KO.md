@@ -2,26 +2,28 @@
 
 > **언어 / Language:** [English](README.md) | 한국어
 
-Claude Code의 UI와 도구 실행은 그대로 두고, 모델 호출만 GitHub Copilot SDK 또는
-LiteLLM으로 연결합니다. 기존 permissions, hooks, MCP, skills도 계속 사용합니다.
+Claude Code의 UI와 도구 실행은 그대로 두고, 모델 호출만 GitHub Copilot SDK로
+연결합니다. 같은 bridge 앞에 LiteLLM proxy를 두는 경로도 지원합니다. 기존
+permissions, hooks, MCP, skills도 계속 사용합니다.
 
 ## 실행 경로 선택
 
 | 상황 | 경로 | 실행 명령 |
 |---|---|---|
 | 내 GitHub Copilot 계정과 조직의 모델 정책을 그대로 사용 | **Direct SDK** | `./bin/claude-ghcp` |
-| 기존 gateway, virtual key 또는 다른 provider를 사용 | **LiteLLM** | `./bin/claude-litellm` |
+| 기존 gateway, virtual key, budget, request logging을 bridge 앞에 배치 | **LiteLLM** | `./bin/claude-litellm` |
 
 **대부분의 사용자는 Direct SDK를 선택하면 됩니다.** 조직에서 이미 LiteLLM gateway를
-운영하거나 다른 provider가 필요할 때만 LiteLLM을 선택합니다. 두 경로를 함께 설정할
-필요는 없습니다.
+운영하거나 virtual key, budget, request logging이 필요할 때만 LiteLLM을
+선택합니다. LiteLLM은 같은 bridge 앞에 놓이며 기능이 아니라 hop 하나를
+더합니다. 두 경로를 함께 설정할 필요는 없습니다.
 
 ## 문서 안내
 
 | 목적 | 문서 |
 |---|---|
 | 처음 설치하고 실행 | 이 README의 [Direct SDK 빠른 시작](#direct-sdk-빠른-시작) |
-| LiteLLM client 또는 gateway 구성 | [LiteLLM 설정 가이드](docs/LITELLM_KO.md) |
+| bridge 앞에 LiteLLM proxy 배치 | [LiteLLM 설정 가이드](docs/LITELLM_KO.md) |
 | 구현, 보안 경계, 검증 범위 확인 | [아키텍처](docs/ARCHITECTURE_KO.md) |
 | 구현 가능한 공백과 구조적 한계 구분 | [호환성](docs/COMPATIBILITY_KO.md) |
 | 기능별 근거와 커버리지 비율 확인 | [검증 결과](docs/VERIFICATION_KO.md) |
@@ -133,7 +135,7 @@ Copilot catalog 기준으로 GPT-6 Astra는 1,178,000 토큰, GPT-5.6 세 모델
 현재 전체 기능 검증 대상은 정확히 `claude-opus-5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
 `gpt-6-astra`의 7종입니다. 과거 검증 기록은 초기화했으며 새 실행의 증거로만
-호환성을 판단합니다. 7종 모두 동일한 10개 시나리오를 받으며, 축소된 smoke test
+호환성을 판단합니다. 7종 모두 동일한 11개 시나리오를 받으며, 축소된 smoke test
 등급을 두는 모델은 없습니다. [검증 결과](docs/VERIFICATION_KO.md)를 참고합니다.
 `gpt-5.5`와 다른 catalog 모델은 이 검증에 포함하지 않습니다. Catalog에
 표시된다는 것만으로 모든 모델의 tool, image, reasoning 등 기능 호환성을 보증하지
@@ -204,16 +206,25 @@ Ultracode는 `xhigh` 지원 모델에서만 사용할 수 있으며 일반 호�
 
 ## LiteLLM 빠른 시작
 
-LiteLLM은 로컬 Node.js bridge와 `@github/copilot-sdk`를 사용하지 않는 별도
-경로입니다.
+LiteLLM은 이 저장소의 bridge 앞에 놓이는 proxy입니다. bridge나
+`@github/copilot-sdk`를 대체하지 않고, 그 앞에 virtual key, budget,
+request logging을 더합니다.
 
 ```text
 Claude Code
   -> LiteLLM /v1/messages
-  -> LiteLLM에 구성된 provider
+  -> 이 저장소의 로컬 bridge
+  -> @github/copilot-sdk
+  -> GitHub Copilot 모델
 ```
 
-기존 LiteLLM gateway에 연결할 때는 저장소만 복제합니다. `npm install`과
+LiteLLM은 `anthropic/*` provider로 bridge에 연결하며 `api_base`는 bridge
+root를 가리킵니다. LiteLLM 자체 `github_copilot/*` provider는 사용하지
+않으며, LiteLLM 쪽의 별도 GitHub device OAuth도 없습니다.
+
+gateway를 운영하는 사람은 bridge도 함께 운영하므로 `npm install`,
+`copilot login` 세션, 실행 중인 bridge daemon이 필요합니다. 다른 사람이
+운영하는 gateway에 연결하기만 할 때는 저장소만 복제합니다. `npm install`과
 `copilot login`은 필요하지 않습니다.
 
 ```bash
@@ -231,12 +242,24 @@ export LITELLM_MODEL="claude-sonnet-5"
 ./bin/claude-litellm
 ```
 
-GitHub Copilot 모델을 사용하려면 model alias가 `github_copilot/claude-*` backend에
-연결돼 있어야 합니다. 다른 provider에 연결된 alias는 GitHub Copilot을 사용하지
-않습니다.
+`LITELLM_MODEL`은 gateway 구성의 `model_name` alias입니다. GitHub Copilot
+모델을 제공하려면 그 alias가 `model: anthropic/<copilot-model-id>`로
+해석되고 `api_base`가 이 저장소의 bridge root를 가리켜야 합니다. 다른 곳을
+가리키는 alias는 GitHub Copilot을 사용하지 않습니다.
 
-로컬 gateway 설치, GitHub device OAuth, model mapping, multi-user 인증과 문제 해결은
-[LiteLLM 가이드](docs/LITELLM_KO.md)를 따릅니다.
+bridge는 `ALLOW_NON_LOOPBACK=1`을 설정하지 않는 한 loopback에만 bind하므로
+LiteLLM은 bridge와 같은 호스트에서 실행해야 합니다. 그 호스트에서
+`claude-ghcp`도 실행한다면 두 셸에서 같은 `GHCP_BRIDGE_PORT`를 export합니다.
+요청 포트는 daemon configuration fingerprint의 일부이므로, 이를 설정하지 않고
+실행한 launcher는 고정 포트의 daemon을 종료하고 새 포트와 새 token으로 daemon을
+다시 시작하며, LiteLLM은 connection refused를 받습니다.
+
+LiteLLM은 이 저장소의 검증 범위 밖입니다. `npm run verify` matrix(7 모델 x
+11 시나리오 = 77 슬롯)는 `src/server.mjs`를 직접 실행하며 LiteLLM을 기동하지
+않습니다. LiteLLM 경로는 검증된 경로가 아니라 구성 참고 자료입니다.
+
+bridge daemon과 고정 포트·token, 예제 구성, model mapping, multi-user 인증과
+문제 해결은 [LiteLLM 가이드](docs/LITELLM_KO.md)를 따릅니다.
 
 ## 명령 요약
 
@@ -319,14 +342,18 @@ VS Code나 JetBrains의 통합 터미널에서 실행 스크립트를 직접 실
 # 단위·구조 테스트. 모델 호출도 크레딧 소모도 없습니다.
 npm test
 
-# 전체 검증 매트릭스: 10개 시나리오 x 7개 모델 = 70개 실행 슬롯
+# 전체 검증 매트릭스: 11개 시나리오 x 7개 모델 = 77개 실행 슬롯 (timeout scale: 1)
 npm run verify
+
+# 검증 대기 시간을 늘립니다. 재정의는 이 명령에만 적용됩니다.
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2
 
 # 드라이버를 다듬는 동안 한 칸만 실행
 npm run verify -- --models claude-opus-5 --scenarios v04-shell-ops
 
-# 계획·커버리지·예상 소요 시간만 출력. 아무것도 실행하지 않습니다.
+# 계획·커버리지·단일 턴 기준 일정 추정치만 출력. 아무것도 실행하지 않습니다.
 npm run verify -- --dry-run
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --dry-run
 
 # 슬롯 작업 디렉터리를 지우지 않고 남겨 사후 분석
 npm run verify -- --scenarios v08-hooks-memory --keep-workspaces
@@ -337,6 +364,22 @@ npm run verify:report
 # docs/VERIFICATION.md와 docs/VERIFICATION_KO.md 재생성
 npm run verify:doc
 ```
+
+`--timeout-scale`의 기본값은 `1`이므로 기존 `npm run verify` 명령의 검증 예산은
+그대로입니다. `2`는 검증 실행기의 모델 응답 관련 대기(headless 턴, plan 턴,
+v11 launcher/출력 대기)와 bridge-health 대기를 두 배로 늘립니다. v01–v10의
+시나리오 timeout은 **슬롯 전체가 아니라 headless 턴/호출마다 적용**됩니다.
+여러 턴으로 구성된 슬롯은 그만큼 여러 번 기다릴 수 있습니다. v11의 catalog 기반
+`scenarioMs` 값은 **계획용일 뿐**이며 실제 대기는 별도의 launcher/출력 제한을
+사용합니다. Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한,
+SIGKILL 유예 시간과 실제 운용 launcher/daemon 시작 기본값은 바뀌지 않습니다.
+
+명령 한정 `PENDING_TOOL_WAIT_MS=30000` 재정의는 별도의 pending-tool 대기를
+30초로 설정합니다. `--timeout-scale`을 곱하지 않으며 runtime 기본값으로 저장하지도
+않습니다. 검증 시의 예방 조치이지 **결과 없이 종료되는 현상의 확립된 해결책은
+아닙니다**. `--model-concurrency`와 `--scenario-concurrency`는 모델 작업자 수와
+모델별 시나리오 작업자 수를 정합니다(기본값: `7`, `2`). Dry-run의 단일 턴 기준
+일정 추정치는 계획을 돕는 값이지 **deadline이나 실제 최악의 경우 상한은 아닙니다**.
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용합니다. 모든 슬롯은
 실제 Claude Code 바이너리 → bridge → Copilot SDK → 실제 모델의 전체 경로를
@@ -351,12 +394,19 @@ npm run verify:doc
 
 `blocked`는 통과가 아닙니다. timeout, bridge 중단, 짝이 맞지 않는
 `tool_use`/`tool_result`는 그 슬롯이 모델에 대해 아무것도 말해 주지 못한다는
-뜻이므로 분모에 그대로 남습니다. 통과 수가 기준(70개 중 67개)에 미치지 못하면
+뜻이므로 분모에 그대로 남습니다. 통과 수가 기준(77개 중 74개)에 미치지 못하면
 실행기는 0이 아닌 코드로 종료합니다.
+
+두 명령 모두 LiteLLM은 다루지 않습니다. `npm run verify`는 `src/server.mjs`를
+직접 실행하며 LiteLLM을 기동하지 않으므로, LiteLLM 경로는 검증된 경로가
+아니라 구성 참고 자료입니다.
 
 [검증 결과](docs/VERIFICATION_KO.md)에 최신 전체 매트릭스, 각 시나리오의 의도,
 그리고 각 시나리오가 bridge에서 잡아내려는 결함을 기록합니다. 실행 기록에서
-생성하므로 다시 생성하면 덮어씁니다.
+생성하므로 다시 생성하면 덮어씁니다. 터미널 및 영문/한글 보고서는 `summary.execution`에서
+기록된 timeout 배율, pending-tool 대기, 동시성, 실제 설정된 시나리오별·단계별 제한도
+읽어 표시합니다. 재현 명령에는 기록된 재정의를 포함하며, 이 메타데이터가 없는 과거
+실행은 현재 기본값으로 채우지 않고 기록 없음으로 표시합니다.
 
 각 명령이 확인하는 범위는
 [아키텍처 문서의 검증 범위](docs/ARCHITECTURE_KO.md#검증-범위)를 참고합니다.

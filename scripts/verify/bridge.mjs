@@ -14,10 +14,31 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { DEFAULT_TIMEOUTS } from "./timeouts.mjs";
+
 export const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-const HEALTH_TIMEOUT_MS = 45_000;
+// A cold bridge boot makes three upstream Copilot round-trips inside
+// manager.start() -- client.start(), listModels(), listSessions() -- before it
+// ever reaches server.listen. Every slot killed at 45s left a 0-byte log, so
+// none of them had got that far.
+//
+// This is a ceiling only because probeHealth aborts. A bare fetch carries no
+// deadline of its own -- against a port that is bound but silent one was still
+// pending at 20s, with undici's header timeout the only thing that would ever
+// end it -- and waitForHealth compares the clock between probes, never during
+// one, so a single probe used to outlast the whole budget. With the abort the
+// worst case is the budget plus one unfinished iteration (a 2s probe and a
+// 200ms poll): 122.2s at the default scale. waitForHealth's isAlive check gives up on a
+// genuinely dead child in about a second, so the ceiling is only ever spent on
+// a bridge that is alive but slow. It is not free in the schedule: planRun
+// models no health wait at all, so wall clock now runs further ahead of the
+// estimate than it did.
+const HEALTH_TIMEOUT_MS = DEFAULT_TIMEOUTS.bridgeHealthMs;
 const HEALTH_POLL_MS = 200;
+// Well above a loopback /health round-trip (milliseconds) and well below the
+// budget, so a bridge that is merely busy is retried rather than written off.
+const HEALTH_PROBE_TIMEOUT_MS = 2_000;
 
 export class BridgeStartupError extends Error {
   constructor(message, details = {}) {
@@ -127,7 +148,9 @@ export async function pickFreePort() {
 
 async function probeHealth(port) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    const res = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+    });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -135,7 +158,7 @@ async function probeHealth(port) {
   }
 }
 
-async function waitForHealth(port, { timeoutMs, isAlive }) {
+export async function waitForHealth(port, { timeoutMs, isAlive }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (isAlive && !isAlive()) return null;

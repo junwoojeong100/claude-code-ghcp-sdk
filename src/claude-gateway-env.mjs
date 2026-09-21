@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 export const CLAUDE_PROVIDER_SELECTORS = Object.freeze([
   "CLAUDE_CODE_USE_AWS",
@@ -67,7 +68,11 @@ export function createGatewaySettings({
 
 export function writeGatewaySettings(outputPath, options) {
   const settings = createGatewaySettings(options);
+  // The file carries the bridge token; an existing file keeps its old mode
+  // unless we chmod it, and the daemon-owned parent may not exist yet.
+  mkdirSync(path.dirname(outputPath), { mode: 0o700, recursive: true });
   writeFileSync(outputPath, `${JSON.stringify(settings, null, 2)}\n`, {
     mode: 0o600,
   });
+  chmodSync(outputPath, 0o600);
 }

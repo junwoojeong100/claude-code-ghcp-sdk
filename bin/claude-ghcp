@@ -117,8 +117,10 @@ fi
 
 FRONTEND_MODEL="$(node "$ROOT_DIR/src/model-cli.mjs" frontend "$GHCP_MODEL_VALUE")"
 RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-ghcp.XXXXXX")"
-SETTINGS_FILE="$RUNTIME_DIR/settings.json"
 BRIDGE_LOG="$RUNTIME_DIR/bridge.log"
+# Assigned per mode below: the ephemeral bridge owns a file under RUNTIME_DIR,
+# the persistent bridge hands one out of the daemon directory instead.
+SETTINGS_FILE=""
 BRIDGE_PID=""
 BRIDGE_TOKEN=""
 
@@ -127,7 +129,14 @@ cleanup() {
     kill "$BRIDGE_PID" 2>/dev/null || true
     wait "$BRIDGE_PID" 2>/dev/null || true
   fi
-  rm -f "$SETTINGS_FILE"
+  # In persistent-bridge mode the settings file must outlive this process.
+  # Claude Code hands a backgrounded session to its own daemon, which respawns
+  # the worker with --settings <path> long after this launcher has returned;
+  # deleting it here killed every such session with "Settings file not found".
+  # Its lifetime belongs to the bridge daemon, and claude-ghcp-stop ends it.
+  if ((PERSISTENT_BRIDGE == 0)) && [[ -n "$SETTINGS_FILE" ]]; then
+    rm -f "$SETTINGS_FILE"
+  fi
   rm -rf "$RUNTIME_DIR"
 }
 trap cleanup EXIT INT TERM
@@ -145,7 +154,18 @@ if ((PERSISTENT_BRIDGE)); then
     printf '%s' "$DAEMON_JSON" |
       node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).token))'
   )"
+  SETTINGS_FILE="$(
+    printf '%s' "$DAEMON_JSON" |
+      node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).settingsPath))'
+  )"
+  # The daemon writes its own log; RUNTIME_DIR's copy is never created, and the
+  # error paths below would `sed` a file that does not exist.
+  BRIDGE_LOG="$(
+    printf '%s' "$DAEMON_JSON" |
+      node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).logPath))'
+  )"
 else
+  SETTINGS_FILE="$RUNTIME_DIR/settings.json"
   BRIDGE_TOKEN="$(
     node -e 'console.log(require("node:crypto").randomBytes(24).toString("hex"))'
   )"
@@ -156,8 +176,34 @@ else
   node "$ROOT_DIR/src/server.mjs" >"$BRIDGE_LOG" 2>&1 &
   BRIDGE_PID=$!
 
-  for _ in {1..120}; do
-    if curl --silent --fail "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null 2>&1; then
+  # A cold boot makes three upstream Copilot round-trips before the server
+  # listens, so the old 30s ceiling gave up on a bridge that was still booting.
+  # The ceiling is a wall-clock deadline rather than an iteration count because
+  # an iteration costs the curl probe as well as the sleep: `N * 0.25s` is only
+  # the floor, and against a bridge that binds the port but never answers a bare
+  # curl hangs for minutes (verified: still running at 20s with no --max-time).
+  # --max-time caps that, so the wait really is bounded by 60s plus at most one
+  # overshooting iteration (2s + 0.25s), and the two confirmation probes below
+  # add a 5s cap each: 72.25s worst case. Nothing used to pin any of these --
+  # every bound could be deleted with the suite still green -- so
+  # test/launcher.test.mjs now parses these five numbers back out of this file
+  # and re-adds them against the figure on this line. Change one without
+  # changing the other and that test goes red.
+  #
+  # 60s and not more because this ceiling is spent out of a caller's budget. The
+  # v11 driver's second launch is spawnSync(bin/claude-ghcp, ["-p", ...],
+  # {timeout: 180_000}) in scripts/verify/drivers.mjs, and with no --background
+  # it takes this ephemeral branch, so 180 - 72.25 leaves ~107s for the Claude
+  # turn itself -- against a measured 63.1s and 63.5s for the equivalent
+  # single-turn read-and-answer (.verify-runs/2026-09-21T02-02-27-681Z/
+  # slots.jsonl, v01-repo-recon evidence.durationMs). A 120s ceiling here would
+  # have left ~60s and had spawnSync SIGKILL a bridge that was merely slow to
+  # boot -- the exact case this wait exists to tolerate.
+  #
+  # A dead PID is still caught on the next iteration.
+  HEALTH_DEADLINE=$((SECONDS + 60))
+  while ((SECONDS < HEALTH_DEADLINE)); do
+    if curl --silent --fail --max-time 2 "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null 2>&1; then
       break
     fi
     if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
@@ -169,15 +215,29 @@ else
   done
 fi
 
-curl --silent --fail "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null || {
+# Capped for the same reason as the loop probe: an uncapped curl against a port
+# that is bound but silent would spend minutes here, past every caller's budget.
+curl --silent --fail --max-time 5 "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null || {
   echo "Timed out waiting for the GHCP bridge." >&2
   sed -n '1,120p' "$BRIDGE_LOG" >&2
   exit 1
 }
 
+# Capped like both probes above, and for a sharper reason: this one is a fetch,
+# so an AbortSignal is the only thing that bounds it. Undici's default header
+# timeout runs to minutes, and against a port that is bound but silent an
+# unsignalled fetch outlives the whole ceiling above -- measured still pending
+# at 30s against a listener that accepts the connection and never writes, while
+# the capped curl beside it gave up at 2.04s. 5s matches the health probe above;
+# src/bridge-daemon.mjs caps this same endpoint at 2s, and once /health answers
+# this route is an in-memory read of manager.listModels() with no upstream
+# round-trip, so 5s is slack rather than a budget.
 if ! node -e '
   const [url, token, expected] = process.argv.slice(1);
-  fetch(url, {headers: {"x-api-key": token}})
+  fetch(url, {
+    headers: {"x-api-key": token},
+    signal: AbortSignal.timeout(5_000),
+  })
     .then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
