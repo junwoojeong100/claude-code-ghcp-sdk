@@ -149,8 +149,9 @@ export const SCENARIOS = Object.freeze([
       "A long-running process was started and watched to completion.",
       "The tick log reached at least three lines.",
       "git log shows exactly the requested commit subject.",
-      "A second worktree is registered on its own branch.",
-      "The worktree's file exists there and never appears in the primary checkout.",
+      "Exactly one secondary worktree matches the requested branch or its native EnterWorktree equivalent.",
+      "The same worktree holds the marker file both on disk and committed unchanged in HEAD.",
+      "The marker file is absent from both the primary checkout and its HEAD.",
       "No ticker process survives the slot.",
     ],
     // Three slots passed at 297-328s while three more were killed 24-43s past
@@ -372,9 +373,9 @@ export function validateCatalog(scenarios = SCENARIOS) {
   return { ok: problems.length === 0, problems, coverage: cov, run };
 }
 
-/** 95% gate. `blocked` is not a pass, so it can never be rounded up to green. */
+/** Strict all-pass gate. Empty/incomplete matrices are rejected by assessRun(). */
 export function gateFor(applicableCount) {
-  return Math.ceil(applicableCount * 0.95);
+  return applicableCount;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

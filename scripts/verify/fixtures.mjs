@@ -359,7 +359,7 @@ function fixtureMultiStep(dir, { token }) {
   // prompt, so a model could answer "PDFDOC-<token>" from the prompt alone and
   // score the attachment checks without opening either file. One did.
   //
-  // Hex keeps every character inside the block font's alphabet, and a byte
+  // Hex keeps every character inside the fixture font's alphabet, and a byte
   // count fixes the width: a base-36 slice of Math.random() is not guaranteed
   // to be six characters, and a short draw would leave a needle that matches
   // almost any answer. The entropy here is the whole check. No separator

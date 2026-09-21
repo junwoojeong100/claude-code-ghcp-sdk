@@ -323,9 +323,18 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
   와이어 수준이 불건전한 슬롯은 `fail`이 아니라 `blocked`이며 분모에 남습니다.
   `blocked`는 절대 통과가 아닙니다.
 - 슬롯마다 자체 workspace, `settings.json`, `CLAUDE_CONFIG_DIR`을 갖습니다.
-  사용자의 `~/.claude`는 읽지도 쓰지도 않습니다.
+  실행기는 변경 감지를 위해 `~/.claude/settings.json`의 실행 전후 해시를
+  읽지만, 내용을 저장하거나 슬롯 설정으로 사용하지 않습니다.
+- 새 실행은 `strict-all-pass-v1`을 적용합니다. 전체 실행은 예상한 고유 슬롯
+  77개 모두, 부분 실행은 선택한 모든 슬롯이 통과해야 합니다. 누락·중복·예상 밖
+  슬롯, 사용자 설정 변경, 구현 출처 기록 누락·변경이 있으면 기록된 슬롯이 모두
+  pass여도 전체 판정은 통과가 아닙니다.
 - `npm run verify:report`는 최신 실행을 출력하고, `npm run verify:doc`은
   [검증 결과](VERIFICATION_KO.md)를 두 언어로 다시 생성합니다.
+  특정 완료된 전체 실행을 문서화하려면
+  `node scripts/verify/report.mjs <run-directory> --markdown`(또는 `--markdown=ko`)에
+  실행 디렉터리를 명시합니다. 최신 실행 자동 선택은 부분 실행이나 미완료 실행을
+  고를 수 있습니다.
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
 

@@ -264,6 +264,7 @@ export class SessionManager {
     this.models = [];
     this.anonymousSessionId = randomUUID();
     this.familyQueues = new Map();
+    this.familyHeads = new Map();
     this.knownSessionIds = new Set();
     this.sessionGenerations = new Map();
     this.stateCreations = new Map();
@@ -288,6 +289,7 @@ export class SessionManager {
       await this.#evictState(key, state, { abort: true });
     }
     await Promise.allSettled(this.stateEvictions.values());
+    this.familyHeads.clear();
     await this.client.stop();
   }
 
@@ -340,12 +342,17 @@ export class SessionManager {
       reasoningEffort,
     });
     const currentHistory = historySnapshot(body.messages);
+    const familyHead = this.familyHeads.get(state.identity.familyKey);
+    // The family queue serializes identity changes. A cached or resumed state
+    // from before a sibling's successful turn has not seen that sibling's work,
+    // even when its old transcript still matches a prefix of this request.
+    const staleIdentity = !state.fresh && familyHead && familyHead !== state.identity.key;
     const knownToolIds = new Set([
       ...state.pendingByToolCallId.keys(),
       ...state.completedToolCalls.keys(),
     ]);
     if (
-      historiesDiverged(
+      staleIdentity || historiesDiverged(
         state.historySnapshot,
         currentHistory,
         knownToolIds,
@@ -354,7 +361,8 @@ export class SessionManager {
       this.onDiagnostic({
         event: "bridge.history_reconciled",
         currentMessages: currentHistory.length,
-        previousMessages: state.historySnapshot.length,
+        previousMessages: state.historySnapshot?.length ?? 0,
+        reason: staleIdentity ? "identity_stale" : "history_diverged",
       });
       await this.#evictState(state.identity.key, state, {
         abort: true,
@@ -379,7 +387,9 @@ export class SessionManager {
     // A rejected turn must not prevent later requests from using this session.
     state.queue = run.catch(() => {});
     try {
-      return await run;
+      const result = await run;
+      this.familyHeads.set(state.identity.familyKey, state.identity.key);
+      return result;
     } finally {
       state.activeTurns -= 1;
       state.lastUsedAt = Date.now();
@@ -486,6 +496,7 @@ export class SessionManager {
       pendingByToolCallId: new Map(),
       pendingRequestWaiters: new Map(),
       completedToolCalls: new Map(),
+      deliveredToolPrompts: new Set(),
       invalidated: false,
     };
 
@@ -503,6 +514,7 @@ export class SessionManager {
     ]) {
       session.on(eventType, () => {
         state.completedToolCalls.clear();
+        state.deliveredToolPrompts.clear();
         state.pendingByToolCallId.clear();
         for (const waiters of state.pendingRequestWaiters.values()) {
           for (const waiter of waiters) {
@@ -538,6 +550,14 @@ export class SessionManager {
           `A turn cannot return more than ${this.maxToolResults} tool results.`,
         );
       }
+      const promptKey = input.prompt || input.attachments.length
+        ? hash(JSON.stringify({
+            toolUseIds: input.toolResults.map((result) => result.toolUseId).sort(),
+            prompt: input.prompt,
+            attachments: input.attachments,
+          }))
+        : null;
+      const deliverPrompt = promptKey && !state.deliveredToolPrompts.has(promptKey);
       const results = input.toolResults.map((result) => ({
         ...result,
         resultHash: toolResultHash(
@@ -571,13 +591,19 @@ export class SessionManager {
         const prompt = [
           TOOL_RESULT_UPDATE_PROMPT,
           ...changedCompleted.map(({ value }) => value.textResultForLlm),
-          input.prompt,
+          deliverPrompt ? input.prompt : null,
         ]
           .filter(Boolean)
           .join("\n\n");
         const turn = await this.#waitForTurn(
           state,
-          () => state.session.send({ prompt, attachments: [] }),
+          async () => {
+            await state.session.send({
+              prompt,
+              attachments: deliverPrompt ? input.attachments : [],
+            });
+            if (deliverPrompt) state.deliveredToolPrompts.add(promptKey);
+          },
           onEvent,
           signal,
         );
@@ -592,6 +618,17 @@ export class SessionManager {
       }
 
       if (!pendingResults.length) {
+        if (deliverPrompt) {
+          const turn = await this.#waitForTurn(state, async () => {
+            await state.session.send({
+              prompt: input.prompt || CONTINUATION_PROMPT,
+              attachments: input.attachments,
+            });
+            state.deliveredToolPrompts.add(promptKey);
+          }, onEvent, signal);
+          for (const result of results) result.completed.lastTurn = turn;
+          return turn;
+        }
         const cachedTurn = results.findLast(
           (result) => result.completed.lastTurn,
         )?.completed.lastTurn;
@@ -611,6 +648,17 @@ export class SessionManager {
 
       const handledTools = [];
       const turn = await this.#waitForTurn(state, async () => {
+        if (deliverPrompt) {
+          // Queue the user's instruction before any tool result can resume the
+          // model. Keep it separate from tool output and remember the accepted
+          // send even if one of the result submissions must later be retried.
+          await state.session.send({
+            prompt: input.prompt || CONTINUATION_PROMPT,
+            attachments: input.attachments,
+            mode: "enqueue",
+          });
+          state.deliveredToolPrompts.add(promptKey);
+        }
         const submissions = await Promise.allSettled(
           pendingResults.map(async ({ toolUseId, value }) => {
             const pending = await this.#waitForPendingRequest(
@@ -672,7 +720,7 @@ export class SessionManager {
 
     const messages = body.messages || [];
     let prompt = input.kind === "prompt" ? input.prompt : CONTINUATION_PROMPT;
-    const attachments = input.kind === "prompt" ? input.attachments : [];
+    let attachments = input.kind === "prompt" ? input.attachments : [];
     if (state.fresh && messages.length) {
       // Forked agents can start with inherited history that ends in an assistant
       // message or an already-completed parent tool result.
@@ -692,6 +740,7 @@ export class SessionManager {
             messages: priorMessages.length,
           });
         }
+        attachments = [...prior.attachments, ...attachments];
         prompt = `<prior_conversation>\n${prior.text}\n</prior_conversation>\n\n${prompt || CONTINUATION_PROMPT}`;
       }
     }

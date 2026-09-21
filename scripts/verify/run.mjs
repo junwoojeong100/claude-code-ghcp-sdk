@@ -17,12 +17,17 @@
  *   PENDING_TOOL_WAIT_MS=30000 node scripts/verify/run.mjs --timeout-scale 2
  */
 
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { settingsFileState } from "../../src/settings-file-state.mjs";
-import { PRIMARY_MODELS, SCENARIOS, DEFAULT_PLAN, gateFor, planRun, validateCatalog } from "./scenarios.mjs";
+import { PRIMARY_MODELS, SCENARIOS, DEFAULT_PLAN, planRun, validateCatalog } from "./scenarios.mjs";
+import { coverage } from "./features.mjs";
+import { assessRun, createRunDefinition, FINGERPRINT_SCOPE } from "./summary.mjs";
 import { DRIVERS } from "./drivers.mjs";
 import { buildFixture } from "./fixtures.mjs";
 import { createTimeoutPolicy, parseTimeoutScale, readPendingToolWaitMs } from "./timeouts.mjs";
@@ -41,7 +46,7 @@ import {
  * CLI
  * ------------------------------------------------------------------ */
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const opts = {
     models: [...PRIMARY_MODELS],
     scenarios: SCENARIOS.map((s) => s.id),
@@ -52,29 +57,102 @@ function parseArgs(argv) {
     dryRun: false,
     keepWorkspaces: false,
   };
-  const list = (value) => value.split(",").map((s) => s.trim()).filter(Boolean);
+  const list = (raw, flag) => {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new Error(`${flag} must contain nonempty, unique values.`);
+    }
+    // Do not filter empty entries: a trailing comma is an input error, not a
+    // request for a smaller matrix.
+    return raw.split(",").map((value) => value.trim());
+  };
+  const concurrency = (raw, flag) => {
+    const value = typeof raw === "string" && raw.trim() ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`${flag} must be a positive safe integer.`);
+    }
+    return value;
+  };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => argv[++i];
-    if (arg === "--models") opts.models = list(next());
-    else if (arg === "--scenarios") opts.scenarios = list(next());
-    else if (arg === "--model-concurrency") opts.modelConcurrency = Number(next());
-    else if (arg === "--scenario-concurrency") opts.scenarioConcurrency = Number(next());
+    if (arg === "--models") opts.models = list(next(), arg);
+    else if (arg === "--scenarios") opts.scenarios = list(next(), arg);
+    else if (arg === "--model-concurrency") opts.modelConcurrency = concurrency(next(), arg);
+    else if (arg === "--scenario-concurrency") opts.scenarioConcurrency = concurrency(next(), arg);
     else if (arg === "--timeout-scale") opts.timeoutScale = parseTimeoutScale(next());
-    else if (arg === "--out") opts.outDir = path.resolve(next());
-    else if (arg === "--dry-run") opts.dryRun = true;
+    else if (arg === "--out") {
+      const value = next();
+      if (typeof value !== "string" || !value.trim() || value.startsWith("--")) {
+        throw new Error("--out requires a nonempty directory path.");
+      }
+      opts.outDir = path.resolve(value);
+    } else if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === "--keep-workspaces") opts.keepWorkspaces = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
 
-  const unknownModel = opts.models.find((m) => !PRIMARY_MODELS.includes(m));
-  if (unknownModel) throw new Error(`Unknown model: ${unknownModel}`);
-  const known = new Set(SCENARIOS.map((s) => s.id));
-  const unknownScenario = opts.scenarios.find((s) => !known.has(s));
-  if (unknownScenario) throw new Error(`Unknown scenario: ${unknownScenario}`);
+  // Shared validation rejects empty, duplicate and unknown axis values before
+  // resolving a binary, creating artifacts, querying git or making a call.
+  createRunDefinition(opts.models, opts.scenarios);
   return opts;
+}
+
+/* ------------------------------------------------------------------ *
+ * Local implementation provenance
+ * ------------------------------------------------------------------ */
+
+/** Local read-only git metadata and a deterministic working-tree code hash. */
+export function captureCodeState(rootDir = ROOT_DIR, { artifactDir } = {}) {
+  const git = (args) => {
+    const result = spawnSync("git", ["--no-optional-locks", "-C", rootDir, ...args], {
+      encoding: "utf8", timeout: 10000, maxBuffer: 8 * 1024 * 1024,
+    });
+    return result.status === 0 && !result.error ? result.stdout : null;
+  };
+  const commit = git(["rev-parse", "--verify", "HEAD"])?.trim() || null;
+  const status = git(["status", "--porcelain=v1", "--untracked-files=all"]);
+  const state = { git: { commit, dirty: status === null ? null : status.length > 0 }, fingerprint: null };
+  const listed = git([
+    "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--",
+    "src/", "scripts/verify/", "bin/", "package.json", "package-lock.json", "npm-shrinkwrap.json",
+  ]);
+  if (listed === null) return state;
+
+  const excluded = artifactDir ? path.resolve(artifactDir) : null;
+  const files = [...new Set(listed.split("\0").filter(Boolean))].filter((name) => {
+    const absolute = path.resolve(rootDir, name);
+    if (excluded && (absolute === excluded || absolute.startsWith(`${excluded}${path.sep}`))) return false;
+    // Logs, documents and generated run evidence are not implementation. Git's
+    // list includes relevant new untracked code, but omits ignored artifacts.
+    if (name.split("/").some((part) => part === ".verify-runs" || part === "node_modules")) return false;
+    if (name.startsWith("bin/")) return !/\.(?:log|jsonl|md|txt)$/i.test(name);
+    return /\.(?:[cm]?js|[cm]?ts|jsx|tsx|json|sh)$/.test(name);
+  }).sort();
+  try {
+    const hash = createHash("sha256").update(`${FINGERPRINT_SCOPE}\0`);
+    for (const name of files) {
+      const file = path.join(rootDir, name);
+      let stat;
+      try { stat = fs.lstatSync(file); } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        hash.update(JSON.stringify([name, "missing"]) + "\n");
+        continue;
+      }
+      const kind = stat.isSymbolicLink() ? "symlink" : stat.isFile() ? "file" : "unsupported";
+      if (kind === "unsupported") throw new Error(`Cannot fingerprint ${name}`);
+      // Never follow a symlink outside the checkout; hash its target spelling.
+      const bytes = kind === "symlink" ? Buffer.from(fs.readlinkSync(file)) : fs.readFileSync(file);
+      hash.update(JSON.stringify([name, kind, stat.mode & 0o111, bytes.length]) + "\n");
+      hash.update(bytes).update("\0");
+    }
+    state.fingerprint = { algorithm: "sha256", scope: FINGERPRINT_SCOPE, value: hash.digest("hex"), files: files.length };
+  } catch {
+    // Missing/unreadable provenance must never turn an all-pass tally green.
+    state.fingerprint = null;
+  }
+  return state;
 }
 
 /* ------------------------------------------------------------------ *
@@ -207,6 +285,8 @@ async function main() {
   }
 
   const scenarios = SCENARIOS.filter((s) => opts.scenarios.includes(s.id));
+  const definition = createRunDefinition(opts.models, scenarios);
+  const selectedCoverage = coverage(scenarios);
   const timeouts = createTimeoutPolicy(scenarios, opts.timeoutScale);
   const execution = {
     modelConcurrency: opts.modelConcurrency,
@@ -224,8 +304,10 @@ async function main() {
 
   console.log(`models:    ${opts.models.length}  (${opts.models.join(", ")})`);
   console.log(`scenarios: ${scenarios.length}`);
-  console.log(`slots:     ${plan.slots}`);
-  console.log(`coverage:  ${catalog.coverage.percent}% weighted of Claude Code core features`);
+  console.log(`slots:     ${definition.expectedTotal}`);
+  console.log(`scope:     ${definition.scope.kind} (${definition.expectedTotal}/${definition.scope.fullMatrixTotal} catalogue slots)`);
+  console.log(`policy:    ${definition.policy.id} (100% of the exact selected matrix must pass)`);
+  console.log(`coverage:  ${selectedCoverage.percent}% weighted of Claude Code core features (selected scenarios; not a pass rate)`);
   console.log(`single-turn scheduling estimate ~${Math.round(plan.wallClockSeconds / 60)} min, peak ${plan.peakClaudeProcesses} Claude processes`);
   console.log("Planning estimate only, not a deadline or worst-case bound; extra turns, startup and cleanup can take longer.");
   console.log(`execution: ${JSON.stringify(execution)}`);
@@ -235,27 +317,46 @@ async function main() {
     return 0;
   }
 
+  const startedAt = Date.now();
+  const stamp = new Date(startedAt).toISOString().replace(/[:.]/g, "-");
+  const runDir = path.join(opts.outDir, stamp);
+  const codeBefore = captureCodeState(ROOT_DIR, { artifactDir: runDir });
+
+  // Every slot has isolated settings. Read only a digest of the user's real
+  // settings before and after; never store their contents or use them in a slot.
+  const userSettingsPath = path.join(os.homedir(), ".claude", "settings.json");
+  const userSettingsBefore = settingsFileState(userSettingsPath);
   const claudeBin = resolveClaudeBin();
   const version = claudeVersion(claudeBin);
   console.log(`claude:    ${claudeBin} (${version})\n`);
 
-  // Every slot is handed its own --settings file and its own CLAUDE_CONFIG_DIR,
-  // so nothing here should ever touch the real one. That is a claim about the
-  // launcher and the CLI, not a wish, so it is measured: hash the user's
-  // settings before and after and fail the run if the two differ. A suite that
-  // silently rewrote the machine it ran on would still go green otherwise.
-  const userSettingsPath = path.join(os.homedir(), ".claude", "settings.json");
-  const userSettingsBefore = settingsFileState(userSettingsPath);
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const runDir = path.join(opts.outDir, stamp);
   fs.mkdirSync(path.join(runDir, "slots"), { recursive: true });
   const slotsPath = path.join(runDir, "slots.jsonl");
+  const summaryPath = path.join(runDir, "summary.json");
+  const summary = {
+    ...definition,
+    startedAt: new Date(startedAt).toISOString(),
+    claude: { bin: claudeBin, version },
+    node: process.version,
+    host: { platform: os.platform(), arch: os.arch(), release: os.release() },
+    scenarios: scenarios.map((s) => ({ id: s.id, name: s.name, covers: s.covers })),
+    execution,
+    coverage: selectedCoverage,
+    actualTotal: 0,
+    total: 0,
+    gate: definition.expectedTotal,
+    green: false,
+    userSettings: { path: userSettingsPath, before: userSettingsBefore, after: null, intact: null },
+    provenance: { start: codeBefore, end: null },
+    slotsFile: path.relative(ROOT_DIR, slotsPath),
+  };
+  // Persist the expected matrix before work starts. An interrupted run keeps
+  // its denominator, but absent end-state evidence can never imply success.
+  fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
   const slotStream = fs.createWriteStream(slotsPath, { flags: "a" });
 
-  const startedAt = Date.now();
   let done = 0;
-  const total = plan.slots;
+  const total = definition.expectedTotal;
 
   const records = await pool(opts.models, opts.modelConcurrency, async (model) => {
     const perModel = await pool(scenarios, opts.scenarioConcurrency, async (scenario) => {
@@ -283,62 +384,49 @@ async function main() {
   await new Promise((resolve) => slotStream.end(resolve));
   const flat = records.flat();
 
-  const counts = { pass: 0, fail: 0, blocked: 0 };
-  for (const record of flat) counts[record.outcome] = (counts[record.outcome] ?? 0) + 1;
-
   const userSettingsAfter = settingsFileState(userSettingsPath);
-  const userSettingsIntact = userSettingsBefore === userSettingsAfter;
-
-  const gate = gateFor(flat.length);
-  const summary = {
-    startedAt: new Date(startedAt).toISOString(),
+  Object.assign(summary, {
     finishedAt: new Date().toISOString(),
     durationSeconds: Math.round((Date.now() - startedAt) / 1000),
-    claude: { bin: claudeBin, version },
-    node: process.version,
-    host: { platform: os.platform(), arch: os.arch(), release: os.release() },
-    models: opts.models,
-    scenarios: scenarios.map((s) => ({ id: s.id, name: s.name, covers: s.covers })),
-    execution,
-    coverage: catalog.coverage,
-    counts,
+    actualTotal: flat.length,
     total: flat.length,
-    gate,
     userSettings: {
       path: userSettingsPath,
-      intact: userSettingsIntact,
+      intact: userSettingsBefore === userSettingsAfter,
       before: userSettingsBefore,
       after: userSettingsAfter,
     },
-    // A run that rewrote the machine it ran on is not green, however many slots
-    // passed. It is a separate failure from any slot's, so it is reported
-    // separately rather than folded into the counts.
-    green: counts.pass >= gate && userSettingsIntact,
-    slotsFile: path.relative(ROOT_DIR, slotsPath),
-  };
-  fs.writeFileSync(path.join(runDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n", "utf8");
+    provenance: { start: codeBefore, end: captureCodeState(ROOT_DIR, { artifactDir: runDir }) },
+  });
+  const assessment = assessRun(summary, flat);
+  Object.assign(summary, {
+    counts: assessment.counts,
+    gate: assessment.gate,
+    green: assessment.green,
+    assessment,
+  });
+  fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
 
+  const { counts, gate } = assessment;
   console.log(
-    `\npass ${counts.pass}  fail ${counts.fail}  blocked ${counts.blocked}  of ${flat.length}` +
-      `   (gate: ${gate})`,
+    `\npass ${counts.pass}  fail ${counts.fail}  blocked ${counts.blocked}  unknown ${counts.unknown}` +
+      `  expected ${assessment.expectedTotal}  actual ${assessment.actualTotal}   (gate: ${gate})`,
   );
-  if (!userSettingsIntact) {
-    console.log(
-      `\n  FAILED: ${userSettingsPath} changed during the run.\n` +
-        `  before ${userSettingsBefore}\n  after  ${userSettingsAfter}\n` +
-        "  Every slot is handed its own --settings and CLAUDE_CONFIG_DIR; nothing here may touch the real one.",
-    );
-  }
+  console.log(`result: ${assessment.green ? "PASS" : "NOT GREEN"} (${assessment.scope.kind})`);
+  for (const problem of assessment.problems) console.log(`  FAILED: ${problem}`);
+  console.log(`provenance: ${JSON.stringify(summary.provenance)}`);
   console.log(`artifacts: ${path.relative(ROOT_DIR, runDir)}`);
   console.log(`report:    node scripts/verify/report.mjs ${path.relative(ROOT_DIR, runDir)}`);
 
   return summary.green ? 0 : 1;
 }
 
-main().then(
-  (code) => process.exit(code),
-  (error) => {
-    console.error(error);
-    process.exit(1);
-  },
-);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().then(
+    (code) => { process.exitCode = code; },
+    (error) => {
+      console.error(error);
+      process.exitCode = 1;
+    },
+  );
+}

@@ -6,7 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PRIMARY_MODELS, SCENARIOS, gateFor } from "../scripts/verify/scenarios.mjs";
+import { PRIMARY_MODELS, SCENARIOS } from "../scripts/verify/scenarios.mjs";
+import { coverage } from "../scripts/verify/features.mjs";
 
 const REPORT = fileURLToPath(new URL("../scripts/verify/report.mjs", import.meta.url));
 const FORMATS = ["terminal", "--markdown", "--markdown=ko"];
@@ -52,6 +53,8 @@ function makeRun(t, execution) {
     scenarios: SELECTED.map((s) => ({ id: s.id })),
     claude: { bin: "offline-fixture", version: "offline-fixture" },
     durationSeconds: 3,
+    gate: 3,
+    green: false,
     userSettings: { path: "offline-fixture-settings.json", intact: false },
   };
   if (execution !== undefined) summary.execution = execution;
@@ -139,7 +142,7 @@ test("older summaries retain identical matrix, tally, gate, coverage and failure
     assert.doesNotMatch(output, /--timeout-scale|--model-concurrency|--scenario-concurrency|PENDING_TOOL_WAIT_MS=/);
     assert.equal(resultsAndEvidence(output, format), resultsAndEvidence(recorded.get(format), format));
     assert.ok(output.includes(format === "terminal"
-      ? `pass 1  fail 1  blocked 1  of 3   (gate: ${gateFor(3)})`
+      ? "pass 1  fail 1  blocked 1  of 3   (gate: 3)"
       : "**pass 1 / fail 1 / blocked 1**"));
     assert.match(output, /missing expected file/);
     assert.match(output, /fixture transport stopped/);
@@ -182,5 +185,137 @@ test("Markdown reports remove trailing whitespace without changing recorded evid
     assert.match(output, /first evidence\nsecond evidence\nlast evidence/);
     assert.match(output, /first reason\nsecond reason\nlast reason/);
     assert.equal(fs.readFileSync(slotsFile, "utf8"), recorded);
+  }
+});
+
+function saveRun(run) {
+  writeSummary(run);
+  fs.writeFileSync(path.join(run.dir, "slots.jsonl"), run.slots.map((s) => JSON.stringify(s)).join("\n") + "\n");
+}
+
+async function makeStrictRun(t, models = PRIMARY_MODELS, scenarios = SCENARIOS) {
+  const { createRunDefinition } = await import("../scripts/verify/summary.mjs");
+  const run = makeRun(t, executionFixture());
+  const state = {
+    git: { commit: "b".repeat(40), dirty: true },
+    fingerprint: { algorithm: "sha256", scope: "verification-code-v1", value: "a".repeat(64), files: 12 },
+  };
+  run.slots = models.flatMap((model) => scenarios.map((s) => ({ model, scenario: s.id, outcome: "pass" })));
+  run.summary = {
+    ...run.summary, ...createRunDefinition(models, scenarios), actualTotal: run.slots.length,
+    userSettings: { path: "offline-settings.json", intact: true, before: "missing", after: "missing" },
+    provenance: { start: state, end: structuredClone(state) },
+  };
+  saveRun(run);
+  return run;
+}
+
+test("all renderers preserve a legacy 74 gate and stored green without claiming strict success", (t) => {
+  const run = makeRun(t);
+  run.summary.gate = 74;
+  run.summary.green = true;
+  run.summary.models = [...PRIMARY_MODELS];
+  run.summary.scenarios = SCENARIOS.map((s) => ({ id: s.id }));
+  run.summary.userSettings = { intact: true };
+  run.slots = PRIMARY_MODELS.flatMap((model) => SCENARIOS.map((s) => ({ model, scenario: s.id, outcome: "pass" })));
+  for (let i = 0; i < 3; i += 1) run.slots[i].outcome = "blocked";
+  saveRun(run);
+  const before = fs.readFileSync(path.join(run.dir, "summary.json"), "utf8");
+  for (const format of FORMATS) {
+    const output = render(run, format);
+    assert.match(output, /legacy/i);
+    assert.match(output, /(?:gate: |gate |통과 기준 )74/);
+    assert.match(output, /(?:stored green|저장된 green): true/);
+    assert.match(output, format === "--markdown=ko" ? /엄격한 전체 통과.*아닙니다/ : /not.*strict all-pass/i);
+    assert.doesNotMatch(output, /result: PASS|결과: PASS/);
+  }
+  assert.equal(fs.readFileSync(path.join(run.dir, "summary.json"), "utf8"), before);
+});
+
+test("all renderers show strict 77 of 77 success and recorded code provenance", async (t) => {
+  const run = await makeStrictRun(t);
+  for (const format of FORMATS) {
+    const output = render(run, format);
+    assert.match(output, /strict-all-pass-v1/);
+    assert.match(output, /(?:scope|범위): full/);
+    assert.match(output, /(?:expected|예상): 77.*(?:actual|실제): 77/);
+    assert.match(output, /(?:result|결과): PASS/);
+    assert.ok(output.includes("b".repeat(40)));
+    assert.ok(output.includes("a".repeat(64)));
+    assert.match(output, /dirty: true/);
+    assertRecorded(output, "--timeout-scale", 2);
+  }
+  run.slots.slice(0, 3).forEach((s) => { s.outcome = "blocked"; });
+  saveRun(run);
+  for (const format of FORMATS) {
+    const output = render(run, format);
+    assert.match(output, /(?:result|결과): NOT GREEN/);
+    assert.match(output, /(?:gate: |gate |통과 기준 )77/);
+    assert.match(output, /pass 74/);
+  }
+});
+
+test("focused reports retain selected coverage and cannot be described as full-matrix success", async (t) => {
+  const run = await makeStrictRun(t, [MODEL], [SCENARIOS[0]]);
+  run.summary.coverage = coverage(SCENARIOS); // Stale full-catalogue metadata must not leak into focused coverage.
+  saveRun(run);
+  for (const format of FORMATS) {
+    const output = render(run, format);
+    assert.match(output, /(?:scope|범위): focused/);
+    assert.match(output, /(?:expected|예상): 1.*(?:actual|실제): 1/);
+    assert.match(output, /(?:result|결과): PASS/);
+    assert.ok(output.includes(`${coverage([SCENARIOS[0]]).percent}%`));
+    assert.match(output, format === "--markdown=ko" ? /통과율이 아/ : /not a pass rate/);
+    assert.match(output, format === "--markdown=ko" ? /전체 매트릭스.*아/ : /not a full-matrix/);
+  }
+});
+
+test("reports fail closed for missing, duplicate, unexpected, unknown and empty rows", async (t) => {
+  const run = await makeStrictRun(t, [MODEL], [SCENARIOS[0]]);
+  const slot = run.slots[0];
+  for (const rows of [[], [slot, slot], [{ ...slot, scenario: "unexpected" }], [{ ...slot, outcome: "unknown" }], [null]]) {
+    run.slots = rows;
+    run.summary.actualTotal = rows.length;
+    saveRun(run);
+    for (const format of FORMATS) {
+      const output = render(run, format);
+      assert.match(output, /(?:result|결과): NOT GREEN/);
+      assert.match(output, /(?:expected|예상): 1/);
+      if (rows.length === 2) assert.match(output, /DUP/);
+    }
+  }
+});
+
+test("reports never invent provenance or a success verdict from missing metadata", async (t) => {
+  const run = await makeStrictRun(t, [MODEL], [SCENARIOS[0]]);
+  for (const field of ["provenance", "userSettings", "expectedSlots", "actualTotal"]) {
+    const saved = run.summary[field];
+    delete run.summary[field];
+    saveRun(run);
+    for (const format of FORMATS) assert.match(render(run, format), /(?:result|결과): NOT GREEN/);
+    run.summary[field] = saved;
+  }
+  run.summary = {};
+  saveRun(run);
+  for (const format of FORMATS) {
+    const output = render(run, format);
+    assert.match(output, /(?:result|결과): UNVERIFIED/);
+    assert.match(output, format === "--markdown=ko" ? /기록 없음/ : /not recorded/i);
+    assert.doesNotMatch(output, /(?:gate: |gate |통과 기준 )1(?:[).\n]|$)/);
+  }
+});
+
+test("all-pass reports are not green when settings or implementation changed", async (t) => {
+  const run = await makeStrictRun(t, [MODEL], [SCENARIOS[0]]);
+  const baseline = structuredClone(run.summary);
+  for (const alter of [
+    (s) => { s.userSettings.after = "present:" + "c".repeat(64); },
+    (s) => { s.provenance.end.fingerprint.value = "d".repeat(64); },
+    (s) => { s.provenance.end.git.commit = "e".repeat(40); },
+  ]) {
+    run.summary = structuredClone(baseline);
+    alter(run.summary);
+    saveRun(run);
+    for (const format of FORMATS) assert.match(render(run, format), /(?:result|결과): NOT GREEN/);
   }
 });

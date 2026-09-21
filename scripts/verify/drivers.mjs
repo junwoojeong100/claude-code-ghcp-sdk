@@ -12,7 +12,7 @@
  *   blocked the run could not be judged (timeout, crash, bad wire protocol)
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -22,6 +22,7 @@ import { runHeadless, sanitizeEnv, servedExpectedModel } from "./session.mjs";
 import { exists, gitLogSubjects, readIfPresent } from "./fixtures.mjs";
 import { ROOT_DIR } from "./bridge.mjs";
 import { DEFAULT_TIMEOUTS } from "./timeouts.mjs";
+import { runProcess } from "./process.mjs";
 
 /* ------------------------------------------------------------------ *
  * Check plumbing
@@ -75,6 +76,43 @@ function envelopeChecks(checks, run) {
   checks.add("result.stop_reason present", Boolean(result?.stop_reason ?? result?.subtype), String(result?.stop_reason ?? result?.subtype ?? "missing"));
   checks.add("usage reports input tokens", run.inputTokens > 0, `input=${run.inputTokens}`);
   checks.add("no error in result envelope", result?.is_error !== true, String(result?.result ?? "").slice(0, 160));
+}
+
+/** Judge one mandatory phase without letting its files or prose mask a bad turn. */
+export function phaseVerdict(label, run, ctx) {
+  const transport = run ? transportVerdict(run, ctx) : { blocked: true, reason: "phase did not run" };
+  const envelope = new Checks();
+  if (run) envelopeChecks(envelope, run);
+  const pairing = run?.pairingReport() ?? null;
+  const model = run ? servedExpectedModel(run, ctx) : { ok: false, served: [], reason: "phase did not run" };
+  const checks = new Checks();
+  checks.add("completed", run?.completed === true, run?.failureHint ?? (run ? "completed" : "phase did not run"));
+  checks.add("tool_use/tool_result pairing", pairing?.ok === true, JSON.stringify(pairing));
+  checks.add("expected model served", model.ok, model.reason ?? model.served.join(", "));
+  checks.items.push(...envelope.items);
+  const outcome = transport.blocked ? "blocked" : envelope.ok ? "pass" : "fail";
+  const reason = transport.blocked ? transport.reason : envelope.summary();
+  return {
+    outcome,
+    reason: reason ? `${label}: ${reason}` : "",
+    checks: checks.items.map((item) => ({ ...item, name: `${label}: ${item.name}` })),
+    evidence: {
+      completed: run?.completed === true,
+      pairing,
+      model,
+      envelope: { ok: Boolean(run) && envelope.ok, checks: envelope.items },
+      transcriptPath: run?.transcriptPath ?? null,
+      tools: run?.toolNames() ?? [],
+      servedModels: model.served,
+      durationMs: run?.durationMs ?? 0,
+      inputTokens: run?.inputTokens ?? null,
+      answer: run?.answer.slice(0, 600) ?? "",
+      exitCode: run?.exitCode ?? null,
+      signal: run?.signal ?? null,
+      timedOut: run?.timedOut === true,
+      spawnError: run?.spawnError ?? null,
+    },
+  };
 }
 
 // Space, comma and underscore come out of both sides, so a model that re-spaces
@@ -157,7 +195,8 @@ async function run1(
     timeoutSeconds = ctx.timeoutSeconds,
   } = {},
 ) {
-  return runHeadless({
+  const transcriptPath = path.join(ctx.slotDir, `transcript-${label}.jsonl`);
+  const run = await runHeadless({
     prompt,
     cwd: ctx.workspace,
     settingsPath: ctx.settingsPath,
@@ -165,35 +204,35 @@ async function run1(
     configDir: ctx.configDir,
     claudeBin: ctx.claudeBin,
     timeoutSeconds,
-    transcriptPath: path.join(ctx.slotDir, `transcript-${label}.jsonl`),
+    transcriptPath,
     extraArgs: ["--permission-mode", permissionMode, ...extraArgs],
     inputFormat,
     replayUserMessages,
   });
+  run.transcriptPath = transcriptPath;
+  return run;
 }
 
-function verdict(checks, run, ctx, evidence = {}) {
-  const transport = transportVerdict(run, ctx);
-  if (transport.blocked) {
-    return {
-      outcome: "blocked",
-      reason: transport.reason,
-      checks: checks.items,
-      evidence: { ...evidence, tools: run.toolNames(), durationMs: run.durationMs },
-    };
-  }
-  envelopeChecks(checks, run);
+function verdict(checks, run, ctx, evidence = {}, phases = { main: run }) {
+  const judged = Object.entries(phases).map(([label, phase]) => [label, phaseVerdict(label, phase, ctx)]);
+  for (const [, phase] of judged) checks.items.push(...phase.checks);
+  const blocked = judged.some(([, phase]) => phase.outcome === "blocked");
   return {
-    outcome: checks.ok ? "pass" : "fail",
-    reason: checks.ok ? "" : checks.summary(),
+    outcome: blocked ? "blocked" : checks.ok ? "pass" : "fail",
+    reason: blocked
+      ? judged.filter(([, phase]) => phase.outcome !== "pass").map(([, phase]) => phase.reason).join("; ")
+      : checks.ok ? "" : checks.summary(),
     checks: checks.items,
     evidence: {
       ...evidence,
       tools: run.toolNames(),
-      servedModels: transport.served,
+      servedModels: servedExpectedModel(run, ctx).served,
       durationMs: run.durationMs,
       inputTokens: run.inputTokens,
       answer: run.answer.slice(0, 600),
+      phases: Object.fromEntries(judged.map(([label, phase]) => [label, {
+        outcome: phase.outcome, reason: phase.reason, ...phase.evidence,
+      }])),
     },
   };
 }
@@ -319,7 +358,7 @@ async function driveSurgicalEdit(ctx) {
     planStopReason: plan.result?.stop_reason ?? null,
     planTools: plan.toolNames(),
     planDurationMs: plan.durationMs,
-  });
+  }, { plan, edit: run });
 }
 
 /* ------------------------------------------------------------------ *
@@ -377,17 +416,46 @@ function countTickerProcesses(tickerScript) {
   return (result.stdout ?? "").trim().split("\n").filter(Boolean).length;
 }
 
+/** Porcelain -z separates fields and records with NULs, not path whitespace. */
+export function parseWorktreeList(output) {
+  if (!output.endsWith("\0\0")) return null;
+  const records = [];
+  for (const record of output.slice(0, -2).split("\0\0")) {
+    const fields = Object.create(null);
+    for (const field of record.split("\0")) {
+      const space = field.indexOf(" ");
+      const key = space < 0 ? field : field.slice(0, space);
+      if (Object.hasOwn(fields, key)) return null;
+      fields[key] = space < 0 ? "" : field.slice(space + 1);
+    }
+    const detached = Object.hasOwn(fields, "detached");
+    if (!record.startsWith("worktree ") || !path.isAbsolute(fields.worktree ?? "") ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(fields.HEAD ?? "") ||
+      (detached ? fields.branch !== undefined : !/^refs\/heads\/.+/.test(fields.branch ?? ""))) return null;
+    records.push({ path: fields.worktree, head: fields.HEAD, branch: fields.branch ?? null,
+      detached, prunable: Object.hasOwn(fields, "prunable") });
+  }
+  return records;
+}
+
+function realpathOrNull(dir) {
+  try { return fs.realpathSync(dir); } catch { return null; }
+}
+
 async function driveShellOps(ctx) {
   const { fixture, workspace } = ctx;
+  const nativeBranch = `worktree-${fixture.worktreeBranch.replaceAll("/", "+")}`;
   const run = await run1(
     ctx,
     `Start \`node ${fixture.tickerScript} ${fixture.logFile}\` as a background process. ` +
       `Poll its output until ${fixture.logFile} holds at least ${fixture.minTicks} ticks, then stop that process. ` +
       `Write ${fixture.recordFile} containing the number of ticks recorded. ` +
-      `Then add a git worktree at ${fixture.worktreeDir} on a new branch named ${fixture.worktreeBranch}; ` +
-      `inside that worktree create ${fixture.worktreeFile} containing ${fixture.worktreeMarker} and commit it there. ` +
-      `That file must not appear in this checkout. ` +
-      `Finally, back here, commit every change with exactly this message: ${fixture.commitSubject}`,
+      `Then create a second git worktree: either use Bash to add ${fixture.worktreeDir} on a new branch named ${fixture.worktreeBranch}, ` +
+      `or use EnterWorktree with name "${fixture.worktreeBranch}" (its branch ${nativeBranch} and tool-selected directory are equally acceptable). ` +
+      `Inside that worktree create ${fixture.worktreeFile} containing ${fixture.worktreeMarker} and commit it there. ` +
+      `Keep the worktree and branch for verification, then return to the original checkout (ExitWorktree with action "keep" if needed). ` +
+      `The review file must not appear in this checkout or its commits. ` +
+      `Finally, back here, commit the tick log and record file with exactly this message: ${fixture.commitSubject}`,
   );
 
   const checks = new Checks();
@@ -425,52 +493,69 @@ async function driveShellOps(ctx) {
   const survivors = countTickerProcesses(fixture.tickerScript);
   checks.add("no ticker process survives", survivors === 0, `survivors=${survivors}`);
 
-  // The worktree. Judged on git's own registry and on where the file landed,
-  // never on a tool name: this build ships EnterWorktree, but plain `git
-  // worktree add` through Bash is an equally correct way to satisfy the ask,
-  // and the isolation is the thing being tested either way.
-  //
-  // The registry is also what supplies the path. EnterWorktree puts worktrees
-  // under .claude/worktrees/<branch with / replaced>, which is nowhere near
-  // the directory the prompt names, so looking for the marker at the requested
-  // path failed a slot that had done the work correctly. What is actually
-  // under test is that a second checkout exists on its own branch and that the
-  // commit landed there and not here -- none of which needs the path to be
-  // the one we asked for. Ask for a location, accept the one git reports.
-  const worktreeList = spawnSync("git", ["worktree", "list"], {
-    cwd: workspace,
-    encoding: "utf8",
-  }).stdout ?? "";
-  const registered = worktreeList.split("\n").filter(Boolean);
-  const primary = fs.realpathSync(workspace);
-  const secondary = registered
-    .map((line) => line.trim().split(/\s+/)[0])
-    .filter((dir) => dir && fs.existsSync(dir) && fs.realpathSync(dir) !== primary);
+  // Native EnterWorktree and plain git use different names. Match exact refs
+  // from Git's registry, never a substring in a path or a model's success claim.
+  const git = (cwd, args) => runProcess("git", args, { cwd, timeoutMs: 10_000 });
+  const listing = await git(workspace, ["worktree", "list", "--porcelain", "-z"]);
+  const registered = listing.completed ? parseWorktreeList(listing.stdout) : null;
+  checks.add(
+    "git worktree registry is readable",
+    registered !== null,
+    JSON.stringify({ status: listing.status, signal: listing.signal, error: listing.error?.message,
+      stderr: listing.stderr.slice(0, 300), records: registered?.length ?? null }),
+  );
+  const expectedBranches = [fixture.worktreeBranch, nativeBranch].map((branch) => `refs/heads/${branch}`);
+  const primaryPath = realpathOrNull(workspace);
+  const worktrees = (registered ?? []).map((entry) => ({ ...entry, realPath: realpathOrNull(entry.path) }));
+  const primary = worktrees.filter((entry) => entry.realPath && entry.realPath === primaryPath);
+  const candidates = worktrees.filter((entry) => entry.realPath && entry.realPath !== primaryPath &&
+    !entry.detached && !entry.prunable && expectedBranches.includes(entry.branch));
+  const worktree = primary.length === 1 && candidates.length === 1 &&
+    candidates[0].branch !== primary[0].branch ? candidates[0] : null;
   checks.add(
     "a second worktree is registered on its own branch",
-    secondary.length > 0 && worktreeList.includes(fixture.worktreeBranch),
-    registered.slice(0, 3).join(" | ") || "only the primary checkout",
+    worktree !== null,
+    JSON.stringify({ expectedBranches, candidates: candidates.length, registered: worktrees.slice(0, 10) }),
   );
-  const onBranch = registered.find((line) => line.includes(fixture.worktreeBranch));
-  const worktreePath = onBranch ? onBranch.trim().split(/\s+/)[0] : null;
-  const markerInWorktree = worktreePath ? readIfPresent(worktreePath, fixture.worktreeFile) : null;
+
+  // All evidence must describe this one checkout, including the committed blob.
+  const hasMarker = (text) => (text ?? "").split(/[^A-Za-z0-9_-]+/).includes(fixture.worktreeMarker);
+  const markerInWorktree = worktree ? readIfPresent(worktree.realPath, fixture.worktreeFile) : null;
   checks.add(
     "the marker file exists inside the worktree",
-    markerInWorktree !== null && mentions(markerInWorktree, fixture.worktreeMarker),
+    hasMarker(markerInWorktree),
     markerInWorktree === null
-      ? `${fixture.worktreeFile} missing at ${worktreePath ?? "no worktree on " + fixture.worktreeBranch}`
+      ? `${fixture.worktreeFile} missing at ${worktree?.path ?? "no unique worktree"}`
       : markerInWorktree.slice(0, 120),
   );
+  const committed = worktree ? await git(worktree.realPath, ["show", `HEAD:${fixture.worktreeFile}`]) : null;
+  checks.add(
+    "the worktree marker is committed unchanged",
+    committed?.completed === true && hasMarker(committed.stdout) && committed.stdout === markerInWorktree,
+    committed ? JSON.stringify({ path: worktree.path, branch: worktree.branch, head: worktree.head,
+      status: committed.status, error: committed.error?.message, stderr: committed.stderr.slice(0, 300) })
+      : "no unique worktree to inspect",
+  );
+  // An unsuccessful `git show` would not prove absence: require a successful,
+  // empty tree listing as well as absence on disk in the primary checkout.
+  const primaryMarker = await git(workspace, ["ls-tree", "-z", "HEAD", "--", fixture.worktreeFile]);
+  const absentFromPrimary = !exists(workspace, fixture.worktreeFile) &&
+    primaryMarker.completed && primaryMarker.stdout === "";
   checks.add(
     "the marker file is absent from the primary checkout",
-    !exists(workspace, fixture.worktreeFile),
-    `${fixture.worktreeFile} leaked into the main checkout`,
+    absentFromPrimary,
+    absentFromPrimary ? `${fixture.worktreeFile} absent from disk and HEAD` :
+      JSON.stringify({ file: fixture.worktreeFile, onDisk: exists(workspace, fixture.worktreeFile),
+        status: primaryMarker.status, error: primaryMarker.error?.message, treeEntry: primaryMarker.stdout,
+        stderr: primaryMarker.stderr.slice(0, 300) }),
   );
 
   return verdict(checks, run, ctx, {
     ticks: ticks.length,
     subjects: subjects.slice(0, 3),
-    worktrees: registered.slice(0, 3),
+    worktrees: worktrees.slice(0, 10),
+    expectedWorktreeBranches: expectedBranches,
+    selectedWorktree: worktree,
   });
 }
 
@@ -494,6 +579,8 @@ async function driveMultiStep(ctx) {
       `3. Create CHANGELOG.md whose first entry mentions the release token ${fixture.token}.\n` +
       `4. In ${fixture.notebookFile}, change RATE from 0.05 to ${fixture.newRate}.\n` +
       `Then open ${fixture.pdfFile} and ${fixture.pngFile} and read the token printed in each.\n` +
+      "Each token is exactly 12 characters: a six-letter uppercase prefix followed by six uppercase hexadecimal characters (0-9, A-F).\n" +
+      "Keep repeated characters and verify the 12-character length before reporting.\n" +
       "Report which of the four changes you completed, then the PDF's token and the image's " +
       "token, each on its own line and copied exactly as it is written.",
   );
@@ -861,7 +948,7 @@ async function driveHooksMemory(ctx) {
     cronAnswer: cron.answer.slice(0, 120),
     cronListed: cronListed.slice(0, 160),
     cronListedId: echoedId,
-  });
+  }, { main: run, cron });
 }
 
 /* ------------------------------------------------------------------ *
@@ -880,13 +967,8 @@ async function driveSessionResume(ctx) {
   );
 
   const checks = new Checks();
-  if (!first.completed) {
-    return {
-      outcome: "blocked",
-      reason: `seed turn did not complete: ${first.failureHint}`,
-      checks: checks.items,
-      evidence: { phase: "seed", durationMs: first.durationMs },
-    };
+  if (phaseVerdict("seed", first, ctx).outcome !== "pass") {
+    return verdict(checks, first, ctx, { phase: "seed", sessionId }, { seed: first, resume: null, fork: null });
   }
   checks.add("seed turn used the requested session id", first.sessionId === sessionId, `${first.sessionId}`);
 
@@ -935,7 +1017,7 @@ async function driveSessionResume(ctx) {
     seedDurationMs: first.durationMs,
     seedAnswer: first.answer.slice(0, 120),
     forkAnswer: forked.answer.slice(0, 120),
-  });
+  }, { seed: first, resume: second, fork: forked });
 }
 
 /* ------------------------------------------------------------------ *
@@ -996,13 +1078,18 @@ async function driveLongContext(ctx) {
   // truncating transport cannot fake is the DIFFERENCE between a trivial turn
   // and this one, so measure the same session's baseline and subtract.
   const control = await run1(ctx, "Reply with exactly: ok", { label: "control" });
-  const delta = run.inputTokens - control.inputTokens;
+  // Missing/failed usage is not a zero-token baseline. Neither side of this
+  // comparison is meaningful until both mandatory turns pass their wire checks.
+  const comparable = phaseVerdict("corpus", run, ctx).outcome === "pass" &&
+    phaseVerdict("control", control, ctx).outcome === "pass";
+  const delta = comparable ? run.inputTokens - control.inputTokens : null;
   const estimate = Math.round(corpus.length / 4);
   const need = Math.round(estimate * 0.5);
   checks.add(
     "whole corpus reached the model",
-    delta >= need,
-    `delta=${delta} vs control=${control.inputTokens} (need >= ${need} for a ~${estimate}-token corpus)`,
+    delta !== null && delta >= need,
+    delta === null ? "not evaluated: corpus or control phase failed" :
+      `delta=${delta} vs control=${control.inputTokens} (need >= ${need} for a ~${estimate}-token corpus)`,
   );
 
   return verdict(checks, run, ctx, {
@@ -1012,7 +1099,7 @@ async function driveLongContext(ctx) {
     controlInputTokens: control.inputTokens,
     corpusInputTokens: run.inputTokens,
     delta,
-  });
+  }, { corpus: run, control });
 }
 
 /* ------------------------------------------------------------------ *
@@ -1053,25 +1140,33 @@ async function driveDaemonBackground(ctx) {
     GHCP_DAEMON_DIR: daemonDir,
     CLAUDE_CONFIG_DIR: configDir,
   };
-  const sh = (file, args, timeoutSeconds) =>
-    spawnSync(file, args, {
+  const checks = new Checks();
+  const evidence = { commands: {} };
+  const sh = async (file, args, timeoutSeconds, label) => {
+    const out = await runProcess(file, args, {
       cwd: workspace,
       env,
-      encoding: "utf8",
-      timeout: timeoutSeconds * 1000,
+      timeoutMs: Math.round(timeoutSeconds * 1000),
     });
-
-  const status = () => {
-    const out = sh(bin("claude-ghcp-status"), [], 30);
-    try {
-      return JSON.parse(String(out.stdout ?? "").trim());
-    } catch {
-      return { running: false, raw: String(out.stdout ?? out.stderr ?? "").slice(0, 200) };
+    // Cleanup calls have no label; every command used as evidence must complete.
+    if (label) {
+      const { stdout, stderr, error, ...completion } = out;
+      evidence.commands[label] = { ...completion, error: error?.message ?? null };
+      checks.add(`${label}: command completed`, out.completed === true,
+        `exit=${out.status} signal=${out.signal} ${error?.message ?? ""}`);
     }
+    return out;
   };
 
-  const checks = new Checks();
-  const evidence = {};
+  const status = async (label) => {
+    const out = await sh(bin("claude-ghcp-status"), [], 30, label);
+    let value;
+    try { value = JSON.parse(String(out.stdout ?? "").trim()); } catch {}
+    checks.add(`${label}: status has a running flag`, typeof value?.running === "boolean",
+      String(out.stdout ?? out.stderr ?? "").slice(0, 200));
+    return value ?? {};
+  };
+
   let backgroundId = null;
 
   try {
@@ -1081,7 +1176,7 @@ async function driveDaemonBackground(ctx) {
     // a headless slot can never give, so this is the one scenario that runs
     // under acceptEdits. Writes are still unattended; only the blanket
     // override is unavailable.
-    const launch = sh(
+    const launch = await sh(
       bin("claude-ghcp"),
       [
         "--ghcp-model", ctx.model,
@@ -1093,6 +1188,7 @@ async function driveDaemonBackground(ctx) {
           "containing exactly that value and nothing else.",
       ],
       timeouts.backgroundLaunchMs / 1000,
+      "background launch",
     );
     const launchOut = `${launch.stdout ?? ""}${launch.stderr ?? ""}`;
     evidence.launchOutput = launchOut.slice(0, 400);
@@ -1103,7 +1199,7 @@ async function driveDaemonBackground(ctx) {
     checks.add("launcher reported a backgrounded session id", Boolean(backgroundId), launchOut.slice(0, 200));
 
     // --- 2. the daemon is up and is the one we asked for --------------
-    const first = status();
+    const first = await status("initial status");
     evidence.daemon = first;
     checks.add("daemon reports running", first.running === true, JSON.stringify(first).slice(0, 200));
     checks.add("daemon reports a live pid", Number.isInteger(first.pid) && first.pid > 0, `pid=${first.pid}`);
@@ -1138,7 +1234,7 @@ async function driveDaemonBackground(ctx) {
     );
 
     // --- 4. Claude Code's own roster sees the session -----------------
-    const agents = sh(ctx.claudeBin, ["agents", "--json", "--all"], 60);
+    const agents = await sh(ctx.claudeBin, ["agents", "--json", "--all"], 60, "agent roster");
     let roster = [];
     try {
       roster = JSON.parse(String(agents.stdout ?? "[]"));
@@ -1164,7 +1260,7 @@ async function driveDaemonBackground(ctx) {
     // nothing about reuse -- step 6 does that -- and what it does prove is that
     // the two modes coexist: a foreground launch answers with a daemon already
     // running, and leaves it alone.
-    const second = sh(
+    const second = await sh(
       bin("claude-ghcp"),
       [
         "--ghcp-model", ctx.model,
@@ -1174,6 +1270,7 @@ async function driveDaemonBackground(ctx) {
         `Read ${fixture.buildFile} and reply with only the numeric value of BUILD_NUMBER.`,
       ],
       timeouts.foregroundLaunchMs / 1000,
+      "foreground launch",
     );
     const secondOut = `${second.stdout ?? ""}`;
     evidence.foregroundAnswer = secondOut.slice(0, 200);
@@ -1184,7 +1281,7 @@ async function driveDaemonBackground(ctx) {
       secondOut.slice(0, 160),
     );
 
-    const undisturbed = status();
+    const undisturbed = await status("foreground status");
     checks.add(
       "foreground launch left the daemon undisturbed",
       undisturbed.running === true && undisturbed.pid === first.pid && undisturbed.port === first.port,
@@ -1218,10 +1315,11 @@ async function driveDaemonBackground(ctx) {
     };
     const settingsBefore = countSettings();
 
-    const reuseLaunch = sh(
+    const reuseLaunch = await sh(
       bin("claude-ghcp"),
       ["--ghcp-model", ctx.model, "agents", "--json", "--all"],
       timeouts.persistentLaunchMs / 1000,
+      "persistent launch",
     );
     const reuseOut = `${reuseLaunch.stdout ?? ""}${reuseLaunch.stderr ?? ""}`;
     evidence.reuseLaunch = reuseOut.slice(0, 200);
@@ -1239,7 +1337,7 @@ async function driveDaemonBackground(ctx) {
       `settings files ${settingsBefore} -> ${settingsAfter}`,
     );
 
-    const reused = status();
+    const reused = await status("persistent status");
     checks.add(
       "persistent-bridge launch reused the running daemon",
       reused.running === true && reused.pid === first.pid && reused.port === first.port,
@@ -1247,7 +1345,7 @@ async function driveDaemonBackground(ctx) {
     );
 
     // --- 7. stop actually stops, and leaves nothing behind ------------
-    const stopped = sh(bin("claude-ghcp-stop"), [], 60);
+    const stopped = await sh(bin("claude-ghcp-stop"), [], 60, "daemon stop");
     let stopReport = {};
     try {
       stopReport = JSON.parse(String(stopped.stdout ?? "{}").trim());
@@ -1256,8 +1354,8 @@ async function driveDaemonBackground(ctx) {
     }
     checks.add("stop reports stopped", stopReport.stopped === true, JSON.stringify(stopReport).slice(0, 160));
 
-    const after = status();
-    checks.add("daemon is no longer running", after.running !== true, JSON.stringify(after).slice(0, 160));
+    const after = await status("stopped status");
+    checks.add("daemon is no longer running", after.running === false, JSON.stringify(after).slice(0, 160));
     checks.add(
       "registry and log are cleaned up",
       !fs.existsSync(path.join(daemonDir, "bridge.json")) && !fs.existsSync(path.join(daemonDir, "bridge.log")),
@@ -1268,9 +1366,9 @@ async function driveDaemonBackground(ctx) {
     // so a slot that throws anywhere above would leak a process and a bound
     // port for the rest of the run.
     if (backgroundId) {
-      try { sh(ctx.claudeBin, ["stop", backgroundId], 30); } catch {}
+      try { await sh(ctx.claudeBin, ["stop", backgroundId], 30); } catch {}
     }
-    try { sh(bin("claude-ghcp-stop"), [], 30); } catch {}
+    try { await sh(bin("claude-ghcp-stop"), [], 30); } catch {}
   }
 
   return {

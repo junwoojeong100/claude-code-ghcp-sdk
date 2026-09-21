@@ -201,6 +201,32 @@ test("names image and document attachments carried by replayed tool results", ()
   );
 });
 
+test("cold replay returns only retained binary attachments with unambiguous references", () => {
+  const image = (value) => ({ type: "image", source: {
+    type: "base64", media_type: "image/png", data: Buffer.from(value).toString("base64"),
+  } });
+  const messages = [
+    { role: "user", content: [image("old")] },
+    { role: "user", content: [
+      { type: "tool_result", tool_use_id: "read-a", content: [image("first")] },
+      { type: "tool_result", tool_use_id: "read-b", content: [image("second")] },
+    ] },
+  ];
+  const replay = serializeConversationTail(messages);
+  assert.deepEqual(replay.attachments.map(({ data }) => Buffer.from(data, "base64").toString()), ["old", "first", "second"]);
+  assert.equal(new Set(replay.attachments.map((item) => item.displayName)).size, 3);
+  for (const item of replay.attachments) assert.ok(replay.text.includes(item.displayName));
+  const lastOnly = serializeConversationTail(messages.slice(1));
+  const bytes = Buffer.byteLength(lastOnly.text) + "firstsecond".length;
+  const retained = serializeConversationTail(messages, bytes);
+  assert.equal(retained.truncated, true);
+  assert.deepEqual(retained.attachments.map(({ data }) => Buffer.from(data, "base64").toString()), ["first", "second"]);
+
+  const oversized = serializeConversationTail([{ role: "user", content: [image("x".repeat(1024))] }], 256);
+  assert.equal(oversized.truncated, true);
+  assert.deepEqual(oversized.attachments, []);
+});
+
 test("finds a tool result before trailing Claude Code system messages", () => {
   const input = extractTurnInput({
     messages: [

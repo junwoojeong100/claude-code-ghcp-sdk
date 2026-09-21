@@ -287,6 +287,47 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 
 ## Validation
 
+### 2026-09-22 closeout (KST)
+
+The second full run below is the final live verification for this closeout.
+**Strict result: NOT GREEN.** Both full runs finalized with exactly 77 unique
+expected records and no missing, duplicate or unexpected slots. Results remain
+separate; passes from different runs are not combined into an all-pass matrix.
+
+- Offline tests: **280/280 passed** (0 failed, cancelled or skipped).
+- Focused Haiku verification: **3/3 passed**, meaning three repetitions of
+  `claude-haiku-4.5` × `v04-shell-ops`, not three different scenarios or a full-matrix pass.
+
+| Full run | Run ID (UTC) | Pass / fail / blocked / unknown | Duration | User-settings integrity |
+|---|---|---|---|---|
+| First — NOT GREEN | `2026-09-21T22-54-08-294Z` | 76 / 1 / 0 / 0 | 456 s | Before/after digests differ; writer and cause unknown |
+| Second, final — NOT GREEN | `2026-09-21T23-07-19-056Z` | 74 / 2 / 1 / 0 | 863 s | Before/after digests match |
+
+Remaining non-passes:
+
+- First run: Sonnet `v09-session-resume` failed build-ID recall, context-only
+  answering (it used `Write`/`Read`), and fork-context inheritance checks.
+- Second run: Sonnet `v09-session-resume` failed the fork-context inheritance
+  check; Opus `v09-session-resume` failed the resumed-turn usage check (`input=0`);
+  Haiku `v05-multi-step` was **blocked** after a 602 s main-turn timeout, with
+  0/4 requested edits landed and neither attachment token returned.
+
+Both runs recorded the same start/end commit
+`3b42a61af1d461f3aa6c9bcc807fcb7afdfdd4e1` (dirty checkout) and identical
+41-file `verification-code-v1` SHA-256 fingerprint:
+`0101162ad82ba5f80f123368628f64a325b17dc79eb9ef47897385e9dd2b0f6e`.
+The implementation matched within and across runs; the first run's settings
+change is a separate integrity failure, not an attributed root cause.
+
+Both generated verification documents use **only the second full run**. Raw
+local evidence remains ignored under `.verify-runs/`: `summary.json` and
+`slots.jsonl` in each run directory above; final console
+`worktree-full-2-5VAuJx` (lines 94–99); offline log `offline-handoff-kBZzxb`
+(lines 1688–1695); focused logs `worktree-focused-1.ERWlLC`,
+`worktree-focused-2.BLp7uS`, and `worktree-focused-3.AARTsW` (lines 16–24 each).
+No additional fixes, tests or live reruns were performed during this documentation
+closeout; unresolved outcomes are retained, not waived.
+
 ```bash
 # Unit and structural tests. No model calls, no credits.
 npm test
@@ -310,8 +351,19 @@ npm run verify -- --scenarios v08-hooks-memory --keep-workspaces
 # Re-read the newest run from its own record
 npm run verify:report
 
-# Regenerate docs/VERIFICATION.md and docs/VERIFICATION_KO.md
+# Regenerate docs/VERIFICATION.md and docs/VERIFICATION_KO.md from the newest run
 npm run verify:doc
+```
+
+Automatic newest-run selection can pick a focused or incomplete run. To publish
+results from a specific completed full run, select its local artifact directory
+explicitly and use the same directory for both languages:
+
+```bash
+run_dir=".verify-runs/<completed-run-id>"
+node scripts/verify/report.mjs "$run_dir"
+node scripts/verify/report.mjs "$run_dir" --markdown > docs/VERIFICATION.md
+node scripts/verify/report.mjs "$run_dir" --markdown=ko > docs/VERIFICATION_KO.md
 ```
 
 `--timeout-scale` defaults to `1`, so the unchanged `npm run verify` command
@@ -335,7 +387,9 @@ schedule estimates are planning aids, **not deadlines or true worst-case bounds*
 real path end to end: the real Claude Code binary, the bridge, the Copilot SDK,
 and a real model. Nothing is mocked or replayed. Each slot gets its own bridge,
 port, token, `CLAUDE_CONFIG_DIR` and git workspace, so one model's stall cannot
-be read as another's failure and your own `~/.claude` is never read or written.
+be read as another's failure. The runner reads only a before/after digest of
+`~/.claude/settings.json` to check that it was not changed; it never stores that
+file's contents or uses it as a slot's settings.
 
 Slots are judged on primary evidence — files on disk, git history, hook logs,
 and the stream's own record of which tools ran. Model prose is only ever checked
@@ -344,9 +398,25 @@ is read back from `result.modelUsage`, so a silently substituted backend fails
 the slot instead of passing it.
 
 `blocked` is not a pass. A timeout, a dead bridge, or an unpaired
-`tool_use`/`tool_result` means the slot says nothing about the model, so it stays
-in the denominator. The runner exits non-zero unless passes clear the gate
-(74 of 77).
+`tool_use`/`tool_result` stays in the denominator. New runs use the
+`strict-all-pass-v1` policy: **77 of 77** for the full matrix, or every selected
+slot for an explicitly **focused** run. The runner fixes the expected unique
+model × scenario set before execution and exits non-zero for any missing,
+duplicate, unexpected, failed, blocked or unknown-outcome slot. Empty matrices,
+invalid concurrency values, and empty/duplicate/unknown selections are rejected
+before artifacts or model calls. Weighted feature coverage describes the selected
+scenario catalogue, **not the pass rate**; a focused pass is not a full-matrix pass.
+
+`summary.json` records the policy, expected and actual totals, full/focused scope,
+and local git commit/dirty state at the start and end. A deterministic SHA-256
+fingerprint includes tracked and relevant untracked implementation files in
+`src/`, `scripts/verify/`, `bin/` and the root package files; logs, run artifacts
+and generated documentation are excluded. Changed code/commit, changed user
+settings, or missing provenance prevents green even if every slot passed. A dirty
+checkout may pass when the recorded implementation stays unchanged. Terminal and
+EN/KO reports use the same strict assessment as the runner. Older summaries keep
+their **legacy stored gate and green** explicitly; they are never relabelled as
+strict all-pass results, and missing metadata is not reconstructed as success.
 
 Neither command covers LiteLLM. `npm run verify` starts `src/server.mjs`
 directly and never starts LiteLLM, so the LiteLLM path is a configuration
