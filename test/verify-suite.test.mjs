@@ -112,10 +112,10 @@ test("every feature a scenario covers exists in the inventory", () => {
   }
 });
 
-test("the gate is a real bar, not a formality", () => {
-  assert.equal(gateFor(70), 67);
+test("the gate requires every applicable slot to pass", () => {
+  assert.equal(gateFor(70), 70);
+  assert.equal(gateFor(77), 77);
   assert.equal(gateFor(10), 10);
-  assert.ok(gateFor(70) < 70, "a gate that equals the slot count leaves no headroom");
 });
 
 test("planRun accounts for every slot", () => {

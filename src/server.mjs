@@ -125,6 +125,48 @@ async function readBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
+function validateBody(body) {
+  const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const requireShape = (condition, message) => {
+    if (!condition) throw new BridgeRequestError(message);
+  };
+  const content = (value, field) => {
+    requireShape(typeof value === "string" || Array.isArray(value), `${field} must be a string or an array of content blocks.`);
+    if (!Array.isArray(value)) return;
+    for (const block of value) {
+      requireShape(object(block) && typeof block.type === "string", `${field} must contain content block objects.`);
+      if (block.type === "text") {
+        requireShape(typeof block.text === "string", `${field} text blocks must contain text.`);
+      }
+      if (block.type === "tool_result") {
+        requireShape(typeof block.tool_use_id === "string", "tool_result must contain a tool_use_id.");
+        if (block.content !== undefined) content(block.content, "tool_result.content");
+      }
+    }
+  };
+
+  requireShape(object(body), "Request body must be a JSON object.");
+  if (body.stream !== undefined) requireShape(typeof body.stream === "boolean", "stream must be a boolean.");
+  if (body.model !== undefined) requireShape(typeof body.model === "string", "model must be a string.");
+  if (body.messages !== undefined) {
+    requireShape(Array.isArray(body.messages), "messages must be an array.");
+    for (const message of body.messages) {
+      requireShape(object(message) && typeof message.role === "string", "messages must contain message objects with a role.");
+      content(message.content, "message.content");
+    }
+  }
+  if (body.system !== undefined) content(body.system, "system");
+  if (body.tools !== undefined) {
+    requireShape(Array.isArray(body.tools), "tools must be an array.");
+    for (const tool of body.tools) {
+      requireShape(object(tool) && typeof tool.name === "string", "tools must contain tool objects with a name.");
+      if (tool.input_schema !== undefined) requireShape(object(tool.input_schema), "tool.input_schema must be an object.");
+    }
+  }
+  if (body.tool_choice !== undefined) requireShape(object(body.tool_choice), "tool_choice must be an object.");
+  if (body.output_config !== undefined) requireShape(object(body.output_config), "output_config must be an object.");
+}
+
 const server = http.createServer(async (req, res) => {
   const requestId = randomUUID();
   // Only the path and query matter; a neutral base also works for an IPv6 bind host.
@@ -191,6 +233,7 @@ const server = http.createServer(async (req, res) => {
   let body;
   try {
     body = await readBody(req);
+    validateBody(body);
   } catch (error) {
     writeApiError(res, 400, "invalid_request_error", error.message);
     return;

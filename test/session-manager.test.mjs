@@ -731,6 +731,46 @@ test("does not reuse anonymous Copilot sessions across bridge instances", async 
   }
 });
 
+for (const change of ["model", "tools", "system"]) {
+  test(`replays intervening turns after ${change} switches A to B to A`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-terra" }]);
+    const sessions = [];
+    client.createSessionImplementation = async () => {
+      const session = new FakeSession();
+      sessions.push(session);
+      return session;
+    };
+    const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+    const headers = { "x-claude-code-session-id": `switch-${change}` };
+    const a = request();
+    const b = {
+      ...a,
+      ...(change === "model" ? { model: "gpt-5.6-terra" } : {}),
+      ...(change === "system" ? { system: "different instructions" } : {}),
+      ...(change === "tools" ? { tools: [{ name: "Read", input_schema: { type: "object", properties: {} } }] } : {}),
+      messages: [...a.messages, { role: "assistant", content: "ok" },
+        { role: "user", content: "Only in B: deployment target is ORCHID." }],
+    };
+    await manager.start();
+    try {
+      await manager.execute(a, headers);
+      await manager.execute(b, headers);
+      const back = { ...a, messages: [...b.messages, { role: "assistant", content: "noted" },
+        { role: "user", content: "What is the deployment target?" }] };
+      await manager.execute(back, headers);
+      assert.equal(sessions.length, 3);
+      assert.match(sessions[2].sendCalls[0].prompt, /Only in B: deployment target is ORCHID/);
+      assert.equal(sessions[0].disconnectCalls, 1);
+      await manager.execute({ ...back, messages: [...back.messages,
+        { role: "assistant", content: "ORCHID" }, { role: "user", content: "continue normally" }] }, headers);
+      assert.equal(sessions.length, 3);
+      assert.equal(sessions[2].sendCalls[1].prompt, "continue normally");
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
 test("recreates Copilot state when same-length Claude history diverges", async () => {
   const diagnostics = [];
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
@@ -1155,6 +1195,94 @@ test("recovers a fresh session from an inherited final tool result", async () =>
     assert.equal(client.session.handledToolCalls.length, 0);
     assert.equal(client.session.sendCalls.length, 1);
     assert.match(client.session.sendCalls[0].prompt, /tool_result parent-agent/);
+  } finally {
+    await manager.stop();
+  }
+});
+
+for (const finalPrompt of [false, true]) {
+  test(`cold replay preserves tool-result binary bytes${finalPrompt ? " before a new prompt" : " at the end"}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AAECAwQ=" } };
+    const pdf = { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQK" } };
+    const messages = [
+      { role: "user", content: "Read both attachments." },
+      { role: "assistant", content: [
+        { type: "tool_use", id: "read-png", name: "Read", input: {} },
+        { type: "tool_use", id: "read-pdf", name: "Read", input: {} },
+      ] },
+      { role: "user", content: [
+        { type: "tool_result", tool_use_id: "read-png", content: [image] },
+        { type: "tool_result", tool_use_id: "read-pdf", content: [pdf] },
+      ] },
+      ...(finalPrompt ? [{ role: "assistant", content: "noted" },
+        { role: "user", content: [{ type: "text", text: "Compare the attachments." }, image] }] : []),
+    ];
+    await manager.start();
+    try {
+      await manager.execute({ ...request(), messages }, {
+        "x-claude-code-session-id": "binary-parent", "x-claude-code-agent-id": "forked-child",
+      });
+      const sent = client.session.sendCalls[0];
+      assert.deepEqual(sent.attachments.map(({ data, mimeType }) => ({ data, mimeType })), [
+        { data: image.source.data, mimeType: "image/png" },
+        { data: pdf.source.data, mimeType: "application/pdf" },
+        ...(finalPrompt ? [{ data: image.source.data, mimeType: "image/png" }] : []),
+      ]);
+      for (const attachment of sent.attachments.slice(0, 2)) {
+        assert.ok(sent.prompt.includes(attachment.displayName));
+      }
+      assert.match(sent.prompt, /tool_result read-png/);
+      assert.match(sent.prompt, /tool_result read-pdf/);
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+test("sibling user instructions steer pending tool results exactly once", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", turnTimeoutMs: 500, client });
+  const headers = { "x-claude-code-session-id": "tool-steering" };
+  const body = { ...request(), tools: [{ name: "Read", input_schema: { type: "object", properties: {} } }] };
+  const order = [];
+  client.session.sendImplementation = async ({ prompt, mode }) => {
+    if (mode === "enqueue") {
+      order.push(`user:${prompt}`);
+      return;
+    }
+    client.session.emit("assistant.message", { content: "", toolRequests: [
+      { toolCallId: "read-1", name: "Read", arguments: {} },
+      { toolCallId: "read-2", name: "Read", arguments: {} },
+    ] });
+    for (const id of ["read-1", "read-2"]) {
+      client.session.emit("external_tool.requested", { requestId: id, toolCallId: id, toolName: "Read" });
+    }
+  };
+  client.session.handlePendingToolCallImplementation = async ({ requestId }) => {
+    order.push(`tool:${requestId}`);
+    if (requestId === "read-2") {
+      client.session.emit("assistant.message", { content: order.some((item) => item.startsWith("user:")) ? "destination B" : "destination A", toolRequests: [] });
+      client.session.emit("session.idle");
+    }
+  };
+  const results = { ...body, messages: [{ role: "user", content: [
+    { type: "tool_result", tool_use_id: "read-1", content: "one" },
+    { type: "tool_result", tool_use_id: "read-2", content: "two" },
+    { type: "text", text: "Use this result but change the destination to B." },
+  ] }] };
+  await manager.start();
+  try {
+    await manager.execute(body, headers);
+    const result = await manager.execute(results, headers);
+    assert.equal(result.message.content, "destination B");
+    assert.deepEqual(order, ["user:Use this result but change the destination to B.", "tool:read-1", "tool:read-2"]);
+    const retry = await manager.execute(results, headers);
+    assert.equal(retry.message.content, "destination B");
+    assert.equal(client.session.sendCalls.length, 2);
+    assert.equal(client.session.handledToolCalls.length, 2);
+    assert.deepEqual(client.session.handledToolCalls.map((call) => call.result.textResultForLlm), ["one", "two"]);
   } finally {
     await manager.stop();
   }
@@ -1663,93 +1791,163 @@ test("continues a completed background tool when its final result arrives later"
   }
 });
 
-test("retries only pending results after a partial multi-tool failure", async () => {
-  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
-  const manager = new SessionManager({
-    baseDirectory: "/tmp",
-    preferredModel: "gpt-5.6-sol",
-    turnTimeoutMs: 100,
-    client,
-  });
-  const headers = { "x-claude-code-session-id": "session-1" };
-  const toolBody = {
-    ...request(),
-    tools: [
-      {
-        name: "Read",
-        description: "Read a file",
-        input_schema: { type: "object", properties: {} },
-      },
-    ],
-  };
-  const attempts = new Map();
+for (const siblingKind of ["text", "image", "text and image"]) {
+  test(`background result updates deliver sibling ${siblingKind} only once`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", turnTimeoutMs: 500, client });
+    const headers = { "x-claude-code-session-id": "agent-steering" };
+    const body = { ...request(), tools: [{ name: "Agent", input_schema: { type: "object", properties: {} } }] };
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AAECAwQ=" } };
+    const results = (content, instruction = "Change the destination to B.", attachment = image) => ({
+      ...body,
+      messages: [{ role: "user", content: [
+        { type: "tool_result", tool_use_id: "agent-1", content },
+        ...(siblingKind.includes("text") ? [{ type: "text", text: instruction }] : []),
+        ...(siblingKind.includes("image") ? [attachment] : []),
+      ] }],
+    });
+    client.session.sendImplementation = async ({ mode }) => {
+      if (mode === "enqueue") return;
+      if (client.session.sendCalls.length === 1) {
+        client.session.emit("assistant.message", { content: "", toolRequests: [
+          { toolCallId: "agent-1", name: "Agent", arguments: {} },
+        ] });
+        client.session.emit("external_tool.requested", { requestId: "request-1", toolCallId: "agent-1", toolName: "Agent" });
+      } else {
+        client.session.emit("assistant.message", { content: "updated", toolRequests: [] });
+        client.session.emit("session.idle");
+      }
+    };
+    client.session.handlePendingToolCallImplementation = async () => {
+      client.session.emit("assistant.message", { content: "started", toolRequests: [] });
+      client.session.emit("session.idle");
+    };
+    await manager.start();
+    try {
+      await manager.execute(body, headers);
+      await manager.execute(results("Agent started."), headers);
+      assert.equal(client.session.sendCalls[1].mode, "enqueue");
+      if (siblingKind.includes("text")) assert.equal(client.session.sendCalls[1].prompt, "Change the destination to B.");
+      if (siblingKind.includes("image")) assert.equal(client.session.sendCalls[1].attachments[0].data, image.source.data);
 
-  client.session.sendImplementation = async () => {
-    client.session.emit("assistant.message", {
-      content: "",
-      toolRequests: [
-        { toolCallId: "tool-1", name: "Read", arguments: {} },
-        { toolCallId: "tool-2", name: "Read", arguments: {} },
-      ],
-      outputTokens: 1,
-    });
-    client.session.emit("external_tool.requested", {
-      requestId: "request-1",
-      toolCallId: "tool-1",
-      toolName: "Read",
-    });
-    client.session.emit("external_tool.requested", {
-      requestId: "request-2",
-      toolCallId: "tool-2",
-      toolName: "Read",
-    });
-  };
-  client.session.handlePendingToolCallImplementation = async ({ requestId }) => {
-    const attempt = (attempts.get(requestId) || 0) + 1;
-    attempts.set(requestId, attempt);
-    if (requestId === "request-2" && attempt === 1) {
-      return { success: false };
+      const finished = results("Agent finished.");
+      await manager.execute(finished, headers);
+      assert.match(client.session.sendCalls[2].prompt, /Agent finished\./);
+      assert.doesNotMatch(client.session.sendCalls[2].prompt, /Change the destination to B\./);
+      assert.deepEqual(client.session.sendCalls[2].attachments, []);
+      await manager.execute(finished, headers);
+      assert.equal(client.session.sendCalls.length, 3);
+
+      const nextImage = { ...image, source: { ...image.source, data: "BQYHCAk=" } };
+      const changed = results("Agent published more detail.", "Now use destination C.", nextImage);
+      await manager.execute(changed, headers);
+      assert.match(client.session.sendCalls[3].prompt, /Agent published more detail\./);
+      if (siblingKind.includes("text")) assert.match(client.session.sendCalls[3].prompt, /Now use destination C\./);
+      if (siblingKind.includes("image")) assert.equal(client.session.sendCalls[3].attachments[0].data, nextImage.source.data);
+      await manager.execute(changed, headers);
+      assert.equal(client.session.sendCalls.length, 4);
+      assert.equal(client.session.handledToolCalls.length, 1);
+    } finally {
+      await manager.stop();
     }
-    if (requestId === "request-2") {
-      client.session.emit("assistant.turn_start", { turnId: "turn-2" });
+  });
+}
+
+for (const withInstruction of [false, true]) {
+  test(`retries only pending results after a partial multi-tool failure${withInstruction ? " without repeating user instructions" : ""}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({
+      baseDirectory: "/tmp",
+      preferredModel: "gpt-5.6-sol",
+      turnTimeoutMs: 100,
+      client,
+    });
+    const headers = { "x-claude-code-session-id": "session-1" };
+    const toolBody = {
+      ...request(),
+      tools: [
+        {
+          name: "Read",
+          description: "Read a file",
+          input_schema: { type: "object", properties: {} },
+        },
+      ],
+    };
+    const attempts = new Map();
+
+    client.session.sendImplementation = async ({ prompt, mode }) => {
+      if (mode === "enqueue") {
+        assert.equal(prompt, "Change the destination to B.");
+        return;
+      }
       client.session.emit("assistant.message", {
-        content: "done",
-        toolRequests: [],
+        content: "",
+        toolRequests: [
+          { toolCallId: "tool-1", name: "Read", arguments: {} },
+          { toolCallId: "tool-2", name: "Read", arguments: {} },
+        ],
         outputTokens: 1,
       });
-      client.session.emit("assistant.turn_end", { turnId: "turn-2" });
+      client.session.emit("external_tool.requested", {
+        requestId: "request-1",
+        toolCallId: "tool-1",
+        toolName: "Read",
+      });
+      client.session.emit("external_tool.requested", {
+        requestId: "request-2",
+        toolCallId: "tool-2",
+        toolName: "Read",
+      });
+    };
+    client.session.handlePendingToolCallImplementation = async ({ requestId }) => {
+      const attempt = (attempts.get(requestId) || 0) + 1;
+      attempts.set(requestId, attempt);
+      if (requestId === "request-2" && attempt === 1) {
+        return { success: false };
+      }
+      if (requestId === "request-2") {
+        client.session.emit("assistant.turn_start", { turnId: "turn-2" });
+        client.session.emit("assistant.message", {
+          content: "done",
+          toolRequests: [],
+          outputTokens: 1,
+        });
+        client.session.emit("assistant.turn_end", { turnId: "turn-2" });
+      }
+      return { success: true };
+    };
+    const resultsBody = {
+      ...toolBody,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "tool-1", content: "one" },
+            { type: "tool_result", tool_use_id: "tool-2", content: "two" },
+            ...(withInstruction ? [{ type: "text", text: "Change the destination to B." }] : []),
+          ],
+        },
+      ],
+    };
+
+    await manager.start();
+    try {
+      await manager.execute(toolBody, headers);
+      await assert.rejects(
+        manager.execute(resultsBody, headers),
+        /rejected the result for tool call tool-2/,
+      );
+
+      const retry = await manager.execute(resultsBody, headers);
+      assert.equal(retry.message.content, "done");
+      assert.equal(attempts.get("request-1"), 1);
+      assert.equal(attempts.get("request-2"), 2);
+      assert.equal(client.session.sendCalls.filter((call) => call.mode === "enqueue").length, withInstruction ? 1 : 0);
+    } finally {
+      await manager.stop();
     }
-    return { success: true };
-  };
-  const resultsBody = {
-    ...toolBody,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "tool_result", tool_use_id: "tool-1", content: "one" },
-          { type: "tool_result", tool_use_id: "tool-2", content: "two" },
-        ],
-      },
-    ],
-  };
-
-  await manager.start();
-  try {
-    await manager.execute(toolBody, headers);
-    await assert.rejects(
-      manager.execute(resultsBody, headers),
-      /rejected the result for tool call tool-2/,
-    );
-
-    const retry = await manager.execute(resultsBody, headers);
-    assert.equal(retry.message.content, "done");
-    assert.equal(attempts.get("request-1"), 1);
-    assert.equal(attempts.get("request-2"), 2);
-  } finally {
-    await manager.stop();
-  }
-});
+  });
+}
 
 test("rejects a tool result that the Copilot session does not accept", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);

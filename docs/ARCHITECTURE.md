@@ -278,9 +278,17 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
   `tool_use`/`tool_result`, or the wrong model served — is `blocked`, not
   `fail`, and stays in the denominator. Blocked is never a pass.
 - Each slot gets its own workspace, `settings.json`, and `CLAUDE_CONFIG_DIR`.
-  The user's `~/.claude` is never read or written.
+  The runner reads a before/after digest of `~/.claude/settings.json` to detect
+  changes; it does not store the contents or use them as slot settings.
+- New runs use `strict-all-pass-v1`: all 77 unique expected slots must pass for
+  a full run, and every selected slot must pass for a focused run. Missing,
+  duplicate or unexpected slots, changed user settings, or missing/changed
+  implementation provenance prevent green even if the recorded slots all pass.
 - `npm run verify:report` renders the latest run, and `npm run verify:doc`
   regenerates [Verification Results](VERIFICATION.md) in both languages.
+  To document a specific completed full run, pass its directory explicitly to
+  `node scripts/verify/report.mjs <run-directory> --markdown` (or `--markdown=ko`);
+  automatic latest-run selection can otherwise pick a focused or incomplete run.
 
 `npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
 

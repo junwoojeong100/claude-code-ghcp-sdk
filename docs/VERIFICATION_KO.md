@@ -7,9 +7,20 @@
 모든 슬롯은 실제 경로를 그대로 지납니다: 진짜 Claude Code 바이너리 → 브리지 → Copilot SDK → Copilot 모델. 목이나 스텁은 없습니다. 판정은 모델이 무엇을 말했는지가 아니라 **디스크 상태, git 이력, 훅 로그, stream-json 이벤트**로 합니다.
 
 - Claude Code: `2.1.278`
-- 실행 시각: 2026-09-21T09:45:17.604Z → 2026-09-21T09:53:36.122Z
-- 소요: 499초
+- 실행 시각: 2026-09-21T23:07:19.056Z → 2026-09-21T23:21:41.753Z
+- 소요: 863초
 - 호스트: darwin arm64 / node v22.16.0
+
+## 정책, 완전성 및 코드 출처
+
+- 정책: strict-all-pass-v1
+- 범위: full (77 전체 매트릭스 카탈로그 슬롯)
+- 예상: 77 / 실제: 77
+- 결과: NOT GREEN
+- 엄격한 통과는 비어 있지 않은 예상 매트릭스의 정확하고 중복 없는 완료, 모든 슬롯의 pass, 사용자 설정 보존 및 시작/종료 코드 출처 일치를 요구합니다.
+- 진단: Every expected slot must pass; fail, blocked and unknown outcomes are not passes.
+- 코드 출처 start: commit: 3b42a61af1d461f3aa6c9bcc807fcb7afdfdd4e1; dirty: true; fingerprint: sha256 verification-code-v1 0101162ad82ba5f80f123368628f64a325b17dc79eb9ef47897385e9dd2b0f6e; files: 41
+- 코드 출처 end: commit: 3b42a61af1d461f3aa6c9bcc807fcb7afdfdd4e1; dirty: true; fingerprint: sha256 verification-code-v1 0101162ad82ba5f80f123368628f64a325b17dc79eb9ef47897385e9dd2b0f6e; files: 41
 
 ## 기록된 실행 설정
 
@@ -47,21 +58,21 @@ Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한, SIG
 
 | 시나리오 | claude-opus-5 | claude-sonnet-5 | claude-haiku-4.5 | gpt-5.6-sol | gpt-5.6-terra | gpt-5.6-luna | gpt-6-astra |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `v01-repo-recon` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v02-surgical-edit` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v03-test-fix-loop` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v04-shell-ops` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v05-multi-step` | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ |
-| `v06-subagent` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v07-mcp-playwright` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v08-hooks-memory` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v09-session-resume` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v10-long-context` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `v11-daemon-background` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `v01-repo-recon` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v02-surgical-edit` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v03-test-fix-loop` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v04-shell-ops` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v05-multi-step` | PASS | PASS | BLOCK | PASS | PASS | PASS | PASS |
+| `v06-subagent` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v07-mcp-playwright` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v08-hooks-memory` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v09-session-resume` | FAIL | FAIL | PASS | PASS | PASS | PASS | PASS |
+| `v10-long-context` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v11-daemon-background` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
-**pass 74 / fail 3 / blocked 0** — 전체 77슬롯, 통과 기준 74.
+**pass 74 / fail 2 / blocked 1** — 전체 77슬롯, 통과 기준 77.
 
-⚠️(blocked)는 통과가 아닙니다. 전송 계층이 깨져 모델에 대해 아무것도 말해주지 못한 슬롯이며, 분모에 그대로 남습니다.
+BLOCK(blocked)는 통과가 아닙니다. 실행하지 못한 슬롯이며 분모에 그대로 남습니다. DUP는 중복 기록, UNKNOWN은 알 수 없는 결과입니다.
 
 ## 시나리오
 
@@ -113,8 +124,9 @@ Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한, SIG
 - A long-running process was started and watched to completion.
 - The tick log reached at least three lines.
 - git log shows exactly the requested commit subject.
-- A second worktree is registered on its own branch.
-- The worktree's file exists there and never appears in the primary checkout.
+- Exactly one secondary worktree matches the requested branch or its native EnterWorktree equivalent.
+- The same worktree holds the marker file both on disk and committed unchanged in HEAD.
+- The marker file is absent from both the primary checkout and its HEAD.
 - No ticker process survives the slot.
 
 ### `v05-multi-step` — 파일 종류를 넘나드는 4단계 계획
@@ -207,7 +219,7 @@ MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp
 
 ## 커버리지
 
-11개 시나리오가 Claude Code 핵심 기능 인벤토리의 **92.2%**(가중치 94/102)를 실제로 행사합니다. 이 숫자는 산문이 아니라 `scripts/verify/features.mjs`의 기능 목록과 각 시나리오의 `covers`에서 계산됩니다.
+선택한 11개 시나리오는 현재 Claude Code 핵심 기능 인벤토리의 **92.2%**(가중치 94/102)에 해당합니다. 이는 카탈로그 커버리지이며 통과율이 아니고 모든 슬롯 실행의 증거도 아닙니다. 결과 집계와 별도로 `scripts/verify/features.mjs`의 기능 목록과 선택한 각 시나리오의 `covers`에서 계산됩니다.
 
 ### 커버하지 못한 기능 (정직한 잔여분)
 
@@ -227,48 +239,41 @@ Claude Code 2.1.278는 다음 도구를 제공하지 않습니다: `TodoWrite`, 
 
 ## 통과하지 못한 슬롯
 
-### gpt-5.6-terra × `v05-multi-step` — fail
+### claude-sonnet-5 × `v09-session-resume` — fail
 
-- ❌ the image's token came back — `looked for IMGTAG361B08 in: Completed: greeting updated to “Good morning”
-Completed: VERSION bumped to 0.2.0
-Completed: CHANGELOG.md created with release token S5PKSY
-Completed: RATE updated to `
-- the image's token came back: looked for IMGTAG361B08 in: Completed: greeting updated to “Good morning”
-Completed: VERSION bumped to 0.2.0
-Completed: CHANGELOG.md created with release token S5PKSY
-Completed: RATE updated to 0.08
-PDFDOCD0245E
-IMGTAG
+- FAIL fork inherited the seed turn's context — `Thursday 2026-09-24 02:00 UTC`
+- fork inherited the seed turn's context: Thursday 2026-09-24 02:00 UTC
 
-### claude-haiku-4.5 × `v05-multi-step` — fail
+### claude-haiku-4.5 × `v05-multi-step` — blocked
 
-- ❌ the image's token came back — `looked for IMGTAG2156A4 in: Perfect! I've completed all four changes:
+- FAIL src/greet.mjs carries "Good morning" — `export function greet(name) {
+  return "Hello, " + name + "!";
+}
+`
+- FAIL VERSION carries "0.2.0" — `0.1.0
+`
+- FAIL CHANGELOG.md carries "ZS75BN" — `file missing`
+- FAIL analysis.ipynb carries "0.08" — `{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "intro",
+   "metadata": {},
+   "source": [
+    "# Rate analysis\n`
+- FAIL notebook is still a valid nbformat 4 document — `nbformat=4 cells=2`
+- FAIL the PDF's token came back — `looked for PDFDOCC38821 in: I'll complete the four changes and then extract the tokens from the PDF and image.`
+- FAIL the image's token came back — `looked for IMGTAG99AB92 in: I'll complete the four changes and then extract the tokens from the PDF and image.`
+- FAIL main: completed — `timed out after 602s`
+- FAIL main: expected model served — `modelUsage was empty`
+- FAIL main: result.stop_reason present — `missing`
+- FAIL main: usage reports input tokens — `input=0`
+- main: timed out after 602s
 
-**Changes completed:**
-1. ✓ src/greet.mjs: Changed "Hello" to "Good morning"
-2. ✓ VERSION: Bumped to 0.2.0
-3. ✓ CHANGELOG.md: Cre`
-- the image's token came back: looked for IMGTAG2156A4 in: Perfect! I've completed all four changes:
+### claude-opus-5 × `v09-session-resume` — fail
 
-**Changes completed:**
-1. ✓ src/greet.mjs: Changed "Hello" to "Good morning"
-2. ✓ VERSION: Bumped to 0.2.0
-3. ✓ CHANGELOG.md: Created with first entry mentio
-
-### gpt-5.6-luna × `v05-multi-step` — fail
-
-- ❌ the image's token came back — `looked for IMGTAGF47F61 in: Completed all four changes:
-1. Greeting changed to “Good morning”.
-2. VERSION bumped to 0.2.0.
-3. Created CHANGELOG.md with release token INV2WO.
-4. RATE changed from 0.05 `
-- the image's token came back: looked for IMGTAGF47F61 in: Completed all four changes:
-1. Greeting changed to “Good morning”.
-2. VERSION bumped to 0.2.0.
-3. Created CHANGELOG.md with release token INV2WO.
-4. RATE changed from 0.05 to 0.08.
-
-PDF token: PDFDOC2
+- FAIL resume: usage reports input tokens — `input=0`
+- resume: usage reports input tokens: input=0
 
 ## 재현
 

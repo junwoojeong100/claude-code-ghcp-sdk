@@ -45,82 +45,122 @@ export function buildPdf(text) {
 }
 
 /**
- * A PNG whose payload is a word spelled in filled blocks, scaled large enough
- * that reading it is not an OCR subtlety. A 5x7 block font is a dozen lines,
- * which is cheaper than taking on an image library as a dependency.
+ * Continuous, antialiased strokes keep this transport fixture from becoming a
+ * pixel-font OCR test. Block glyphs with diagonal-only contacts led to D/0 and
+ * 0/O misreads even when the attachment bytes arrived intact. Curves, a slashed
+ * zero and a straight D spine distinguish those characters without changing
+ * token entropy or adding an answer in image metadata. Coordinates use a 6x8
+ * em; M/L/Q are move, line and quadratic curve commands.
  */
 const GLYPHS = {
-  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-  B: ["11110", "10001", "11110", "10001", "10001", "10001", "11110"],
-  C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
-  D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
-  E: ["11111", "10000", "11110", "10000", "10000", "10000", "11111"],
-  F: ["11111", "10000", "11110", "10000", "10000", "10000", "10000"],
-  G: ["01111", "10000", "10000", "10011", "10001", "10001", "01110"],
-  H: ["10001", "10001", "11111", "10001", "10001", "10001", "10001"],
-  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
-  J: ["00111", "00010", "00010", "00010", "10010", "10010", "01100"],
-  K: ["10001", "10010", "11100", "10010", "10001", "10001", "10001"],
-  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
-  M: ["10001", "11011", "10101", "10001", "10001", "10001", "10001"],
-  N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
-  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
-  P: ["11110", "10001", "11110", "10000", "10000", "10000", "10000"],
-  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
-  R: ["11110", "10001", "11110", "10010", "10001", "10001", "10001"],
-  S: ["01111", "10000", "01110", "00001", "00001", "10001", "01110"],
-  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
-  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
-  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
-  W: ["10001", "10001", "10001", "10101", "10101", "11011", "10001"],
-  X: ["10001", "01010", "00100", "00100", "00100", "01010", "10001"],
-  Y: ["10001", "01010", "00100", "00100", "00100", "00100", "00100"],
-  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
-  0: ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-  1: ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-  2: ["01110", "10001", "00001", "00110", "01000", "10000", "11111"],
-  3: ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
-  4: ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-  5: ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
-  6: ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
-  7: ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  8: ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-  9: ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
-  // A full-width bar filling a whole letter cell, and so the one glyph here
-  // that a reader can take for a separator, a minus sign or part of its
-  // neighbour. Keep it out of any token a check greps for.
-  "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
+  A: "M0,8 L3,0 L6,8 M1,5.5 L5,5.5",
+  B: "M0,8 L0,0 L3,0 Q6,0 6,2 Q6,4 3,4 L0,4 M3,4 Q6,4 6,6 Q6,8 3,8 L0,8",
+  C: "M6,1 Q5,0 3,0 Q0,0 0,4 Q0,8 3,8 Q5,8 6,7",
+  D: "M0,8 L0,0 L2.5,0 Q6,0 6,4 Q6,8 2.5,8 L0,8",
+  E: "M6,0 L0,0 L0,8 L6,8 M0,4 L5,4",
+  F: "M6,0 L0,0 L0,8 M0,4 L5,4",
+  G: "M6,1 Q5,0 3,0 Q0,0 0,4 Q0,8 3,8 Q5,8 6,7 L6,4.5 L3.5,4.5",
+  H: "M0,0 L0,8 M6,0 L6,8 M0,4 L6,4",
+  I: "M0,0 L6,0 M3,0 L3,8 M0,8 L6,8",
+  J: "M1,0 L6,0 M5,0 L5,6 Q5,8 2.5,8 Q0,8 0,6",
+  K: "M0,0 L0,8 M6,0 L0,5 M2.5,3 L6,8",
+  L: "M0,0 L0,8 L6,8",
+  M: "M0,8 L0,0 L3,4 L6,0 L6,8",
+  N: "M0,8 L0,0 L6,8 L6,0",
+  O: "M3,0 Q0,0 0,4 Q0,8 3,8 Q6,8 6,4 Q6,0 3,0",
+  P: "M0,8 L0,0 L3,0 Q6,0 6,2 Q6,4 3,4 L0,4",
+  Q: "M3,0 Q0,0 0,4 Q0,8 3,8 Q6,8 6,4 Q6,0 3,0 M3.5,5.5 L6,8",
+  R: "M0,8 L0,0 L3,0 Q6,0 6,2 Q6,4 3,4 L0,4 M3,4 L6,8",
+  S: "M6,1 Q5,0 3,0 Q0,0 0,2 Q0,3.5 3,4 Q6,4.5 6,6 Q6,8 3,8 Q1,8 0,7",
+  T: "M0,0 L6,0 M3,0 L3,8",
+  U: "M0,0 L0,5 Q0,8 3,8 Q6,8 6,5 L6,0",
+  V: "M0,0 L3,8 L6,0",
+  W: "M0,0 L1,8 L3,4 L5,8 L6,0",
+  X: "M0,0 L6,8 M6,0 L0,8",
+  Y: "M0,0 L3,4 L6,0 M3,4 L3,8",
+  Z: "M0,0 L6,0 L0,8 L6,8",
+  0: "M3,0 Q0,0 0,4 Q0,8 3,8 Q6,8 6,4 Q6,0 3,0 M1,6.5 L5,1.5",
+  1: "M1,2 L3,0 L3,8 M0,8 L6,8",
+  2: "M0,1.5 Q1,0 3,0 Q6,0 6,2 Q6,3.5 3,5.5 L0,8 L6,8",
+  3: "M0,1 Q1,0 3,0 Q6,0 6,2 Q6,4 3,4 L2,4 M3,4 Q6,4 6,6 Q6,8 3,8 Q1,8 0,7",
+  4: "M4.5,8 L4.5,0 L0,5.5 L6,5.5",
+  5: "M6,0 L0,0 L0,3.5 L3,3.5 Q6,3.5 6,6 Q6,8 3,8 Q1,8 0,7",
+  6: "M5.5,0.5 Q4.5,0 3,0 Q0,0 0,5 Q0,8 3,8 Q6,8 6,5.5 Q6,3 3,3 Q1,3 0,5",
+  7: "M0,0 L6,0 L2,8",
+  8: "M3,4 Q0,4 0,2 Q0,0 3,0 Q6,0 6,2 Q6,4 3,4 Q0,4 0,6 Q0,8 3,8 Q6,8 6,6 Q6,4 3,4",
+  9: "M0.5,7.5 Q1.5,8 3,8 Q6,8 6,3 Q6,0 3,0 Q0,0 0,2.5 Q0,5 3,5 Q5,5 6,3",
+  "-": "M0,4 L6,4",
 };
+
+function glyphSegments(path) {
+  const tokens = path.match(/[MLQ]|\d+(?:\.\d+)?/g);
+  const segments = [];
+  let x = 0;
+  let y = 0;
+  const line = (nextX, nextY) => {
+    segments.push([x, y, nextX, nextY]);
+    x = nextX;
+    y = nextY;
+  };
+  for (let i = 0; i < tokens.length;) {
+    const command = tokens[i++];
+    const nextX = Number(tokens[i++]);
+    const nextY = Number(tokens[i++]);
+    if (command === "M") {
+      x = nextX;
+      y = nextY;
+    } else if (command === "L") {
+      line(nextX, nextY);
+    } else {
+      const endX = Number(tokens[i++]);
+      const endY = Number(tokens[i++]);
+      const startX = x;
+      const startY = y;
+      for (let step = 1; step <= 16; step += 1) {
+        const t = step / 16;
+        const u = 1 - t;
+        line(u * u * startX + 2 * u * t * nextX + t * t * endX,
+          u * u * startY + 2 * u * t * nextY + t * t * endY);
+      }
+    }
+  }
+  return segments;
+}
 
 export function buildPng(text) {
   const scale = 8;
-  const pad = 12;
+  const pad = 32;
+  const advance = 9;
+  const radius = 3;
   const chars = [...text.toUpperCase()].filter((c) => GLYPHS[c] || c === " ");
-  const width = pad * 2 + chars.length * 6 * scale;
-  const height = pad * 2 + 7 * scale;
+  const width = pad * 2 + chars.length * advance * scale;
+  const height = pad * 2 + 9 * scale;
 
-  // White canvas, black glyphs, one byte per channel, RGB.
-  const raw = Buffer.alloc(height * (1 + width * 3), 0xff);
-  for (let y = 0; y < height; y += 1) raw[y * (1 + width * 3)] = 0; // filter: none
-
-  const plot = (x, y) => {
-    if (x < 0 || y < 0 || x >= width || y >= height) return;
-    const base = y * (1 + width * 3) + 1 + x * 3;
-    raw[base] = 0;
-    raw[base + 1] = 0;
-    raw[base + 2] = 0;
-  };
+  // White canvas, black strokes with a one-pixel antialias, RGB, filter none.
+  const stride = 1 + width * 3;
+  const raw = Buffer.alloc(height * stride, 0xff);
+  for (let y = 0; y < height; y += 1) raw[y * stride] = 0;
 
   chars.forEach((char, index) => {
-    const rows = GLYPHS[char];
-    if (!rows) return;
-    for (let r = 0; r < rows.length; r += 1) {
-      for (let c = 0; c < rows[r].length; c += 1) {
-        if (rows[r][c] !== "1") continue;
-        for (let dy = 0; dy < scale; dy += 1) {
-          for (let dx = 0; dx < scale; dx += 1) {
-            plot(pad + (index * 6 + c) * scale + dx, pad + r * scale + dy);
-          }
+    if (!GLYPHS[char]) return;
+    const originX = pad + (index * advance + 0.5) * scale;
+    const originY = pad + 0.5 * scale;
+    for (const [x0, y0, x1, y1] of glyphSegments(GLYPHS[char])) {
+      const ax = originX + x0 * scale;
+      const ay = originY + y0 * scale;
+      const bx = originX + x1 * scale;
+      const by = originY + y1 * scale;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const lengthSquared = dx * dx + dy * dy;
+      for (let y = Math.floor(Math.min(ay, by) - radius - 1); y <= Math.ceil(Math.max(ay, by) + radius + 1); y += 1) {
+        for (let x = Math.floor(Math.min(ax, bx) - radius - 1); x <= Math.ceil(Math.max(ax, bx) + radius + 1); x += 1) {
+          const t = Math.max(0, Math.min(1, ((x + 0.5 - ax) * dx + (y + 0.5 - ay) * dy) / lengthSquared));
+          const distance = Math.hypot(x + 0.5 - ax - t * dx, y + 0.5 - ay - t * dy);
+          const shade = Math.round(255 * Math.max(0, Math.min(1, distance - radius + 0.5)));
+          const offset = y * stride + 1 + x * 3;
+          const value = Math.min(raw[offset], shade);
+          raw.fill(value, offset, offset + 3);
         }
       }
     }

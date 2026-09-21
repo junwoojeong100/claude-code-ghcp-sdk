@@ -91,15 +91,25 @@ function toolResultValue(block) {
   };
 }
 
-function replayToolResultText(block) {
+function replayAttachmentText(attachment) {
+  return `[attachment ${attachment.displayName} ${attachment.mimeType} ${Buffer.byteLength(attachment.data, "base64")} bytes]`;
+}
+
+function replayToolResultText(block, attachments, prefix) {
   const value = toolResultValue(block);
-  // Replayed history is plain text, so a converted image or document becomes a
-  // placeholder naming its media type and size instead of disappearing.
-  const attachments = (value.binaryResultsForLlm || []).map(
-    (item) =>
-      `[attachment ${item.description} ${item.mimeType} ${Buffer.byteLength(item.data, "base64")} bytes]`,
-  );
-  return [value.textResultForLlm, ...attachments].filter(Boolean).join("\n");
+  // A reference in the transcript names the blob sent alongside it, so two
+  // reads of the same media type do not become indistinguishable on replay.
+  const references = (value.binaryResultsForLlm || []).map((item) => {
+    const attachment = {
+      type: "blob",
+      data: item.data,
+      mimeType: item.mimeType,
+      displayName: attachments ? `${prefix}-${item.description}` : item.description,
+    };
+    attachments?.push(attachment);
+    return replayAttachmentText(attachment);
+  });
+  return [value.textResultForLlm, ...references].filter(Boolean).join("\n");
 }
 
 export function extractTurnInput(body) {
@@ -118,18 +128,19 @@ export function extractTurnInput(body) {
       value: toolResultValue(block),
     }));
 
+  const attachments = blocks
+    .map((block, index) => attachmentFromBlock(block, index))
+    .filter(Boolean);
+
   if (toolResults.length) {
     return {
       kind: "tool-results",
       toolResults,
       prompt: extractText(message.content),
+      attachments,
       messageIndex,
     };
   }
-
-  const attachments = blocks
-    .map((block, index) => attachmentFromBlock(block, index))
-    .filter(Boolean);
 
   return {
     kind: "prompt",
@@ -139,30 +150,35 @@ export function extractTurnInput(body) {
   };
 }
 
-export function serializeConversation(messages = []) {
-  return messages
-    .map((message) => {
-      const role = String(message?.role || "unknown").toUpperCase();
-      if (typeof message?.content === "string") return `${role}: ${message.content}`;
-      if (!Array.isArray(message?.content)) return `${role}:`;
+function serializeMessage(message, messageIndex, attachments) {
+  const role = String(message?.role || "unknown").toUpperCase();
+  if (typeof message?.content === "string") return `${role}: ${message.content}`;
+  if (!Array.isArray(message?.content)) return `${role}:`;
 
-      const rendered = message.content
-        .map((block) => {
-          if (block?.type === "text") return block.text;
-          if (block?.type === "tool_use") {
-            const id = typeof block.id === "string" ? ` id=${JSON.stringify(block.id)}` : "";
-            return `[tool_use ${block.name}${id} ${JSON.stringify(block.input || {})}]`;
-          }
-          if (block?.type === "tool_result") {
-            const error = block.is_error ? " is_error=true" : "";
-            return `[tool_result ${block.tool_use_id}${error} ${replayToolResultText(block)}]`;
-          }
-          return `[${block?.type || "content"}]`;
-        })
-        .join("\n");
-      return `${role}: ${rendered}`;
-    })
-    .join("\n\n");
+  const rendered = message.content.map((block, blockIndex) => {
+    const prefix = `history-${messageIndex + 1}-${blockIndex + 1}`;
+    if (block?.type === "text") return block.text;
+    if (block?.type === "tool_use") {
+      const id = typeof block.id === "string" ? ` id=${JSON.stringify(block.id)}` : "";
+      return `[tool_use ${block.name}${id} ${JSON.stringify(block.input || {})}]`;
+    }
+    if (block?.type === "tool_result") {
+      const error = block.is_error ? " is_error=true" : "";
+      return `[tool_result ${block.tool_use_id}${error} ${replayToolResultText(block, attachments, prefix)}]`;
+    }
+    const attachment = attachments && attachmentFromBlock(block, blockIndex);
+    if (attachment) {
+      attachment.displayName = `${prefix}-${attachment.displayName}`;
+      attachments.push(attachment);
+      return replayAttachmentText(attachment);
+    }
+    return `[${block?.type || "content"}]`;
+  }).join("\n");
+  return `${role}: ${rendered}`;
+}
+
+export function serializeConversation(messages = []) {
+  return messages.map((message, index) => serializeMessage(message, index)).join("\n\n");
 }
 
 export function serializeConversationTail(messages = [], maxBytes = 268_435_456) {
@@ -170,23 +186,30 @@ export function serializeConversationTail(messages = [], maxBytes = 268_435_456)
     throw new Error("maxBytes must be a positive integer.");
   }
 
-  const rendered = messages.map((message) => serializeConversation([message]));
+  const rendered = messages.map((message, index) => {
+    const attachments = [];
+    const text = serializeMessage(message, index, attachments);
+    const bytes = Buffer.byteLength(text) + attachments.reduce(
+      (total, item) => total + Buffer.byteLength(item.data, "base64"), 0,
+    );
+    return { text, attachments, bytes };
+  });
   const selected = [];
   let selectedBytes = 0;
   for (let index = rendered.length - 1; index >= 0; index -= 1) {
     const separatorBytes = selected.length ? 2 : 0;
-    const messageBytes = Buffer.byteLength(rendered[index]);
-    if (selectedBytes + separatorBytes + messageBytes > maxBytes) break;
+    if (selectedBytes + separatorBytes + rendered[index].bytes > maxBytes) break;
     selected.unshift(rendered[index]);
-    selectedBytes += separatorBytes + messageBytes;
+    selectedBytes += separatorBytes + rendered[index].bytes;
   }
 
   const truncated = selected.length < rendered.length;
   return {
     text: [
       ...(truncated ? ["[... prior conversation truncated ...]"] : []),
-      ...selected,
+      ...selected.map((message) => message.text),
     ].join("\n\n"),
+    attachments: selected.flatMap((message) => message.attachments),
     truncated,
   };
 }

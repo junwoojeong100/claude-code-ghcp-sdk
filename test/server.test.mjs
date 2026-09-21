@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import http from "node:http";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -128,11 +129,65 @@ for (const value of [undefined, ""]) {
   });
 }
 
+async function messageRequest(handler, value, url = "/v1/messages") {
+  const req = Object.assign(new EventEmitter(), {
+    method: "POST", url, headers: { "x-api-key": "test-only" },
+    async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); },
+  });
+  const res = Object.assign(new EventEmitter(), {
+    headers: {},
+    writeHead(status, headers) { this.status = status; Object.assign(this.headers, headers); },
+    setHeader(name, value) { this.headers[name] = value; },
+    end(body) { this.body = JSON.parse(body); this.writableEnded = true; },
+  });
+  await handler(req, res);
+  return res;
+}
+
+test("invalid request shapes return 400 before SSE and leave the bridge usable", async (t) => {
+  const { handler, manager } = await offlineServer(t);
+  for (const url of ["/v1/messages", "/v1/messages/count_tokens"]) {
+    for (const body of [
+      null, [], true, 42, "hello",
+      { stream: "true" }, { messages: {} }, { messages: [null] },
+      { messages: [{ role: "user", content: 12 }] },
+      { messages: [{ role: "user", content: [null] }] },
+      { tools: {} }, { tools: [null] }, { tools: [{ name: 5 }] },
+      { system: {} }, { output_config: [] },
+      { stream: true, messages: "not-an-array" },
+    ]) {
+      const rejected = await messageRequest(handler, body, url);
+      assert.equal(rejected.status, 400, `${url}: ${JSON.stringify(body)}`);
+      assert.equal(rejected.body.error.type, "invalid_request_error");
+      assert.match(rejected.headers["content-type"], /application\/json/);
+    }
+  }
+  const health = {
+    writeHead(status) { this.status = status; },
+    end(body) { this.body = JSON.parse(body); },
+  };
+  await handler({ method: "GET", url: "/health", headers: {} }, health);
+  assert.equal(health.status, 200);
+  assert.equal(health.body.ok, true);
+
+  t.mock.method(manager, "execute", async () => ({
+    model: "gpt-5.6-sol", message: { content: "still alive", toolRequests: [], outputTokens: 2 },
+  }));
+  const normal = await messageRequest(handler, {
+    model: "gpt-5.6-sol", messages: [{ role: "user", content: "hello" }],
+    future_gateway_field: { enabled: true },
+  });
+  assert.equal(normal.status, 200);
+  assert.equal(normal.body.content[0].text, "still alive");
+});
+
 test("explicit body and replay byte limits override the defaults", async (t) => {
   const { handler, manager } = await offlineServer(t, { MAX_BODY_BYTES: "32", MAX_REPLAY_BYTES: "17" });
   assert.equal(manager.maxReplayBytes, 17);
-  assert.equal((await tokenCountRequest(handler, [Buffer.from(JSON.stringify("x".repeat(30)))])).status, 200);
-  const rejected = await tokenCountRequest(handler, [Buffer.from(JSON.stringify("x".repeat(31)))]);
+  const payload = (size) => Buffer.from(JSON.stringify({ padding: "x".repeat(size) }));
+  assert.equal(payload(18).length, 32);
+  assert.equal((await tokenCountRequest(handler, [payload(18)])).status, 200);
+  const rejected = await tokenCountRequest(handler, [payload(19)]);
   assert.equal(rejected.status, 400);
   assert.equal(rejected.body.error.message, "Request body exceeds MAX_BODY_BYTES.");
 });

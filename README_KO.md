@@ -338,6 +338,47 @@ VS Code나 JetBrains의 통합 터미널에서 실행 스크립트를 직접 실
 
 ## 검증
 
+### 2026-09-22 작업 마무리 (KST)
+
+아래 2차 전체 실행을 이번 작업의 마지막 실제 검증으로 기록합니다.
+**엄격한 판정: NOT GREEN.** 두 전체 실행 모두 예상한 고유 77개 기록으로
+완료되었고 누락·중복·예상 밖 슬롯은 없습니다. 실행별 결과를 구분하며,
+서로 다른 실행의 통과 셀을 합쳐 전체 통과로 만들지 않습니다.
+
+- 오프라인 테스트: **280/280 통과** (실패·취소·건너뜀 0).
+- Haiku 부분 검증: **3/3 통과**. `claude-haiku-4.5` × `v04-shell-ops`를
+  세 번 반복한 결과이며, 서로 다른 세 시나리오나 전체 매트릭스의 통과가 아닙니다.
+
+| 전체 실행 | 실행 ID (UTC) | pass / fail / blocked / unknown | 소요 | 사용자 설정 무결성 |
+|---|---|---|---|---|
+| 1차 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 76 / 1 / 0 / 0 | 456초 | 전후 해시 불일치; 변경 주체와 원인 미확인 |
+| 2차, 최종 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 74 / 2 / 1 / 0 | 863초 | 전후 해시 일치 |
+
+남아 있는 미통과 항목:
+
+- 1차: Sonnet `v09-session-resume`에서 build ID 회상, 문맥만으로 답하기
+  (`Write`/`Read` 사용), fork 문맥 상속 검사가 실패했습니다.
+- 2차: Sonnet `v09-session-resume`의 fork 문맥 상속 검사와 Opus
+  `v09-session-resume`의 재개 턴 usage 검사(`input=0`)가 실패했습니다.
+  Haiku `v05-multi-step`은 main 턴이 602초 후 timeout되어 **blocked**이며,
+  요청한 변경 4개 중 0개가 반영되었고 첨부 파일의 두 토큰도 반환되지 않았습니다.
+
+두 실행 모두 시작·종료 commit은
+`3b42a61af1d461f3aa6c9bcc807fcb7afdfdd4e1`(dirty 작업 트리)이었고,
+41개 파일의 `verification-code-v1` SHA-256 지문도 동일했습니다.
+`0101162ad82ba5f80f123368628f64a325b17dc79eb9ef47897385e9dd2b0f6e`.
+각 실행 전후 및 두 실행 사이의 구현은 일치했습니다. 1차의 설정 변경은
+별도의 무결성 실패이며, 특정 원인이나 변경 주체에 귀속하지 않습니다.
+
+생성된 영문·한글 검증 문서는 모두 **2차 전체 실행만** 사용합니다. 원시 근거는
+`.verify-runs/` 아래의 git 무시 대상 로컬 파일로 유지합니다. 위 각 실행
+디렉터리의 `summary.json`·`slots.jsonl`, 최종 콘솔 `worktree-full-2-5VAuJx`
+(94–99행), 오프라인 로그 `offline-handoff-kBZzxb`(1688–1695행), 부분 검증 로그
+`worktree-focused-1.ERWlLC`·`worktree-focused-2.BLp7uS`·
+`worktree-focused-3.AARTsW`(각 16–24행)가 근거입니다.
+이번 문서 마무리 중에는 추가 수정·테스트·실제 재검증을 하지 않았으며,
+미해결 결과를 면제하지 않고 그대로 남깁니다.
+
 ```bash
 # 단위·구조 테스트. 모델 호출도 크레딧 소모도 없습니다.
 npm test
@@ -361,8 +402,19 @@ npm run verify -- --scenarios v08-hooks-memory --keep-workspaces
 # 최신 실행을 그 실행의 기록에서 다시 읽기
 npm run verify:report
 
-# docs/VERIFICATION.md와 docs/VERIFICATION_KO.md 재생성
+# 최신 실행으로 docs/VERIFICATION.md와 docs/VERIFICATION_KO.md 재생성
 npm run verify:doc
+```
+
+최신 실행 자동 선택은 부분 실행이나 미완료 실행을 고를 수 있습니다. 특정 완료된
+전체 실행의 결과를 문서화하려면 로컬 산출물 디렉터리를 명시하고 두 언어에 같은
+디렉터리를 사용합니다.
+
+```bash
+run_dir=".verify-runs/<completed-run-id>"
+node scripts/verify/report.mjs "$run_dir"
+node scripts/verify/report.mjs "$run_dir" --markdown > docs/VERIFICATION.md
+node scripts/verify/report.mjs "$run_dir" --markdown=ko > docs/VERIFICATION_KO.md
 ```
 
 `--timeout-scale`의 기본값은 `1`이므로 기존 `npm run verify` 명령의 검증 예산은
@@ -385,7 +437,9 @@ SIGKILL 유예 시간과 실제 운용 launcher/daemon 시작 기본값은 바�
 실제 Claude Code 바이너리 → bridge → Copilot SDK → 실제 모델의 전체 경로를
 그대로 실행하며, mock도 replay도 없습니다. 슬롯마다 bridge, port, token,
 `CLAUDE_CONFIG_DIR`, git 작업 디렉터리를 따로 받기 때문에 한 모델의 지연이 다른
-모델의 실패로 읽히지 않고, 사용자의 `~/.claude`는 읽지도 쓰지도 않습니다.
+모델의 실패로 읽히지 않습니다. 실행기는 `~/.claude/settings.json`이 바뀌지
+않았는지 확인하기 위해 실행 전후의 해시만 읽으며, 파일 내용을 기록하거나
+슬롯의 설정으로 사용하지 않습니다.
 
 판정은 1차 증거 — 디스크의 파일, git 기록, hook 로그, 스트림이 남긴 도구 호출
 기록 — 으로만 합니다. 모델이 쓴 문장은 심어 둔 토큰이 있는지만 확인하며 문체나
@@ -393,9 +447,24 @@ SIGKILL 유예 시간과 실제 운용 launcher/daemon 시작 기본값은 바�
 에서 되읽기 때문에 backend가 조용히 바뀌면 통과가 아니라 실패가 됩니다.
 
 `blocked`는 통과가 아닙니다. timeout, bridge 중단, 짝이 맞지 않는
-`tool_use`/`tool_result`는 그 슬롯이 모델에 대해 아무것도 말해 주지 못한다는
-뜻이므로 분모에 그대로 남습니다. 통과 수가 기준(77개 중 74개)에 미치지 못하면
-실행기는 0이 아닌 코드로 종료합니다.
+`tool_use`/`tool_result`는 분모에 그대로 남습니다. 새 실행의 정책은
+`strict-all-pass-v1`입니다. 전체 매트릭스는 **77개 중 77개**, 명시적인
+**부분(focused)** 실행은 선택한 모든 슬롯이 통과해야 합니다. 실행 전 모델 ×
+시나리오의 예상 고유 집합을 고정하며, 누락·중복·예상 밖 슬롯이나 fail·blocked·
+알 수 없는 결과가 하나라도 있으면 0이 아닌 코드로 종료합니다. 빈 매트릭스,
+잘못된 동시성 값, 비어 있거나 중복되거나 알 수 없는 선택은 산출물 생성이나
+모델 호출 전에 거부합니다. 가중 기능 커버리지는 선택한 시나리오 카탈로그의
+범위이며 **통과율이 아닙니다**. 부분 통과는 전체 매트릭스 통과가 아닙니다.
+
+`summary.json`에는 정책, 예상·실제 슬롯 수, 전체/부분 범위와 시작·종료 시점의
+로컬 git commit/dirty 상태가 기록됩니다. 결정적인 SHA-256 지문에는 `src/`,
+`scripts/verify/`, `bin/` 및 루트 package 파일의 추적 중인 구현과 관련 미추적
+새 코드가 포함되며, 로그·실행 산출물·생성된 문서는 제외됩니다. 코드/commit이나
+사용자 설정이 바뀌거나 출처 기록이 없으면 전 슬롯이 pass여도 통과가 아닙니다.
+작업 트리가 dirty여도 기록된 구현이 유지되었다면 통과할 수 있습니다. 터미널과
+영문/한글 보고서는 실행기와 같은 엄격한 판정을 사용합니다. 과거 요약의 gate와
+green은 **legacy 저장 정책**으로 명시하여 보존하며, 엄격한 전체 통과로 바꾸거나
+없는 메타데이터를 성공으로 추정하지 않습니다.
 
 두 명령 모두 LiteLLM은 다루지 않습니다. `npm run verify`는 `src/server.mjs`를
 직접 실행하며 LiteLLM을 기동하지 않으므로, LiteLLM 경로는 검증된 경로가

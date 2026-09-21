@@ -159,7 +159,7 @@ test("pending-tool wait retains its separate default and validates explicit over
   }
 });
 
-test("scaling preserves the catalogue, 77 unique slots, gate 74 and default concurrency", () => {
+test("scaling preserves the catalogue, 77 unique slots, gate 77 and default concurrency", () => {
   const catalogBefore = structuredClone(SCENARIOS);
   assert.deepEqual(Object.fromEntries(SCENARIOS.map((s) => [s.id, s.budgetSeconds])), BASE_SCENARIO_SECONDS);
   assert.deepEqual(PRIMARY_MODELS, [
@@ -169,7 +169,7 @@ test("scaling preserves the catalogue, 77 unique slots, gate 74 and default conc
   const slots = PRIMARY_MODELS.flatMap((model) => SCENARIOS.map((s) => `${model}::${s.id}`));
   assert.equal(slots.length, 77);
   assert.equal(new Set(slots).size, 77);
-  assert.equal(gateFor(slots.length), 74);
+  assert.equal(gateFor(slots.length), 77);
   assert.deepEqual(DEFAULT_PLAN, { modelConcurrency: 7, scenarioConcurrency: 2, overheadSeconds: 180 });
 
   const normal = planRun();
