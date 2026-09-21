@@ -27,12 +27,22 @@ Claude Code
 ```text
 Claude Code
   -> LiteLLM /v1/messages
-  -> LiteLLM에 구성된 provider
+  -> loopback Anthropic Messages bridge
+  -> @github/copilot-sdk mode="empty"
+  -> GitHub Copilot model
 ```
 
-`claude-litellm`이 사용합니다. 로컬 Node.js bridge와 `@github/copilot-sdk`를 통과하지
-않습니다. GitHub Copilot backend는 LiteLLM의 `github_copilot/` provider와 별도 OAuth를
-사용합니다.
+`claude-litellm`이 사용합니다. LiteLLM은 같은 로컬 bridge 앞에 놓이는 proxy이며,
+`anthropic/*` provider로 연결하고 `api_base`는 bridge root를 가리킵니다. LiteLLM은
+`anthropic/` prefix를 제거한 나머지를 요청 body의 model로 보내고, 구성한 `api_key`는
+`x-api-key` header로 전달됩니다. LiteLLM 자체 `github_copilot/` provider와 별도
+GitHub device OAuth는 사용하지 않습니다.
+
+hop이 하나 늘면서 Direct 경로의 두 동작은 유지되지 않습니다. `/v1/models`는 bridge의
+discovery row가 아니라 LiteLLM 자체 alias를 반환하고, `POST /v1/messages/count_tokens`는
+bridge에 도달하지 않고 LiteLLM의 자체 추정값으로 응답합니다. bridge는
+`ALLOW_NON_LOOPBACK=1`을 설정하지 않는 한 loopback에만 bind하므로 LiteLLM은 같은
+호스트에서 실행합니다. 이 경로는 [검증 범위](#검증-범위) 밖입니다.
 
 ## 통합 가능 근거와 경계
 
@@ -94,6 +104,17 @@ Bridge는 다음 Claude Code header로 root session과 subagent를 분리합니�
 - `x-claude-code-session-id`
 - `x-claude-code-agent-id`
 
+대화 history 비교에서는 이동하는 `cache_control` 전송 metadata와 inline
+`system` 항목을 대화 turn으로 취급하지 않습니다. 대신 native custom agent 정의,
+output style 등 의미 있는 inline system 내용은 SDK system message에 합칩니다.
+해당 inline context에서 요청별 token-budget annotation만 정규화하며, 실제
+user/assistant 내용·tool input·system 지시 변경은 기존 reconciliation/state split을
+유지합니다.
+
+Cold replay는 tool-use ID, tool-result 오류 여부와 native `tool_reference` 이름을
+보존합니다. 진행 중인 ToolSearch 결과도 SDK tool-result text에 참조 이름을 남겨
+발견한 도구의 식별자가 유실되지 않도록 합니다.
+
 Copilot SDK session ID는 bridge-instance namespace와 Claude session, agent, resolved
 model, tool schema signature, system prompt signature로 결정됩니다. Persistent
 daemon은 같은 bridge process 안에서 evicted session을 resume할 수 있습니다. Process
@@ -120,9 +141,10 @@ GPT-5.6 모델과 GPT-6 Astra는 full ID를 사용합니다.
 
 ### 모델 discovery와 context
 
-실행 스크립트는 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 `/v1/models` discovery를
-활성화합니다. Endpoint는 Copilot SDK `listModels()` 결과를 backend ID 기준으로 중복
-제거해 반환합니다.
+Direct 실행 settings는 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 `/v1/models`
+discovery를 활성화합니다. LiteLLM settings는 활성화하지 않습니다. LiteLLM이
+`/v1/models`를 자체 alias로 응답하기 때문입니다. Endpoint는 Copilot SDK
+`listModels()` 결과를 backend ID 기준으로 중복 제거해 반환합니다.
 
 - Claude Code 2.1.239가 기본 제공하는 Opus 5/4.8, Sonnet 5/4.6, Haiku 4.5는 중복 표시하지
   않습니다.
@@ -275,53 +297,51 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - `ultracode`에서 `xhigh`로의 변환과 model별 unsupported effort 조정
 - SDK session 생성과 `session.setModel()`을 통한 reasoning effort 변경
 - Claude Code root session과 subagent의 SDK session 분리
+- 7모델의 interleaved root/worker tool-result 격리와
+  취소 후 sibling 생존 검사
 - Forked subagent의 inherited history 복구와 `agentId`가 있는 pending tool-call handoff
 - Direct/LiteLLM 임시 settings의 gateway routing 값
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
 - Request cancellation, state eviction, bounded replay, 실제 usage, strict model
   selection, request policy, daemon registry, tool-result idempotency
 
-E2E 스크립트는 실제 모델을 호출합니다.
+`npm run verify`는 실제 모델로 실제 경로를 구동합니다.
 
-- `npm run test:e2e`: 기본 `claude-haiku-4.5`의 Direct SDK text response, Claude Code
-  native `Read` tool loop와 user settings 파일 존재 여부 및 content hash 불변.
-  `GHCP_E2E_MODEL`로 model 변경 가능
-- `npm run test:e2e:gpt-5.6`: GPT-5.6 Sol, Terra, Luna 각각의 text response, `Read` tool
-  loop와 user settings 파일 존재 여부 및 content hash 불변
-- `npm run test:e2e:astra`: GPT-6 Astra text response와 `Read` smoke test
-- `npm run test:e2e:primary`: GPT-6 Astra를 포함한
-  [현재 7모델 검증 대상](FEATURE_COVERAGE_KO.md#검증-모델-경계)의 text response와
-  `Read` loop. 이 명령 하나를 전체 기능 matrix와 동일시하지 않음
-- `npm run test:e2e:litellm`: LiteLLM health, model discovery, token counting, text response,
-  Claude Code native `Read` tool loop와 user settings 파일 존재 여부 및 content hash 불변
-- `npm run test:e2e:features`: Structured output, Edit, Write, NotebookEdit, Bash, hook,
-  skill, plugin, local MCP, plan mode, subagent, image input, cron
-- `npm run test:e2e:session`: Resume와 fork
-- `npm run test:e2e:background`: Background agent, agent view, daemon cleanup
-- `npm run test:e2e:stream`: stream-json 입출력과 replay
-- `npm run test:e2e:worktree`: Git worktree 격리
+- 11개 시나리오 x 7개 모델 = 77개 슬롯. 각 슬롯은 실제 `claude` 바이너리를
+  `-p --output-format stream-json`으로 실행하고, 슬롯 전용 bridge를 거쳐 실제
+  Copilot 모델에 연결합니다.
+- 시나리오: 저장소 정찰, 정밀 편집과 파일 생성, 실패 테스트 진단과 수정,
+  백그라운드 셸과 git 워크플로, 파일 종류를 넘나드는 4단계 계획, 서브에이전트
+  위임, 헤드리스 MCP 브라우저 자동화, 훅·메모리·명령·스킬, 프로세스 간 세션
+  재개, 대형 컨텍스트 검색과 추론, 그리고 `claude-ghcp` 런처와 상주 데몬·분리형
+  백그라운드 에이전트.
+- 판정은 1차 증거로만 합니다. 디스크의 파일, git 이력, hook 로그, 스트림이
+  직접 기록한 도구 호출 내역입니다. 모델의 산문은 심어 둔 토큰이 있는지만
+  확인하며 문체나 동의 여부로는 판정하지 않습니다.
+- 슬롯을 실제로 서비스한 모델은 표시 라벨이 아니라 `result.modelUsage`에서
+  읽습니다. `tool_use`/`tool_result` 짝이 맞지 않거나 다른 모델이 응답하는 등
+  와이어 수준이 불건전한 슬롯은 `fail`이 아니라 `blocked`이며 분모에 남습니다.
+  `blocked`는 절대 통과가 아닙니다.
+- 슬롯마다 자체 workspace, `settings.json`, `CLAUDE_CONFIG_DIR`을 갖습니다.
+  사용자의 `~/.claude`는 읽지도 쓰지도 않습니다.
+- `npm run verify:report`는 최신 실행을 출력하고, `npm run verify:doc`은
+  [검증 결과](VERIFICATION_KO.md)를 두 언어로 다시 생성합니다.
 
-모든 E2E는 실제 GitHub Copilot AI Credits를 사용합니다.
+`npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
 
 대규모 multi-page PDF corpus, workflow fan-out, 정확한 compact/rewind boundary mapping,
-crash 시점 in-flight tool 복구는 위 자동 E2E 범위에 포함되지 않습니다.
+crash 시점 in-flight tool 복구는 위 자동 범위에 포함되지 않습니다.
 
-### 별도로 수행한 수동 검증
+LiteLLM도 검증 범위 밖입니다. 모든 슬롯은 `src/server.mjs`를 직접 실행하며 LiteLLM을
+기동하지 않으므로, [시스템 구성](#시스템-구성)과 [LiteLLM 가이드](LITELLM_KO.md)의
+LiteLLM 경로는 검증된 경로가 아니라 구성 참고 자료입니다.
 
-다음 항목은 구현 과정에서 확인했지만 저장소의 명령만으로는 자동 재현되지 않습니다.
+### 증거 경계
 
-- 실제 Claude Code 2.1.235를 로컬 fake Anthropic gateway에 연결
-- `--effort ultracode` request의 `output_config.effort: "ultracode"`와
-  `thinking.type: "adaptive"`
-- Ultracode request의 workflow, subagent와 task 관리 tool schema
-- Copilot catalog의 GPT-5.6 Sol, Terra, Luna context와
-  `none`, `low`, `medium`, `high`, `xhigh`, `max` reasoning effort metadata
-- Direct SDK와 LiteLLM의 non-streaming/streaming Messages response
-- GPT-5.6 Sol root의 Agent 호출, Explore subagent의 `Read` tool loop와 부모 결과 전달
-
-Bridge에서 확인할 수 있는 범위는 reasoning effort가 Copilot SDK session configuration에
-전달되는 지점까지입니다. Provider 내부 reasoning token 사용량과 실제 GPT-5.6 모델의
-complete multi-agent Ultracode workflow는 자동 E2E 범위에 포함되지 않습니다.
+과거 수동 검증 기록은 제거했습니다. 새 검증은 실제 Claude Code와 Copilot SDK
+경로에서 실행하고 native transcript와 실제 SDK model/session 증거를 남깁니다.
+모의 protocol 테스트는 live 호환성 증거가 아니며 SDK가 노출하지 않는 provider
+내부 동작을 추론해 성공 처리하지 않습니다.
 
 ## 참고 자료
 

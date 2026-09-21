@@ -10,6 +10,10 @@ if (!outputPath || !baseUrl || !token || !frontendModel) {
 }
 
 const contextWindowTokens = contextWindowTokensFor(frontendModel);
+const nativeToolSearch = process.env.GHCP_NATIVE_TOOL_SEARCH ?? "0";
+if (!["0", "1"].includes(nativeToolSearch)) {
+  throw new Error("GHCP_NATIVE_TOOL_SEARCH must be 0 or 1.");
+}
 writeGatewaySettings(outputPath, {
   baseUrl,
   token,
@@ -27,6 +31,7 @@ writeGatewaySettings(outputPath, {
   },
   description: "Routed through GitHub Copilot SDK",
   extraEnv: {
+    ENABLE_TOOL_SEARCH: nativeToolSearch === "1" ? "true" : "",
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
     ...(contextWindowTokens

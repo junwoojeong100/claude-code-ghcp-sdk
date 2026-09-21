@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { AnthropicSseStream, startSse } from "../src/anthropic.mjs";
 import { SessionManager } from "../src/session-manager.mjs";
+import { PRIMARY_MODELS } from "../scripts/verify/scenarios.mjs";
 
 class FakeSession {
   constructor() {
@@ -105,6 +107,30 @@ class FakeClient {
   }
 }
 
+// The SSE assertions below read the exact bytes Claude Code would receive.
+function fakeResponse() {
+  return {
+    chunks: [],
+    ended: false,
+    writeHead() {},
+    write(value) {
+      this.chunks.push(value);
+    },
+    end(value) {
+      if (value) this.chunks.push(value);
+      this.ended = true;
+    },
+  };
+}
+
+function sseEvents(response) {
+  return response.chunks
+    .join("")
+    .split(/\n/)
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)));
+}
+
 function request(effort, model = "gpt-5.6-sol") {
   return {
     model,
@@ -114,6 +140,48 @@ function request(effort, model = "gpt-5.6-sol") {
     output_config: { effort },
   };
 }
+
+function transientBudget(tokens) {
+  return `<system-reminder>\n<total_tokens>${tokens} tokens left</total_tokens>\n</system-reminder>`;
+}
+
+test("cold recovery defaults to 256 MiB and preserves an explicit replay limit", async () => {
+  const history = "x".repeat(300 * 1024);
+  for (const maxReplayBytes of [undefined, 256 * 1024]) {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const diagnostics = [];
+    const manager = new SessionManager({
+      baseDirectory: "/tmp",
+      preferredModel: "gpt-5.6-sol",
+      client,
+      maxReplayBytes,
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+
+    await manager.start();
+    try {
+      assert.equal(manager.maxReplayBytes, maxReplayBytes ?? 268_435_456);
+      await manager.execute({
+        ...request(),
+        messages: [
+          { role: "user", content: history },
+          { role: "assistant", content: "retained reply" },
+          { role: "user", content: "continue" },
+        ],
+      }, { "x-claude-code-session-id": "replay-limit" });
+
+      const prompt = client.session.sendCalls[0].prompt;
+      const truncated = diagnostics.filter((event) => event.event === "bridge.history_replay_truncated");
+      assert.equal(prompt.includes(history), maxReplayBytes === undefined);
+      assert.match(prompt, /ASSISTANT: retained reply/);
+      assert.equal(prompt.endsWith("continue"), true);
+      assert.equal(truncated.length, maxReplayBytes === undefined ? 0 : 1);
+      if (truncated.length) assert.equal(truncated[0].maxBytes, maxReplayBytes);
+    } finally {
+      await manager.stop();
+    }
+  }
+});
 
 test("applies initial and updated Claude Code effort to the Copilot session", async () => {
   const client = new FakeClient([
@@ -712,6 +780,161 @@ test("recreates Copilot state when same-length Claude history diverges", async (
   }
 });
 
+test("retains pending tool calls when Claude moves transient system annotations", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const sessions = [];
+  const diagnostics = [];
+  client.createSessionImplementation = async () => {
+    const session = new FakeSession();
+    sessions.push(session);
+    session.sendImplementation = async () => {
+      session.emit("assistant.message", {
+        content: "",
+        toolRequests: [{ toolCallId: "read-1", name: "Read", arguments: { file_path: "/tmp/input" } }],
+      });
+      session.emit("external_tool.requested", {
+        requestId: "pending-1", toolCallId: "read-1", toolName: "Read",
+      });
+      session.emit("session.idle");
+    };
+    session.handlePendingToolCallImplementation = async () => {
+      session.emit("assistant.message", { content: "completed", toolRequests: [] });
+      session.emit("session.idle");
+      return { success: true };
+    };
+    return session;
+  };
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  const headers = { "x-claude-code-session-id": "annotated-session" };
+  const body = {
+    ...request(),
+    tools: [{ name: "Read", description: "Read a file", input_schema: { type: "object", properties: {} } }],
+  };
+  const user = { role: "user", content: "Read the input." };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...body,
+      messages: [user, { role: "system", content: transientBudget(1000) }],
+    }, headers);
+    const result = await manager.execute({
+      ...body,
+      messages: [
+        { role: "system", content: transientBudget(900) },
+        user,
+        { role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "/tmp/input" } }] },
+        { role: "system", content: transientBudget(800) },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "actual input" }] },
+        { role: "system", content: transientBudget(700) },
+      ],
+    }, headers);
+    assert.equal(client.created.length, 1);
+    assert.equal(sessions[0].handledToolCalls.length, 1);
+    assert.equal(sessions[0].handledToolCalls[0].requestId, "pending-1");
+    assert.equal(sessions[0].sendCalls.length, 1);
+    assert.equal(result.message.content, "completed");
+    assert.ok(!diagnostics.some((event) => event.event === "bridge.history_reconciled"));
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("retains user turns when transient system annotations are inserted or replaced", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "annotated-chat" };
+  const user = { role: "user", content: "First user turn." };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...request(),
+      messages: [user, { role: "system", content: transientBudget(1000) }],
+    }, headers);
+    await manager.execute({
+      ...request(),
+      messages: [
+        user, { role: "system", content: transientBudget(900) },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "Second user turn." },
+        { role: "system", content: transientBudget(800) },
+      ],
+    }, headers);
+    assert.equal(client.created.length, 1);
+    assert.equal(client.session.sendCalls[1].prompt, "Second user turn.");
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("applies meaningful native inline system changes instead of dropping them as telemetry", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "inline-instructions" };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...request(),
+      messages: [...request().messages, { role: "system", content: "Available custom agents: worker, auditor." }],
+    }, headers);
+    assert.match(client.created[0].systemMessage.content, /Available custom agents: worker, auditor/);
+    await manager.execute({
+      ...request(),
+      messages: [...request().messages, { role: "system", content: "Available custom agents: worker, auditor.\nOutput style: concise." }],
+    }, headers);
+    assert.equal(client.created.length, 2);
+    assert.match(client.created[1].systemMessage.content, /Output style: concise/);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("does not restart when native cache-control markers move between content blocks", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "cache-markers" };
+  await manager.start();
+  try {
+    await manager.execute({
+      ...request(), messages: [{ role: "user", content: [
+        { type: "text", text: "first", cache_control: { type: "ephemeral" } },
+      ] }],
+    }, headers);
+    await manager.execute({
+      ...request(), messages: [
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "text", text: "next", cache_control: { type: "ephemeral" } }] },
+      ],
+    }, headers);
+    assert.equal(client.created.length, 1);
+    assert.equal(client.session.sendCalls[1].prompt, "next");
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("cache normalization does not hide edits to tool input data named cache_control", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const headers = { "x-claude-code-session-id": "cache-input-data" };
+  const history = (value) => [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "id-1", name: "custom",
+      input: { cache_control: value } }] },
+    { role: "user", content: "continue" },
+  ];
+  await manager.start();
+  try {
+    await manager.execute({ ...request(), messages: history("first") }, headers);
+    await manager.execute({ ...request(), messages: history("changed") }, headers);
+    assert.equal(client.created.length, 2);
+  } finally {
+    await manager.stop();
+  }
+});
 test("applies a supported effort independently for each model", async () => {
   const client = new FakeClient([
     {
@@ -999,7 +1222,7 @@ test("returns a live tool result to its pending Copilot request", async () => {
           },
           {
             role: "system",
-            content: "Tool execution completed.",
+            content: transientBudget(1000),
           },
         ],
       },
@@ -1022,7 +1245,7 @@ test("returns a live tool result to its pending Copilot request", async () => {
           },
           {
             role: "system",
-            content: "Tool execution completed.",
+            content: transientBudget(1000),
           },
         ],
       },
@@ -1586,6 +1809,818 @@ test("rejects a tool result that the Copilot session does not accept", async () 
         headers,
       ),
       /rejected the result for tool call tool-1/,
+    );
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("finishes a turn whose tool call Copilot never registered", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 20,
+    turnTimeoutMs: 1000,
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+
+  // Claude calls ExitPlanMode in plan mode even though the client never
+  // declares it, so Copilot never announces a matching external tool request.
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "Here is the plan.",
+      toolRequests: [
+        { toolCallId: "plan-1", name: "ExitPlanMode", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const result = await manager.execute(request(), headers);
+
+    assert.equal(result.message.content, "Here is the plan.");
+    assert.deepEqual(result.message.toolRequests, []);
+    assert.deepEqual(
+      diagnostics.filter(
+        (event) => event.event === "bridge.unregistered_tool_call",
+      ),
+      [
+        {
+          event: "bridge.unregistered_tool_call",
+          tool: "ExitPlanMode",
+          toolCallId: "plan-1",
+        },
+      ],
+    );
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("keeps a registered tool call when a sibling call is unregistered", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 20,
+    turnTimeoutMs: 1000,
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "",
+      toolRequests: [
+        { toolCallId: "tool-1", name: "Read", arguments: { file_path: "/tmp/a" } },
+        { toolCallId: "plan-1", name: "ExitPlanMode", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("external_tool.requested", {
+      requestId: "request-1",
+      toolCallId: "tool-1",
+      toolName: "Read",
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const result = await manager.execute(toolBody, headers);
+
+    assert.deepEqual(
+      result.message.toolRequests.map((tool) => tool.toolCallId),
+      ["tool-1"],
+    );
+    assert.deepEqual(
+      diagnostics
+        .filter((event) => event.event === "bridge.unregistered_tool_call")
+        .map((event) => event.tool),
+      ["ExitPlanMode"],
+    );
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("drops an undeclared tool call without waiting for the pending timeout", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    // The turn has to finish well before a pending tool wait could expire.
+    pendingToolWaitMs: 5000,
+    turnTimeoutMs: 1000,
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "Here is the plan.",
+      toolRequests: [
+        { toolCallId: "plan-1", name: "ExitPlanMode", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const startedAt = Date.now();
+    const result = await manager.execute(request(), headers);
+
+    assert.ok(Date.now() - startedAt < 1000);
+    assert.equal(result.message.content, "Here is the plan.");
+    assert.deepEqual(result.message.toolRequests, []);
+    assert.deepEqual(
+      diagnostics.filter(
+        (event) => event.event === "bridge.unregistered_tool_call",
+      ),
+      [
+        {
+          event: "bridge.unregistered_tool_call",
+          tool: "ExitPlanMode",
+          toolCallId: "plan-1",
+        },
+      ],
+    );
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("settles a turn whose drop diagnostic throws", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 20,
+    // A turn that never settles is only visible as a turn that runs out the
+    // clock, so the timeout has to be short enough to fail the test.
+    turnTimeoutMs: 500,
+    onDiagnostic: () => {
+      throw new Error("The diagnostic sink failed.");
+    },
+    client,
+  });
+  // A declared tool is dropped from the completion chain rather than from the
+  // synchronous scan, which is where an unhandled rejection would strand it.
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "Here is the plan.",
+      toolRequests: [{ toolCallId: "read-1", name: "Read", arguments: {} }],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const startedAt = Date.now();
+    const result = await manager.execute(toolBody, {
+      "x-claude-code-session-id": "session-1",
+    });
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(result.message.content, "Here is the plan.");
+    assert.deepEqual(result.message.toolRequests, []);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("never streams a tool_use block for a dropped tool call", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 20,
+    turnTimeoutMs: 1000,
+    client,
+  });
+  const response = fakeResponse();
+  startSse(response);
+  const stream = new AnthropicSseStream(response, {
+    id: "msg-phantom",
+    inputTokens: 10,
+  });
+
+  // Copilot streams the phantom call before the turn ends, so the bridge has
+  // to decide whether to keep it after the bytes would already be on the wire.
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.tool_call_delta", {
+      toolCallId: "plan-1",
+      toolName: "ExitPlanMode",
+      inputDelta: "{}",
+    });
+    client.session.emit("assistant.message_delta", {
+      deltaContent: "Here is the plan.",
+    });
+    client.session.emit("assistant.message", {
+      content: "Here is the plan.",
+      toolRequests: [
+        { toolCallId: "plan-1", name: "ExitPlanMode", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const result = await manager.execute(
+      request(),
+      { "x-claude-code-session-id": "session-1" },
+      {
+        onReady: ({ model }) => stream.start(model),
+        onEvent: (event) => stream.handleSdkEvent(event),
+      },
+    );
+    stream.finish({
+      model: result.model,
+      message: result.message,
+      usage: result.usage,
+    });
+  } finally {
+    await manager.stop();
+  }
+
+  const output = response.chunks.join("");
+  assert.equal(output.includes('"type":"tool_use"'), false);
+  const events = sseEvents(response);
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === "content_block_start")
+      .map((event) => [event.index, event.content_block.type]),
+    [[0, "text"]],
+  );
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === "content_block_stop")
+      .map((event) => event.index),
+    [0],
+  );
+  assert.equal(
+    events.find((event) => event.type === "message_delta").delta.stop_reason,
+    "end_turn",
+  );
+  assert.equal(response.ended, true);
+});
+
+test("still streams a tool_use block for a registered tool call", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 20,
+    turnTimeoutMs: 1000,
+    client,
+  });
+  const response = fakeResponse();
+  startSse(response);
+  const stream = new AnthropicSseStream(response, {
+    id: "msg-registered",
+    inputTokens: 10,
+  });
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.tool_call_delta", {
+      toolCallId: "read-1",
+      toolName: "Read",
+      inputDelta: '{"file_path":',
+    });
+    client.session.emit("assistant.message", {
+      content: "",
+      toolRequests: [
+        { toolCallId: "read-1", name: "Read", arguments: { file_path: "/tmp/a" } },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("external_tool.requested", {
+      requestId: "request-1",
+      toolCallId: "read-1",
+      toolName: "Read",
+    });
+    client.session.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const result = await manager.execute(
+      toolBody,
+      { "x-claude-code-session-id": "session-1" },
+      {
+        onReady: ({ model }) => stream.start(model),
+        onEvent: (event) => stream.handleSdkEvent(event),
+      },
+    );
+    stream.finish({
+      model: result.model,
+      message: result.message,
+      usage: result.usage,
+    });
+  } finally {
+    await manager.stop();
+  }
+
+  const events = sseEvents(response);
+  const start = events.find(
+    (event) => event.content_block?.type === "tool_use",
+  );
+  assert.equal(start.content_block.name, "Read");
+  assert.equal(start.content_block.id, "read-1");
+  assert.deepEqual(
+    JSON.parse(
+      events
+        .filter((event) => event.delta?.type === "input_json_delta")
+        .map((event) => event.delta.partial_json)
+        .join(""),
+    ),
+    { file_path: "/tmp/a" },
+  );
+  assert.equal(
+    events.find((event) => event.type === "message_delta").delta.stop_reason,
+    "tool_use",
+  );
+});
+
+test("evicts a state whose dropped tool call is registered late", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const droppedSession = new FakeSession();
+  const idleSession = new FakeSession();
+  const sessions = [droppedSession, idleSession];
+  client.createSessionImplementation = async () => sessions.shift();
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    maxStates: 1,
+    pendingToolWaitMs: 20,
+    turnTimeoutMs: 1000,
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+
+  droppedSession.sendImplementation = async () => {
+    droppedSession.emit("assistant.message", {
+      content: "Here is the plan.",
+      toolRequests: [
+        { toolCallId: "read-1", name: "Read", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    droppedSession.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    const result = await manager.execute(toolBody, {
+      "x-claude-code-session-id": "session-1",
+    });
+
+    assert.equal(result.message.content, "Here is the plan.");
+    assert.deepEqual(result.message.toolRequests, []);
+    assert.deepEqual(
+      diagnostics
+        .filter((event) => event.event === "bridge.unregistered_tool_call")
+        .map((event) => event.toolCallId),
+      ["read-1"],
+    );
+
+    // Copilot registers the dropped call once the turn is already finished.
+    droppedSession.emit("external_tool.requested", {
+      requestId: "request-1",
+      toolCallId: "read-1",
+      toolName: "Read",
+    });
+
+    await manager.execute(request(), {
+      "x-claude-code-session-id": "session-2",
+    });
+
+    assert.equal(droppedSession.disconnectCalls, 1);
+    assert.equal(idleSession.disconnectCalls, 0);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("still aborts a turn that is waiting for an unregistered tool call", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 100,
+    turnTimeoutMs: 5000,
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const controller = new AbortController();
+  // Only a declared tool can still be registered, so only that call is waited
+  // for long enough to abort.
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "partial",
+      toolRequests: [
+        { toolCallId: "read-1", name: "Read", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+  };
+
+  await manager.start();
+  try {
+    const rejected = assert.rejects(
+      manager.execute(
+        toolBody,
+        { "x-claude-code-session-id": "session-1" },
+        { signal: controller.signal },
+      ),
+      { name: "AbortError" },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await rejected;
+    // The turn itself always rejects on abort, so the assertion that actually
+    // separates an abort from a pending-tool timeout is what the waiter
+    // reported: an abort must never be classified as an unregistered call and
+    // silently drop a tool the client is still expecting.
+    //
+    // Outliving pendingToolWaitMs is what makes that observable. A waiter the
+    // abort really cancelled stays silent forever; a waiter still armed after
+    // the turn ended reaches its own timeout here and drops the call, so the
+    // wait also catches an abort that never reaches the waiter at all.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.deepEqual(
+      diagnostics.filter(
+        (event) => event.event === "bridge.unregistered_tool_call",
+      ),
+      [],
+    );
+    assert.equal(client.session.abortCalls, 1);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("still fails a turn whose state is evicted mid-wait", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 1000,
+    turnTimeoutMs: 5000,
+    client,
+  });
+  // Only a declared tool can still be registered, so only that call is waited
+  // for long enough for the eviction to reach it.
+  const toolBody = {
+    ...request(),
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
+  };
+
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "partial",
+      toolRequests: [
+        { toolCallId: "read-1", name: "Read", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+  };
+
+  await manager.start();
+  const rejected = assert.rejects(
+    manager.execute(toolBody, { "x-claude-code-session-id": "session-1" }),
+    /Copilot session state was evicted/,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  await manager.stop();
+  await rejected;
+});
+
+for (const model of PRIMARY_MODELS) {
+  test(`${model}: interleaved root and three workers keep colliding tool IDs isolated`, async () => {
+    const actors = ["root", "alpha", "beta", "gamma"];
+    const sessions = new Map();
+    const client = new FakeClient(PRIMARY_MODELS.map((id) => ({ id })));
+    client.createSessionImplementation = async () => {
+      const actor = actors[sessions.size];
+      const session = new FakeSession();
+      sessions.set(actor, session);
+      session.sendImplementation = async () => {
+        session.emit("assistant.message", {
+          content: "",
+          toolRequests: [{ toolCallId: "shared-tool", name: "Read", arguments: {} }],
+        });
+        session.emit("external_tool.requested", {
+          requestId: "shared-request", toolCallId: "shared-tool", toolName: "Read",
+        });
+        session.emit("session.idle");
+      };
+      session.handlePendingToolCallImplementation = async ({ result }) => {
+        await new Promise((resolve) => setTimeout(resolve, actors.indexOf(actor) * 2));
+        session.emit("assistant.message", {
+          content: `${actor}:${result.textResultForLlm}`, toolRequests: [],
+        });
+        session.emit("session.idle");
+        return { success: true };
+      };
+      return session;
+    };
+    const manager = new SessionManager({
+      baseDirectory: "/tmp", preferredModel: model, turnTimeoutMs: 1000, client,
+    });
+    const headers = (actor) => ({
+      "x-claude-code-session-id": "shared-conversation",
+      ...(actor !== "root" ? { "x-claude-code-agent-id": actor } : {}),
+    });
+    const body = (actor) => ({
+      ...request(undefined, model),
+      messages: [{ role: "user", content: `Task for ${actor}` }],
+      tools: [{ name: "Read", description: "Read", input_schema: { type: "object", properties: {} } }],
+    });
+    await manager.start();
+    try {
+      const initial = await Promise.all(actors.map((actor) =>
+        manager.execute(body(actor), headers(actor))
+      ));
+      assert.equal(new Set(client.created.map((config) => config.sessionId)).size, 4);
+      assert.ok(client.created.every((config) => config.model === model));
+      assert.ok(initial.every((result) => result.message.toolRequests[0].toolCallId === "shared-tool"));
+      const reversed = [...actors].reverse();
+      const completed = await Promise.all(reversed.map((actor) => manager.execute({
+        ...body(actor),
+        messages: [
+          ...body(actor).messages,
+          { role: "assistant", content: [{ type: "tool_use", id: "shared-tool", name: "Read", input: {} }] },
+          { role: "user", content: [{
+            type: "tool_result", tool_use_id: "shared-tool",
+            content: `PRIVATE_${actor}`, is_error: actor === "beta",
+          }] },
+        ],
+      }, headers(actor))));
+      assert.deepEqual(completed.map((result) => result.message.content),
+        reversed.map((actor) => `${actor}:PRIVATE_${actor}`));
+      for (const actor of actors) {
+        const calls = sessions.get(actor).handledToolCalls;
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].requestId, "shared-request");
+        assert.equal(calls[0].result.textResultForLlm, `PRIVATE_${actor}`);
+        assert.equal(calls[0].result.resultType, actor === "beta" ? "failure" : "success");
+      }
+    } finally {
+      await manager.stop();
+    }
+    assert.ok([...sessions.values()].every((session) => session.disconnectCalls === 1));
+  });
+
+  test(`${model}: cancelling one worker leaves its sibling and later turns usable`, async () => {
+    const client = new FakeClient([{ id: model }]);
+    const slow = new FakeSession();
+    const healthy = new FakeSession();
+    const sessions = [slow, healthy];
+    client.createSessionImplementation = async () => sessions.shift();
+    slow.sendImplementation = async () => {};
+    const manager = new SessionManager({
+      baseDirectory: "/tmp", preferredModel: model, turnTimeoutMs: 1000, client,
+    });
+    const headers = (agent) => ({
+      "x-claude-code-session-id": "shared-conversation", "x-claude-code-agent-id": agent,
+    });
+    const controller = new AbortController();
+    await manager.start();
+    try {
+      const cancelled = assert.rejects(
+        manager.execute(request(undefined, model), headers("slow"), { signal: controller.signal }),
+        { name: "AbortError" },
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal((await manager.execute(request(undefined, model), headers("healthy"))).message.content, "ok");
+      controller.abort();
+      await cancelled;
+      slow.emit("assistant.message", { content: "LATE_CANCELLED_WORKER", toolRequests: [] });
+      slow.emit("session.idle");
+      assert.equal((await manager.execute(request(undefined, model), headers("healthy"))).message.content, "ok");
+      slow.sendImplementation = null;
+      assert.equal((await manager.execute(request(undefined, model), headers("slow"))).message.content, "ok");
+      assert.equal(slow.abortCalls, 1);
+      assert.equal(healthy.abortCalls, 0);
+      assert.equal(healthy.disconnectCalls, 0);
+      assert.equal(client.created.length, 2);
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+test("stays evictable when Copilot retries the registration of a dropped tool call", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const droppedSession = new FakeSession();
+  const idleSession = new FakeSession();
+  const sessions = [droppedSession, idleSession];
+  client.createSessionImplementation = async () => sessions.shift();
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    maxStates: 1,
+    pendingToolWaitMs: 20,
+    turnTimeoutMs: 1000,
+    onDiagnostic: () => {},
+    client,
+  });
+
+  droppedSession.sendImplementation = async () => {
+    droppedSession.emit("assistant.message", {
+      content: "Here is the plan.",
+      toolRequests: [
+        { toolCallId: "plan-1", name: "ExitPlanMode", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    droppedSession.emit("session.idle");
+  };
+
+  await manager.start();
+  try {
+    await manager.execute(request(), {
+      "x-claude-code-session-id": "session-1",
+    });
+
+    // Copilot retries the registration, so the same request arrives twice for
+    // one tool call id. A marker that is consumed by the first arrival lets the
+    // second one create a pending entry no client result can ever clear, and
+    // both eviction gates require that map to be empty.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      droppedSession.emit("external_tool.requested", {
+        requestId: "request-1",
+        toolCallId: "plan-1",
+        toolName: "ExitPlanMode",
+      });
+    }
+
+    await manager.execute(request(), {
+      "x-claude-code-session-id": "session-2",
+    });
+
+    // The pinned state would survive the limit and take the healthy state's
+    // place instead, so asserting on the map alone would miss the consequence.
+    assert.equal(droppedSession.disconnectCalls, 1);
+    assert.equal(idleSession.disconnectCalls, 0);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("keeps an undeclared tool call Copilot registered before the turn ended", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp",
+    preferredModel: "gpt-5.6-sol",
+    pendingToolWaitMs: 20,
+    turnTimeoutMs: 1000,
+    onDiagnostic: (event) => diagnostics.push(event),
+    client,
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+
+  // Copilot registers the call before the assistant message that carries it,
+  // which is the ordering #waitForPendingRequest already has to tolerate.
+  client.session.sendImplementation = async () => {
+    client.session.emit("external_tool.requested", {
+      requestId: "request-plan-1",
+      toolCallId: "plan-1",
+      toolName: "ExitPlanMode",
+    });
+    client.session.emit("assistant.message", {
+      content: "Here is the plan.",
+      toolRequests: [
+        { toolCallId: "plan-1", name: "ExitPlanMode", arguments: {} },
+      ],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+  };
+  client.session.handlePendingToolCallImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "approved",
+      toolRequests: [],
+      outputTokens: 1,
+    });
+    client.session.emit("session.idle");
+    return { success: true };
+  };
+
+  await manager.start();
+  try {
+    const first = await manager.execute(request(), headers);
+
+    // Only the client can answer a registered call, so dropping it strands
+    // Copilot mid-turn on a result that can never arrive.
+    assert.deepEqual(
+      first.message.toolRequests.map((tool) => tool.toolCallId),
+      ["plan-1"],
+    );
+    assert.deepEqual(
+      diagnostics.filter(
+        (event) => event.event === "bridge.unregistered_tool_call",
+      ),
+      [],
+    );
+
+    const second = await manager.execute(
+      {
+        ...request(),
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "plan-1", content: "ok" },
+            ],
+          },
+        ],
+      },
+      headers,
+    );
+
+    assert.equal(second.message.content, "approved");
+    assert.deepEqual(
+      client.session.handledToolCalls.map((call) => call.requestId),
+      ["request-plan-1"],
     );
   } finally {
     await manager.stop();

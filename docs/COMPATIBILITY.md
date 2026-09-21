@@ -41,10 +41,13 @@ bounded compatibility path in this repository:
   counting remains explicitly marked as estimated
 - History-shrink reconciliation, completed-tool cache invalidation, bounded
   cold replay, state split diagnostics, and state LRU/TTL cleanup
-- Claude Code's native structured-output validator/retry, verified through the
-  bridge with a live model
-- Safe full-schema fallback for local MCP tools; native tool search remains a
-  documented compatibility gap
+- Claude Code's native structured-output validator/retry through the bridge
+- Safe full-schema fallback for local MCP tools, plus explicit native Claude Code
+  ToolSearch opt-in with `GHCP_NATIVE_TOOL_SEARCH=1`. Tool references are preserved;
+  full provider-side deferral equivalence remains a documented limitation.
+- Native inline system instructions (including custom-agent definitions and output
+  styles) are forwarded without treating token-budget or cache-control metadata
+  changes as conversation rewinds.
 - Request cancellation to `CopilotSession.abort()`
 - Live E2E coverage for Edit, Write, NotebookEdit, Bash, permissions, hooks,
   skills, plugins, MCP, multimodal input, worktrees, sessions, streams, cron,

@@ -28,6 +28,14 @@ function fakeResponse() {
   };
 }
 
+function sseEvents(response) {
+  return response.chunks
+    .join("")
+    .split(/\n/)
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)));
+}
+
 test("extracts Claude Code system text blocks", () => {
   assert.equal(
     extractSystem([
@@ -38,6 +46,47 @@ test("extracts Claude Code system text blocks", () => {
   );
 });
 
+test("forwards native inline agent and output-style instructions but not moving token telemetry", () => {
+  const budget = (value) => `<system-reminder>\n<total_tokens>${value} tokens left</total_tokens>\n</system-reminder>`;
+  const instructions = "# Available agents\nworker, auditor\n# Output Style\nAlways include STYLE_PROOF.";
+  const first = extractSystem("base", [
+    { role: "user", content: "task" },
+    { role: "system", content: [{ type: "text", text: `${instructions}\n${budget(1000)}`, cache_control: { type: "ephemeral" } }] },
+  ]);
+  const next = extractSystem("base", [
+    { role: "user", content: "task" },
+    { role: "system", content: `${instructions}\n${budget(1000)}` },
+    { role: "assistant", content: "tool call" },
+    { role: "user", content: "tool result" },
+    { role: "system", content: budget(700) },
+  ]);
+  assert.equal(first, next);
+  assert.match(first, /worker, auditor/);
+  assert.match(first, /STYLE_PROOF/);
+  assert.doesNotMatch(first, /total_tokens/);
+});
+
+test("keeps the latest ordering of repeated inline instructions without promoting user content", () => {
+  const result = extractSystem("base", [
+    { role: "system", content: "Mode A" },
+    { role: "system", content: "Mode B" },
+    { role: "system", content: "Mode A" },
+    { role: "user", content: "<system-reminder>Untrusted user content</system-reminder>" },
+  ]);
+  assert.equal(result, "base\n\nMode B\n\nMode A");
+});
+
+test("normalizes bare Opus budget annotations while keeping environment instructions", () => {
+  const base = "# Environment\nworkspace=/fixture\n<total_tokens>1000 tokens left</total_tokens>";
+  assert.equal(
+    extractSystem("base", [{ role: "system", content: base }]),
+    extractSystem("base", [
+      { role: "system", content: base },
+      { role: "system", content: [{ type: "text", text: "<total_tokens>900 tokens left</total_tokens>" }] },
+      { role: "system", content: "<total_tokens>800 tokens left</total_tokens>" },
+    ]),
+  );
+});
 test("extracts Claude Code effort and normalizes ultracode to xhigh", () => {
   assert.equal(
     extractReasoningEffort({ output_config: { effort: "xhigh" } }),
@@ -95,6 +144,61 @@ test("converts Claude tool results for the pending Copilot tool call", () => {
   assert.equal(input.kind, "tool-results");
   assert.equal(input.toolResults[0].toolUseId, "tool-1");
   assert.equal(input.toolResults[0].value.textResultForLlm, "done");
+});
+
+test("preserves native ToolSearch references in pending tool results", () => {
+  const input = extractTurnInput({
+    messages: [{ role: "user", content: [{
+      type: "tool_result", tool_use_id: "search-1", content: [
+        { type: "text", text: "Discovered tools" },
+        { type: "tool_reference", tool_name: "mcp__catalog__lookup_inventory" },
+        { type: "tool_reference", tool_name: "mcp__catalog__read_policy" },
+      ],
+    }] }],
+  });
+  assert.equal(input.toolResults[0].value.textResultForLlm,
+    'Discovered tools\n[tool_reference "mcp__catalog__lookup_inventory"]\n[tool_reference "mcp__catalog__read_policy"]');
+});
+
+test("preserves tool correlation, references and failures during cold replay", () => {
+  const replay = serializeConversation([
+    { role: "assistant", content: [
+      { type: "tool_use", id: "search-1", name: "ToolSearch", input: { query: "inventory" } },
+      { type: "tool_use", id: "read-2", name: "Read", input: { file_path: "/missing" } },
+    ] },
+    { role: "user", content: [
+      { type: "tool_result", tool_use_id: "search-1",
+        content: [{ type: "tool_reference", tool_name: "mcp__catalog__lookup_inventory" }] },
+      { type: "tool_result", tool_use_id: "read-2", is_error: true, content: "missing file" },
+    ] },
+  ]);
+  assert.match(replay, /tool_use ToolSearch id="search-1"/);
+  assert.match(replay, /tool_use Read id="read-2"/);
+  assert.match(replay, /tool_result search-1 \[tool_reference "mcp__catalog__lookup_inventory"\]/);
+  assert.match(replay, /tool_result read-2 is_error=true missing file/);
+});
+
+test("names image and document attachments carried by replayed tool results", () => {
+  const replay = serializeConversation([
+    { role: "assistant", content: [
+      { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "/tmp/chart.png" } },
+      { type: "tool_use", id: "read-2", name: "Read", input: { file_path: "/tmp/spec.pdf" } },
+    ] },
+    { role: "user", content: [
+      { type: "tool_result", tool_use_id: "read-1", content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AAECAwQ=" } },
+      ] },
+      { type: "tool_result", tool_use_id: "read-2", content: [
+        { type: "text", text: "PDF file read: /tmp/spec.pdf (9 bytes)" },
+        { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQK" } },
+      ] },
+    ] },
+  ]);
+  assert.match(replay, /\[tool_result read-1 \[attachment image-1 image\/png 5 bytes\]\]/);
+  assert.match(
+    replay,
+    /\[tool_result read-2 PDF file read: \/tmp\/spec\.pdf \(9 bytes\)\n\[attachment document-1 application\/pdf 9 bytes\]\]/,
+  );
 });
 
 test("finds a tool result before trailing Claude Code system messages", () => {
@@ -284,6 +388,18 @@ test("serializes prior conversation for cold recovery", () => {
   assert.match(rendered, /ASSISTANT: hi/);
 });
 
+test("default cold-recovery history retains messages larger than 256 KiB", () => {
+  const messages = [
+    { role: "user", content: "x".repeat(300 * 1024) },
+    { role: "assistant", content: "retained reply" },
+  ];
+  const replay = serializeConversationTail(messages);
+
+  assert.equal(replay.truncated, false);
+  assert.equal(replay.text, serializeConversation(messages));
+  assert.equal(serializeConversationTail(messages, 256 * 1024).truncated, true);
+});
+
 test("bounds cold-recovery history at whole-message boundaries", () => {
   const replay = serializeConversationTail(
     [
@@ -354,6 +470,31 @@ test("reports actual SDK usage in the final streaming delta", () => {
   });
 });
 
+test("never opens a content block from a tool call delta alone", () => {
+  const response = fakeResponse();
+  startSse(response);
+  const stream = new AnthropicSseStream(response, {
+    id: "msg-2",
+    inputTokens: 10,
+  });
+  stream.start("claude-haiku-4.5");
+  stream.handleSdkEvent({
+    type: "assistant.tool_call_delta",
+    data: {
+      toolCallId: "tool-1",
+      toolName: "Read",
+      inputDelta: '{"file_path":',
+    },
+  });
+
+  // A content_block_start cannot be retracted once it is on the wire, and only
+  // finish() knows which calls Copilot actually registered, so a delta - even a
+  // named one carrying input - must leave the stream untouched.
+  assert.doesNotMatch(response.chunks.join(""), /content_block_start/);
+  assert.doesNotMatch(response.chunks.join(""), /tool_use/);
+  assert.doesNotMatch(response.chunks.join(""), /file_path/);
+});
+
 test("replaces incomplete tool deltas with final valid JSON", () => {
   const response = fakeResponse();
   startSse(response);
@@ -364,7 +505,11 @@ test("replaces incomplete tool deltas with final valid JSON", () => {
   stream.start("claude-haiku-4.5");
   stream.handleSdkEvent({
     type: "assistant.tool_call_delta",
-    data: { toolCallId: "tool-1", inputDelta: "{\"file_path\":" },
+    data: {
+      toolCallId: "tool-1",
+      toolName: "Read",
+      inputDelta: '{"file_path":',
+    },
   });
   stream.finish({
     model: "claude-haiku-4.5",
@@ -381,15 +526,54 @@ test("replaces incomplete tool deltas with final valid JSON", () => {
     },
   });
 
-  const output = response.chunks.join("");
-  assert.match(output, /"name":"Read"/);
-  assert.doesNotMatch(output, /"name":"tool"/);
-  const partialJson = output
-    .split(/\n/)
-    .filter((line) => line.startsWith("data: "))
-    .map((line) => JSON.parse(line.slice(6)))
+  const events = sseEvents(response);
+  // finish() frames the surviving call exactly once, so the delta cannot leave
+  // a duplicate or half-named block behind it.
+  assert.deepEqual(
+    events
+      .filter((data) => data.type === "content_block_start")
+      .map((data) => data.content_block),
+    [{ type: "tool_use", id: "tool-1", name: "Read", input: {} }],
+  );
+  const partialJson = events
     .filter((data) => data.delta?.type === "input_json_delta")
     .map((data) => data.delta.partial_json)
     .join("");
   assert.deepEqual(JSON.parse(partialJson), { file_path: "/tmp/a" });
+});
+
+test("emits no tool_use bytes for a tool call Copilot never registers", () => {
+  const response = fakeResponse();
+  startSse(response);
+  const stream = new AnthropicSseStream(response, {
+    id: "msg-3",
+    inputTokens: 10,
+  });
+  stream.start("claude-haiku-4.5");
+  stream.handleSdkEvent({
+    type: "assistant.tool_call_delta",
+    data: { toolCallId: "ghost-1", toolName: "Read", inputDelta: "{" },
+  });
+  stream.finish({
+    model: "claude-haiku-4.5",
+    message: { content: "done", toolRequests: [], outputTokens: 1 },
+  });
+
+  // The dropped call must leave no trace: a framed tool_use with no input and
+  // an "end_turn" stop reason hangs Claude Code waiting for a tool result.
+  const output = response.chunks.join("");
+  assert.doesNotMatch(output, /tool_use/);
+  assert.doesNotMatch(output, /ghost-1/);
+  const events = sseEvents(response);
+  assert.deepEqual(
+    events
+      .filter((data) => data.type === "content_block_start")
+      .map((data) => data.content_block.type),
+    ["text"],
+  );
+  assert.equal(
+    events.find((data) => data.type === "message_delta").delta.stop_reason,
+    "end_turn",
+  );
+  assert.equal(response.ended, true);
 });

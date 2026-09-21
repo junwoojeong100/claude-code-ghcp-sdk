@@ -6,11 +6,14 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { CLAUDE_PROVIDER_SELECTORS } from "../src/claude-gateway-env.mjs";
+import {
+  CLAUDE_INHERITED_MODEL_OPTIONS,
+  CLAUDE_PROVIDER_SELECTORS,
+} from "../src/claude-gateway-env.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function writeSettings(model) {
+function writeSettings(model, env = {}) {
   const fixtureDir = mkdtempSync(path.join(tmpdir(), "claude-ghcp-settings-"));
   const settingsPath = path.join(fixtureDir, "settings.json");
   const result = spawnSync(
@@ -22,7 +25,7 @@ function writeSettings(model) {
       "test-token",
       model,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: { ...process.env, GHCP_NATIVE_TOOL_SEARCH: "0", ...env } },
   );
 
   try {
@@ -45,7 +48,7 @@ test("sets the GPT 5.6 Copilot context window", () => {
       undefined,
     );
     assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, model);
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
     for (const name of CLAUDE_PROVIDER_SELECTORS) {
       assert.equal(settings.env[name], "");
     }
@@ -69,8 +72,8 @@ test("sets the GPT 6 Astra context window for launch and picker IDs", () => {
 test("does not override context limits for recognized Claude models", () => {
   const settings = writeSettings("claude-sonnet-5");
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
-  assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
-  assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+  assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
   assert.equal(
     settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME,
     "GitHub Copilot Claude Opus 5",
@@ -82,5 +85,28 @@ test("does not override context limits for recognized Claude models", () => {
   assert.equal(
     settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
     "GitHub Copilot Claude Haiku 4.5",
+  );
+});
+
+test("enables native Claude ToolSearch only with explicit GHCP opt-in", () => {
+  assert.equal(writeSettings("claude-sonnet-5").env.ENABLE_TOOL_SEARCH, "");
+  assert.equal(writeSettings("claude-sonnet-5", { GHCP_NATIVE_TOOL_SEARCH: "1" }).env.ENABLE_TOOL_SEARCH, "true");
+  assert.throws(() => writeSettings("claude-sonnet-5", { GHCP_NATIVE_TOOL_SEARCH: "typo" }),
+    /GHCP_NATIVE_TOOL_SEARCH must be 0 or 1/);
+});
+
+test("blanks inherited model options from user settings", () => {
+  for (const model of ["claude-sonnet-5", "gpt-6-astra"]) {
+    const settings = writeSettings(model);
+    for (const name of CLAUDE_INHERITED_MODEL_OPTIONS) {
+      assert.equal(settings.env[name], "");
+    }
+  }
+
+  const familySettings = writeSettings("claude-sonnet-5");
+  assert.equal(familySettings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME, "");
+  assert.equal(
+    familySettings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION,
+    "",
   );
 });

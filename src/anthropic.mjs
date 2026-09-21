@@ -7,8 +7,21 @@ export function extractText(content) {
     .join("\n");
 }
 
-export function extractSystem(system) {
-  return extractText(system) || "You are a helpful coding assistant.";
+export function extractSystem(system, messages = []) {
+  const context = [];
+  for (const message of messages) {
+    if (message?.role !== "system") continue;
+    // Budget telemetry changes every request; agent/style/permission instructions do not.
+    const text = extractText(message.content)
+      .replace(/<system-reminder>\s*<total_tokens>\d+ tokens left<\/total_tokens>\s*<\/system-reminder>/g, "")
+      .replace(/<total_tokens>\d+ tokens left<\/total_tokens>/g, "")
+      .trim();
+    if (!text) continue;
+    const previous = context.indexOf(text);
+    if (previous >= 0) context.splice(previous, 1);
+    context.push(text);
+  }
+  return [extractText(system) || "You are a helpful coding assistant.", ...context].join("\n\n");
 }
 
 export function extractReasoningEffort(body) {
@@ -54,6 +67,10 @@ function toolResultValue(block) {
       textParts.push(item.text);
       continue;
     }
+    if (item?.type === "tool_reference" && typeof item.tool_name === "string") {
+      textParts.push(`[tool_reference ${JSON.stringify(item.tool_name)}]`);
+      continue;
+    }
 
     const attachment = attachmentFromBlock(item, binaryResultsForLlm.length);
     if (attachment) {
@@ -72,6 +89,17 @@ function toolResultValue(block) {
     resultType: block.is_error ? "failure" : "success",
     ...(block.is_error ? { error: textParts.join("\n") || "Claude Code tool failed." } : {}),
   };
+}
+
+function replayToolResultText(block) {
+  const value = toolResultValue(block);
+  // Replayed history is plain text, so a converted image or document becomes a
+  // placeholder naming its media type and size instead of disappearing.
+  const attachments = (value.binaryResultsForLlm || []).map(
+    (item) =>
+      `[attachment ${item.description} ${item.mimeType} ${Buffer.byteLength(item.data, "base64")} bytes]`,
+  );
+  return [value.textResultForLlm, ...attachments].filter(Boolean).join("\n");
 }
 
 export function extractTurnInput(body) {
@@ -122,10 +150,12 @@ export function serializeConversation(messages = []) {
         .map((block) => {
           if (block?.type === "text") return block.text;
           if (block?.type === "tool_use") {
-            return `[tool_use ${block.name} ${JSON.stringify(block.input || {})}]`;
+            const id = typeof block.id === "string" ? ` id=${JSON.stringify(block.id)}` : "";
+            return `[tool_use ${block.name}${id} ${JSON.stringify(block.input || {})}]`;
           }
           if (block?.type === "tool_result") {
-            return `[tool_result ${block.tool_use_id} ${extractText(block.content)}]`;
+            const error = block.is_error ? " is_error=true" : "";
+            return `[tool_result ${block.tool_use_id}${error} ${replayToolResultText(block)}]`;
           }
           return `[${block?.type || "content"}]`;
         })
@@ -135,7 +165,7 @@ export function serializeConversation(messages = []) {
     .join("\n\n");
 }
 
-export function serializeConversationTail(messages = [], maxBytes = 262_144) {
+export function serializeConversationTail(messages = [], maxBytes = 268_435_456) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error("maxBytes must be a positive integer.");
   }
@@ -294,12 +324,13 @@ export class AnthropicSseStream {
       return;
     }
 
-    if (sdkEvent.type === "assistant.tool_call_delta") {
-      const data = sdkEvent.data;
-      if (data.toolName) {
-        this.#ensureToolBlock(data.toolCallId, data.toolName);
-      }
-    }
+    // assistant.tool_call_delta is deliberately not written through. Copilot
+    // also emits deltas for calls it never registers, and only the bridge's
+    // finishTurn knows which ones survive. A content_block_start cannot be
+    // retracted once it is on the wire, so opening a tool block here would
+    // frame a tool_use that later has no input and no "tool_use" stop reason.
+    // Nothing is lost by waiting: the input JSON was never streamed from the
+    // deltas either, finish() writes each surviving call in full.
   }
 
   finish({ model, message, usage }) {

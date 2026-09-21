@@ -33,6 +33,7 @@ export function daemonPaths(env = process.env) {
     lock: path.join(base, "bridge.lock"),
     log: path.join(base, "bridge.log"),
     registry: path.join(base, "bridge.json"),
+    settings: path.join(base, "settings"),
   };
 }
 
@@ -41,7 +42,45 @@ function ensureBase(paths) {
   fs.chmodSync(paths.base, 0o700);
 }
 
-function daemonConfigFingerprint(env, requestedPort) {
+// A launch's settings file holds a live bridge token, so it lives in the
+// daemon-owned 0700 tree rather than the caller's temp dir: a backgrounded
+// Claude Code job is respawned from --settings long after the launcher exits.
+// Nothing knows when a given job is finally done, so reap by age instead --
+// generously, because deleting a file a live job still needs reinstates the
+// very crash this directory exists to prevent.
+const SETTINGS_TTL_MS = 24 * 60 * 60 * 1000;
+
+function reapSettings(paths, now) {
+  let entries;
+  try {
+    entries = fs.readdirSync(paths.settings);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const file = path.join(paths.settings, entry);
+    try {
+      if (now - fs.statSync(file).mtimeMs > SETTINGS_TTL_MS) {
+        fs.rmSync(file, { force: true });
+      }
+    } catch {}
+  }
+}
+
+export function allocateSettingsPath(env = process.env) {
+  const paths = daemonPaths(env);
+  ensureBase(paths);
+  fs.mkdirSync(paths.settings, { mode: 0o700, recursive: true });
+  fs.chmodSync(paths.settings, 0o700);
+  reapSettings(paths, Date.now());
+  return path.join(paths.settings, `${randomBytes(12).toString("hex")}.json`);
+}
+
+function clearSettings(paths) {
+  fs.rmSync(paths.settings, { force: true, recursive: true });
+}
+
+export function daemonConfigFingerprint(env, requestedPort) {
   const configuration = Object.fromEntries(
     Object.keys(env)
       .filter((name) =>
@@ -230,9 +269,14 @@ export async function ensureDaemon(
       if (!(await modelAvailable(registry, model))) {
         throw new Error(`GitHub Copilot model is unavailable: ${model}`);
       }
-      return registry;
+      return {
+        ...registry,
+        logPath: paths.log,
+        settingsPath: allocateSettingsPath(env),
+      };
     }
     await stopRegistry(paths, registry);
+    clearSettings(paths);
 
     const port = requestedPort || (await freePort());
     const token = randomBytes(24).toString("hex");
@@ -265,7 +309,23 @@ export async function ensureDaemon(
     };
     writeDaemonRegistry(paths, registry);
 
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    // Same cold boot as bin/claude-ghcp's ephemeral branch -- three upstream
+    // Copilot round-trips before server.listen -- and the same 60s ceiling, but
+    // written as a deadline because an attempt count was never a wall-clock
+    // bound here: health() spends up to 1s per attempt (AbortSignal.timeout)
+    // on top of the 250ms sleep, so the old `attempt < 120` was 30s against a
+    // refused port and up to 150s against a bridge that binds the port but
+    // never answers. This is the loop the harness actually exercises --
+    // --background sets PERSISTENT_BRIDGE=1, so the launcher call that starts a
+    // daemon comes through here rather than through the launcher's own wait.
+    //
+    // That caller caps the whole launcher at 120s (spawnSync timeout 120_000,
+    // scripts/verify/drivers.mjs). 60s plus at most one overshooting attempt
+    // (1s probe + 250ms sleep) is 61.25s, which leaves ~58s of the cap for the
+    // 2s modelAvailable() check below, write-launch-settings, and Claude Code's
+    // own startup-and-background.
+    const healthDeadline = Date.now() + 60_000;
+    while (Date.now() < healthDeadline) {
       if (!pidAlive(child.pid)) {
         removeRegistry(paths);
         throw new Error(`Persistent bridge exited; inspect ${paths.log}.`);
@@ -275,7 +335,11 @@ export async function ensureDaemon(
           await stopRegistry(paths, registry, { ownedPid: child.pid });
           throw new Error(`GitHub Copilot model is unavailable: ${model}`);
         }
-        return registry;
+        return {
+          ...registry,
+          logPath: paths.log,
+          settingsPath: allocateSettingsPath(env),
+        };
       }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
@@ -295,6 +359,7 @@ export async function stopDaemon(env = process.env) {
     const registry = readDaemonRegistry(paths);
     const stopped = await stopRegistry(paths, registry);
     fs.rmSync(paths.log, { force: true });
+    clearSettings(paths);
     return stopped;
   } finally {
     release();

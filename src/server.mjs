@@ -42,7 +42,7 @@ const copilotHome = resolveCopilotHome(process.env.COPILOT_HOME);
 const logLevel = process.env.LOG_LEVEL || "error";
 const maxBodyBytes = readPositiveIntegerEnv(
   "MAX_BODY_BYTES",
-  25 * 1024 * 1024,
+  256 * 1024 * 1024,
 );
 const cleanupTimeoutMs = readPositiveIntegerEnv(
   "CLEANUP_TIMEOUT_MS",
@@ -50,7 +50,7 @@ const cleanupTimeoutMs = readPositiveIntegerEnv(
 );
 const maxReplayBytes = readPositiveIntegerEnv(
   "MAX_REPLAY_BYTES",
-  256 * 1024,
+  256 * 1024 * 1024,
 );
 const maxStates = readPositiveIntegerEnv("MAX_STATES", 64);
 const maxToolResults = readPositiveIntegerEnv("MAX_TOOL_RESULTS", 32);
@@ -224,6 +224,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const result = await manager.execute(body, req.headers, {
+      responseId,
       onReady: ({ model }) => stream?.start(model),
       onEvent: (event) => stream?.handleSdkEvent(event),
       signal: abortController.signal,

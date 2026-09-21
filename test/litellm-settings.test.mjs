@@ -52,7 +52,7 @@ test("writes isolated LiteLLM settings with family aliases", () => {
     );
     assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "corp-sonnet");
     assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "corp-haiku");
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
     assert.equal(
       settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME,
       "LiteLLM · corp-default",
