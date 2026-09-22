@@ -111,13 +111,19 @@ If permitted by your account and organization policy, GPT-6 Astra and the follow
 ./bin/claude-ghcp --ghcp-model gpt-5.6-luna
 ```
 
-GPT-6 Astra is configured with a 1,178,000-token context; the three GPT-5.6
-models use 1,050,000 tokens, as listed in the Copilot catalog.
+The Copilot catalog advertises 1,178,000 tokens for GPT-6 Astra and 1,050,000
+for the GPT-5.6 models. The launcher uses Claude Code's model-scoped **1M**
+context hint for these four models rather than a process-wide context override.
+Changing models therefore does not carry the startup model's window into the
+next model; native smaller windows and automatic compaction remain in effect.
 
-The model list is discovered dynamically, not limited to a fixed set of 16.
-When available to your account, `/model` includes
-`GitHub Copilot · GPT-6 Astra (gpt-6-astra)`. Restart an existing Claude Code
-session to refresh discovery after new models become available.
+The Direct SDK `/model` picker contains only the **seven primary models below**,
+plus Claude Code's `Default` alias. Temporary `modelPicker` settings replace the
+built-in and discovered lineups, so older models and newly discovered catalog
+entries do not reappear as extra choices. This is picker curation, not an
+authorization allowlist: `ghcp-models` still lists the broader catalog, explicit
+`--ghcp-model` requests retain their existing routing, and account policy still
+controls model access. Restart an existing session to load the new picker.
 
 The current full-feature validation matrix is exactly `claude-opus-5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
@@ -185,6 +191,33 @@ Ultracode is available only on models that support `xhigh` and may consume more 
 Standard sessions support subagents and dynamic workflows. `--background` and
 the `agents` view automatically use a persistent loopback bridge. Inspect or
 stop it with `claude-ghcp-status` and `claude-ghcp-stop`.
+
+### Long conversations and existing sessions
+
+Cached input is counted once: Copilot's total input count is split into
+Anthropic's uncached, cache-read and cache-creation fields. Double-counting these
+fields inflated Claude Code's context meter and could trigger unnecessary
+compaction. Automatic compaction remains owned by Claude Code.
+
+SDK session creation, resume and effort changes now have a separate
+`SESSION_OPERATION_TIMEOUT_MS` deadline (default **60,000 ms**). Cancellation
+also works during setup and while queued; a late setup reply cannot restore an
+abandoned session. The model-turn timeout remains separate. Failures emit
+content-free `bridge.session_operation_failed` diagnostics instead of waiting
+indefinitely before the model-turn timer starts.
+
+An already-running foreground bridge keeps its loaded code. Exit the old Claude
+Code process, then resume from the same project directory using the previous
+model, for example:
+
+```bash
+./bin/claude-ghcp --ghcp-model gpt-6-astra --continue
+```
+
+Use `--resume` to choose a different saved conversation. These changes do not
+erase Claude Code transcripts or modify global user settings. Persistent bridges
+check implementation/configuration fingerprints on the next launch and replace
+outdated daemons. Do not disable auto-compaction merely to force a larger window.
 
 ## LiteLLM Quick Start
 
@@ -287,19 +320,44 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 
 ## Validation
 
+### Picker and long-conversation follow-up
+
+The installed Claude Code 2.1.278 reported the seven configured picker models
+and its `Default` alias through its native control API. Switching Astra ->
+Haiku -> GPT-5.6 Sol restored the respective 1M -> 200K -> 1M windows with
+automatic compaction enabled.
+
+A separate real Astra conversation completed **10 turns and four automatic
+compactions**, then recalled the exact marker planted in its first turn.
+That probe used a test-only 100K compact window (67K trigger), not a reduced
+product default. Artifacts are under
+`.verify-runs/long-conversation-2026-09-22T02-30-14-506Z/`.
+The offline suite passes **353/353** tests, including hung setup, cancellation,
+late replies, shutdown, and cache-accounting regressions.
+
+The seven-model resume/fork and long-context scenarios also passed **14/14** in
+a separate focused run:
+`.verify-runs/picker-longturn-regression/2026-09-22T02-40-55-670Z/`.
+Its code fingerprint and user settings matched before and after execution.
+
+These follow-up changes also passed a **fresh full 77/77 run**,
+`2026-09-22T03-37-17-139Z`. The latest full-run result below and both generated
+verification reports now refer to that run, not the earlier passing snapshot.
+
 ### 2026-09-22 live revalidation (KST)
 
 **Strict result: PASS — 77/77 (100%) in one complete run.** The laptop's installed
 native Claude Code **2.1.278** executed every scenario through the bridge and
-Copilot SDK. The final run took **782 seconds (13 min 2 s)**, with no failed,
+Copilot SDK. The final run took **794 seconds (13 min 14 s)**, with no failed,
 blocked, missing, duplicate or unexpected slots and unchanged code/user settings.
 This is the selected matrix's pass rate, not a claim of complete feature coverage
 or guaranteed success on future executions.
 
-- Offline tests: **337/337 passed**, 57 more than the original 280; none failed,
+- Offline tests: **353/353 passed**, 73 more than the original 280; none failed,
   cancelled or skipped.
-- Latest focused regressions: **7/7 resume/fork** and **7/7 launcher/background**,
-  in two separate runs, not combined into the full-matrix result.
+- Additional focused evidence: **14/14 resume/fork and long-context slots**, plus
+  **10 Astra turns with four automatic compactions**. Neither contributes cells
+  to the fresh full-matrix result.
 - Independent audit: **1,337 recorded checks**, **105 headless phase transcripts**,
   positive raw result-envelope input usage, and retained command/daemon evidence
   for the seven launcher slots.
@@ -312,7 +370,8 @@ Full-run history remains separate, under each run's recorded implementation:
 | Previous closeout 2 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 74 / 2 / 1 / 0 | 7 × 2 | 863 s | Intact |
 | Fresh baseline — NOT GREEN | `2026-09-22T00-01-29-757Z` | 76 / 1 / 0 / 0 | 7 × 2 | 943 s | Intact |
 | First correction — NOT GREEN | `2026-09-22T00-30-59-086Z` | 75 / 2 / 0 / 0 | 7 × 2 | 973 s | Intact |
-| Final — PASS | `2026-09-22T00-52-51-013Z` | **77 / 0 / 0 / 0** | **3 × 2** | **782 s** | **Intact** |
+| Before picker/long-turn follow-up — PASS | `2026-09-22T00-52-51-013Z` | 77 / 0 / 0 / 0 | 3 × 2 | 782 s | Intact |
+| Current picker/long-turn fixes — PASS | `2026-09-22T03-37-17-139Z` | **77 / 0 / 0 / 0** | **3 × 2** | **794 s** | **Intact** |
 
 The previous closeout's Sonnet fork mismatch, Opus zero-result usage, and Haiku
 timeout are retained as historical failures, not retrospectively reclassified.
@@ -326,8 +385,8 @@ The changes strengthen evidence rather than relax the gate:
 - Resume/fork prompts ask for the example deployment's original facts. All three
   phases must use no tools, so persistent-memory writes cannot masquerade as
   inherited conversation context. Wrong dates, facts and session IDs still fail.
-- Explicit usage zero is no longer replaced by estimates. A zero Claude Code
-  result envelope still fails; finalized assistant usage or cumulative
+- Explicit usage zero is no longer replaced by estimates. Zero total input
+  usage, including cache, still fails; finalized assistant usage or cumulative
   `modelUsage` is not substituted to make it pass.
 - Content-free timeout/cancellation diagnostics and pre-cleanup native daemon
   snapshots distinguish bridge stalls from native startup stalls. Command
@@ -336,19 +395,19 @@ The changes strengthen evidence rather than relax the gate:
 Broad earlier-message extraction wording produced an Opus refusal in both a
 focused 6/7 run and the first corrected full run. Clarified factual questions
 then passed all seven models without changing safety controls or accepting
-refusals. The final full run used the existing concurrency flags to reduce
-startup pressure from 14 to 6 matrix workers; timeout budgets and the all-pass
-policy were unchanged. This profile passed, but the upstream causes of the
+refusals. The latest full run retained the proven six-worker profile, unchanged
+scenario timeout budgets and the all-pass policy. SDK setup uses the new separate
+deadline described above. This profile passed, but the upstream causes of the
 earlier intermittent SDK/native stalls are not established or claimed eliminated.
 
 The final run recorded commit
-`c5993091af3aa905d51257130543f82f497fd2f7` (dirty checkout) and matching start/end
+`96e5e46eb96e5cc3974f8e8cc55721aa0b1367a1` (dirty checkout) and matching start/end
 41-file `verification-code-v1` SHA-256 fingerprints:
-`ca257bf4ee47104ef0999ceb6d1387e2801164132c054d75b8fcfaf0eafee84c`.
+`c19b6ba224ec3906fb9930fc23db72476101d4884dae47b9e96089177fecd6ad`.
 Both generated verification documents use **only that final full run**.
-Its ignored local artifact directory contains `summary.json`, `slots.jsonl`,
+Its ignored local directory `.verify-runs/2026-09-22T03-37-17-139Z/` contains `summary.json`, `slots.jsonl`,
 `console.log`, `offline.log`, `audit.json`, phase transcripts and launcher logs.
-The two latest focused runs are under
+Earlier separate focused runs remain under
 `.verify-runs/20260922-resume-regression/2026-09-22T00-48-55-531Z` and
 `.verify-runs/20260922-daemon-regression/2026-09-22T00-48-55-531Z`.
 Earlier focused failures and diagnostic probes remain separate local records;

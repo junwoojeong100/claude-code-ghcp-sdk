@@ -269,7 +269,7 @@ function completedRun(t, { full = false, outcome = "pass", change = "none" } = {
   const sourceRoot = path.resolve(path.dirname(RUNNER), "../..");
   const files = [
     ...["run", "summary", "scenarios", "features", "timeouts"].map((name) => `scripts/verify/${name}.mjs`),
-    "src/settings-file-state.mjs",
+    "src/settings-file-state.mjs", "src/model-map.mjs",
   ];
   for (const name of files) {
     fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });

@@ -7,8 +7,11 @@ import {
   copilotModelForFrontend,
   frontendModelFor,
   gatewayModelEntries,
+  launchModelFor,
   ModelUnavailableError,
   pickerModelFor,
+  primaryModelPicker,
+  PRIMARY_MODELS,
   resolveCopilotModel,
   resolveReasoningEffort,
 } from "../src/model-map.mjs";
@@ -164,7 +167,7 @@ test("lists every visible Copilot model once", () => {
   assert.equal(contextWindowTokensFor("claude-sonnet-5"), null);
 });
 
-test("formats available Copilot adapter models for gateway discovery", () => {
+test("gateway discovery includes only primary models without duplicating native rows", () => {
   const millionContext = {
     limits: { max_context_window_tokens: 1_000_000 },
   };
@@ -245,18 +248,6 @@ test("formats available Copilot adapter models for gateway discovery", () => {
     })),
     [
       {
-        id: "claude-opus-4-7[1m]",
-        backend_id: "claude-opus-4.7",
-        display_name:
-          "GitHub Copilot · Claude Opus 4.7 (claude-opus-4.7)",
-      },
-      {
-        id: "claude-opus-4-6[1m]",
-        backend_id: "claude-opus-4.6",
-        display_name:
-          "GitHub Copilot · Claude Opus 4.6 (claude-opus-4.6)",
-      },
-      {
         id: "github-copilot/claude-gpt-5.6-sol[1m]",
         backend_id: "gpt-5.6-sol",
         display_name: "GitHub Copilot · GPT-5.6 Sol (gpt-5.6-sol)",
@@ -276,22 +267,6 @@ test("formats available Copilot adapter models for gateway discovery", () => {
         backend_id: "gpt-6-astra",
         display_name: "GitHub Copilot · GPT-6 Astra (gpt-6-astra)",
       },
-      {
-        id: "github-copilot/claude-gpt-5-mini",
-        backend_id: "gpt-5-mini",
-        display_name: "GitHub Copilot · GPT-5 mini (gpt-5-mini)",
-      },
-      {
-        id: "github-copilot/claude-example-model-3.6",
-        backend_id: "example-model-3.6",
-        display_name:
-          "GitHub Copilot · Example Model 3.6 (example-model-3.6)",
-      },
-      {
-        id: "github-copilot/claude-auto",
-        backend_id: "auto",
-        display_name: "GitHub Copilot · Auto (auto)",
-      },
     ],
   );
   assert.equal(
@@ -302,6 +277,31 @@ test("formats available Copilot adapter models for gateway discovery", () => {
     copilotModelForFrontend("github-copilot/claude-gpt-5.6-sol[1m]"),
     "gpt-5.6-sol",
   );
+});
+
+test("the native picker replaces all other lineups with the seven verified models", () => {
+  const picker = primaryModelPicker();
+  assert.equal(picker.replaceBuiltInOptions, true);
+  assert.equal(picker.options.length, 7);
+  assert.deepEqual(picker.options.map((option) => copilotModelForFrontend(option.model)), [
+    "claude-opus-5", "claude-sonnet-5", "claude-haiku-4.5",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra",
+  ]);
+  assert.deepEqual(PRIMARY_MODELS, picker.options.map((option) => copilotModelForFrontend(option.model)));
+  assert.ok(picker.options.every((option) => option.label.startsWith("GitHub Copilot")));
+  assert.equal(resolveCopilotModel({ requested: "gpt-5-mini", availableIds }), "gpt-5-mini");
+});
+
+test("launch context hints stay with their models rather than a global window override", () => {
+  for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]) {
+    const value = `github-copilot/claude-${model}[1m]`;
+    assert.equal(launchModelFor(model), value);
+    assert.equal(launchModelFor(value), value);
+    assert.equal(copilotModelForFrontend(value), model);
+  }
+  assert.equal(launchModelFor("claude-haiku-4.5"), "claude-haiku-4-5");
+  assert.equal(launchModelFor("claude-sonnet-5"), "claude-sonnet-5");
+  assert.equal(launchModelFor("gpt-5-mini"), "gpt-5-mini");
 });
 
 test("validates reasoning effort against Copilot model capabilities", () => {

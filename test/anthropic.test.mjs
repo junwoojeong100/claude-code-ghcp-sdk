@@ -400,12 +400,24 @@ test("uses actual SDK usage and finish reason in non-streaming responses", () =>
   assert.deepEqual(body.usage, {
     cache_creation_input_tokens: 4,
     cache_read_input_tokens: 3,
-    input_tokens: 100,
+    input_tokens: 93,
     output_tokens: 20,
   });
 });
 
 for (const [name, usage, outputTokens, expected] of [
+  [
+    "counts cached long-context input exactly once",
+    { inputTokens: 230000, cacheReadTokens: 210000, cacheWriteTokens: 19997, outputTokens: 7 },
+    7,
+    { input_tokens: 3, output_tokens: 7, cache_read_input_tokens: 210000, cache_creation_input_tokens: 19997 },
+  ],
+  [
+    "reports a fully cached request with zero uncached input",
+    { inputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 4, outputTokens: 1 },
+    1,
+    { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 },
+  ],
   [
     "preserves measured zeros without cache",
     { inputTokens: 0, outputTokens: 0 },
@@ -580,7 +592,7 @@ test("reports actual SDK usage in the final streaming delta", () => {
   assert.deepEqual(delta.usage, {
     cache_creation_input_tokens: 4,
     cache_read_input_tokens: 3,
-    input_tokens: 100,
+    input_tokens: 93,
     output_tokens: 20,
   });
 });

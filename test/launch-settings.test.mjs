@@ -36,18 +36,18 @@ function writeSettings(model, env = {}) {
   }
 }
 
-test("sets the GPT 5.6 Copilot context window", () => {
+test("uses model-scoped GPT 5.6 context hints and clears global context overrides", () => {
   for (const variant of ["sol", "terra", "luna"]) {
     const model = `gpt-5.6-${variant}`;
     const settings = writeSettings(model);
-    assert.equal(settings.env.ANTHROPIC_MODEL, model);
-    assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "1050000");
+    assert.equal(settings.env.ANTHROPIC_MODEL, `github-copilot/claude-${model}[1m]`);
+    assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
     assert.equal(settings.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, "1");
     assert.equal(
       settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
       undefined,
     );
-    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, model);
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, `github-copilot/claude-${model}[1m]`);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
     for (const name of CLAUDE_PROVIDER_SELECTORS) {
       assert.equal(settings.env[name], "");
@@ -56,22 +56,22 @@ test("sets the GPT 5.6 Copilot context window", () => {
   }
 });
 
-test("sets the GPT 6 Astra context window for launch and picker IDs", () => {
+test("uses the same per-model Astra context for launch and picker IDs", () => {
   for (const model of [
     "gpt-6-astra",
     "github-copilot/claude-gpt-6-astra[1m]",
   ]) {
     const settings = writeSettings(model);
-    assert.equal(settings.env.ANTHROPIC_MODEL, model);
-    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, model);
-    assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "1178000");
+    assert.equal(settings.env.ANTHROPIC_MODEL, "github-copilot/claude-gpt-6-astra[1m]");
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "github-copilot/claude-gpt-6-astra[1m]");
+    assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
     assert.equal(settings.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, "1");
   }
 });
 
-test("does not override context limits for recognized Claude models", () => {
-  const settings = writeSettings("claude-sonnet-5");
-  assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+test("clears inherited context overrides without replacing recognized Claude limits", () => {
+  const settings = writeSettings("claude-sonnet-5", { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1178000" });
+  assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
   assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
   assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
   assert.equal(
@@ -86,6 +86,20 @@ test("does not override context limits for recognized Claude models", () => {
     settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
     "GitHub Copilot Claude Haiku 4.5",
   );
+});
+
+test("temporary Direct settings curate exactly seven picker options without a routing allowlist", () => {
+  const settings = writeSettings("gpt-6-astra");
+  assert.equal(settings.modelPicker.replaceBuiltInOptions, true);
+  assert.equal(settings.modelPicker.options.length, 7);
+  assert.deepEqual(settings.modelPicker.options.map((option) => option.model), [
+    "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5",
+    "github-copilot/claude-gpt-5.6-sol[1m]",
+    "github-copilot/claude-gpt-5.6-terra[1m]",
+    "github-copilot/claude-gpt-5.6-luna[1m]",
+    "github-copilot/claude-gpt-6-astra[1m]",
+  ]);
+  assert.equal(settings.availableModels, undefined);
 });
 
 test("enables native Claude ToolSearch only with explicit GHCP opt-in", () => {

@@ -62,6 +62,10 @@ const stateIdleTtlMs = readPositiveIntegerEnv(
   "STATE_IDLE_TTL_MS",
   30 * 60 * 1000,
 );
+const sessionOperationTimeoutMs = readPositiveIntegerEnv(
+  "SESSION_OPERATION_TIMEOUT_MS",
+  60_000,
+);
 
 if (
   !LOOPBACK_HOSTS.has(host) &&
@@ -88,6 +92,7 @@ const manager = new SessionManager({
     console.error(JSON.stringify(event));
   },
   pendingToolWaitMs,
+  sessionOperationTimeoutMs,
   stateIdleTtlMs,
 });
 await manager.start();

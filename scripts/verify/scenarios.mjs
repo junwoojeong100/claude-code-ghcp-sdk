@@ -33,16 +33,9 @@
 
 import { COVERAGE_TARGET, coverage } from "./features.mjs";
 import { scaleTimeoutMs } from "./timeouts.mjs";
+import { PRIMARY_MODELS } from "../../src/model-map.mjs";
 
-export const PRIMARY_MODELS = Object.freeze([
-  "claude-opus-5",
-  "claude-sonnet-5",
-  "claude-haiku-4.5",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-6-astra",
-]);
+export { PRIMARY_MODELS };
 
 export const REQUIRED_ROUTE =
   "claude-code>bridge>github-copilot-sdk>github-copilot-model";

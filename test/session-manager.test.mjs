@@ -145,6 +145,227 @@ function transientBudget(tokens) {
   return `<system-reminder>\n<total_tokens>${tokens} tokens left</total_tokens>\n</system-reminder>`;
 }
 
+async function settlementWithin(promise, ms = 200) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ value }), (error) => ({ error })),
+      new Promise((resolve) => { timer = setTimeout(() => resolve({ pending: true }), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test("times out SDK creation, releases the family queue and discards a late session", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const abandoned = new FakeSession();
+  const recovered = new FakeSession();
+  let release;
+  client.createSessionImplementation = () => client.created.length === 1
+    ? new Promise((resolve) => { release = resolve; }) : recovered;
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    sessionOperationTimeoutMs: 20, cleanupTimeoutMs: 10,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  await manager.start();
+  const headers = { "x-claude-code-session-id": "creation-deadline" };
+  const pending = manager.execute(request(), headers, { requestId: "request-create" });
+  try {
+    const outcome = await settlementWithin(pending);
+    assert.equal(outcome.error?.name, "SessionOperationTimeoutError");
+    assert.equal(manager.stateCreations.size, 0);
+    assert.equal(manager.states.size, 0);
+    assert.equal((await manager.execute(request(), headers)).message.content, "ok");
+    assert.notEqual(client.created[0].sessionId, client.created[1].sessionId);
+    release(abandoned);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(abandoned.abortCalls, 1);
+    assert.equal(abandoned.disconnectCalls, 1);
+    assert.ok(client.deleted.includes(client.created[0].sessionId));
+    assert.equal(recovered.disconnectCalls, 0);
+    assert.ok(diagnostics.some((event) => event.operation === "session.create" &&
+      event.reason === "timeout" && event.requestId === "request-create"));
+  } finally {
+    release?.(abandoned);
+    await pending.catch(() => {});
+    await manager.stop();
+  }
+});
+
+test("a stalled SDK resume times out without silently starting another session", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const abandoned = client.session;
+  let release;
+  client.resumeSession = () => new Promise((resolve) => { release = resolve; });
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    sessionOperationTimeoutMs: 20, cleanupTimeoutMs: 10, stateIdleTtlMs: 100,
+  });
+  const headers = { "x-claude-code-session-id": "resume-deadline" };
+  await manager.start();
+  let pending;
+  try {
+    await manager.execute(request(), headers);
+    [...manager.states.values()][0].lastUsedAt = 0;
+    pending = manager.execute(request(), headers);
+    const outcome = await settlementWithin(pending);
+    assert.equal(outcome.error?.name, "SessionOperationTimeoutError");
+    assert.equal(client.created.length, 1, "timeout must not become a silent fresh-session fallback");
+    client.session = new FakeSession();
+    await manager.execute({
+      ...request(),
+      messages: [
+        { role: "user", content: "retained history" },
+        { role: "assistant", content: "acknowledged" },
+        { role: "user", content: "continue" },
+      ],
+    }, headers);
+    assert.match(client.session.sendCalls[0].prompt, /USER: retained history/);
+    assert.notEqual(client.created[0].sessionId, client.created[1].sessionId);
+    release(abandoned);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(client.deleted.includes(client.created[0].sessionId));
+    assert.equal(client.session.disconnectCalls, 0);
+  } finally {
+    release?.(abandoned);
+    await pending?.catch(() => {});
+    await manager.stop();
+  }
+});
+
+test("cancellation during SDK creation settles before a late RPC acknowledgment", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  let release;
+  client.createSessionImplementation = () => new Promise((resolve) => { release = resolve; });
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    sessionOperationTimeoutMs: 1000, cleanupTimeoutMs: 10,
+  });
+  const controller = new AbortController();
+  await manager.start();
+  const pending = manager.execute(request(), { "x-claude-code-session-id": "cancel-create" }, { signal: controller.signal });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    assert.equal((await settlementWithin(pending)).error?.name, "AbortError");
+    assert.equal(manager.stateCreations.size, 0);
+    release(client.session);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(manager.states.size, 0);
+    assert.equal(client.session.sendCalls.length, 0);
+    assert.equal(client.session.disconnectCalls, 1);
+  } finally {
+    release?.(client.session);
+    await pending.catch(() => {});
+    await manager.stop();
+  }
+});
+
+test("a queued cancellation returns promptly without overtaking the active turn", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  let release;
+  client.session.sendImplementation = async () => {
+    if (client.session.sendCalls.length === 1) await new Promise((resolve) => { release = resolve; });
+    client.session.emit("assistant.message", { content: "ok", toolRequests: [] });
+    client.session.emit("session.idle");
+  };
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  await manager.start();
+  const headers = { "x-claude-code-session-id": "queued-cancellation" };
+  const first = manager.execute(request(), headers);
+  const controller = new AbortController();
+  const cancelled = manager.execute(request(), headers, { signal: controller.signal });
+  const next = manager.execute(request(), headers);
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    assert.equal((await settlementWithin(cancelled)).error?.name, "AbortError");
+    assert.equal(client.session.sendCalls.length, 1);
+    release();
+    assert.equal((await first).message.content, "ok");
+    assert.equal((await next).message.content, "ok");
+    assert.equal(client.session.sendCalls.length, 2);
+  } finally {
+    release?.();
+    await Promise.allSettled([first, cancelled, next]);
+    await manager.stop();
+  }
+});
+
+test("bounds a hung SDK effort change and recovers with a fresh session", async () => {
+  const client = new FakeClient([{
+    id: "gpt-5.6-sol", supportedReasoningEfforts: ["low", "high"],
+    capabilities: { supports: { reasoningEffort: true } },
+  }]);
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    sessionOperationTimeoutMs: 20, cleanupTimeoutMs: 10,
+  });
+  const headers = { "x-claude-code-session-id": "effort-deadline" };
+  let release;
+  await manager.start();
+  try {
+    await manager.execute(request("low"), headers);
+    const abandoned = client.session;
+    abandoned.setModel = () => new Promise((resolve) => { release = resolve; });
+    const changed = manager.execute(request("high"), headers);
+    const outcome = await settlementWithin(changed);
+    release?.();
+    await changed.catch(() => {});
+    assert.equal(outcome.error?.name, "SessionOperationTimeoutError");
+    assert.equal(manager.states.size, 0);
+    client.session = new FakeSession();
+    assert.equal((await manager.execute(request("low"), headers)).message.content, "ok");
+    assert.equal(client.created.length, 2);
+    assert.equal(abandoned.disconnectCalls, 1);
+  } finally {
+    release?.();
+    await manager.stop();
+  }
+});
+
+test("shutdown cancels pending SDK creation instead of waiting indefinitely", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  let release;
+  client.createSessionImplementation = () => new Promise((resolve) => { release = resolve; });
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client, cleanupTimeoutMs: 10,
+  });
+  await manager.start();
+  const pending = manager.execute(request(), { "x-claude-code-session-id": "shutdown-create" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const stopped = manager.stop();
+  try {
+    const outcome = await settlementWithin(stopped);
+    release?.(client.session);
+    assert.equal(outcome.pending, undefined);
+    assert.equal(outcome.error, undefined);
+    await assert.rejects(pending, { name: "AbortError" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(manager.states.size, 0);
+  } finally {
+    release?.(client.session);
+    await Promise.allSettled([pending, stopped]);
+  }
+});
+
+test("a stopped manager can start again without inheriting its shutdown cancellation", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  await manager.start();
+  await manager.execute(request(), {});
+  await manager.stop();
+  await manager.start();
+  try {
+    assert.equal((await manager.execute(request(), {})).message.content, "ok");
+  } finally {
+    await manager.stop();
+  }
+});
+
 test("cold recovery defaults to 256 MiB and preserves an explicit replay limit", async () => {
   const history = "x".repeat(300 * 1024);
   for (const maxReplayBytes of [undefined, 256 * 1024]) {
@@ -2874,7 +3095,7 @@ test("still aborts a turn that is waiting for an unregistered tool call", async 
   }
 });
 
-test("still fails a turn whose state is evicted mid-wait", async () => {
+test("shutdown aborts a stalled tool-registration turn before evicting its state", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
   const manager = new SessionManager({
     baseDirectory: "/tmp",
@@ -2909,11 +3130,12 @@ test("still fails a turn whose state is evicted mid-wait", async () => {
   await manager.start();
   const rejected = assert.rejects(
     manager.execute(toolBody, { "x-claude-code-session-id": "session-1" }),
-    /Copilot session state was evicted/,
+    { name: "AbortError" },
   );
   await new Promise((resolve) => setImmediate(resolve));
   await manager.stop();
   await rejected;
+  assert.equal(manager.states.size, 0);
 });
 
 for (const model of PRIMARY_MODELS) {

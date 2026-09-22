@@ -121,6 +121,13 @@ daemon은 같은 bridge process 안에서 evicted session을 resume할 수 있�
 재시작 후에는 과거 provider state를 재사용하지 않고 bounded cold history replay를
 수행해 cross-run conversation leakage를 방지합니다.
 
+SDK session 생성·재개와 `setModel()`에는 추론 timeout과 별도로
+`SESSION_OPERATION_TIMEOUT_MS`(기본 60초)를 적용합니다. 호출 취소와 shutdown도
+이 대기를 중단하며, 큐에서 취소된 요청 때문에 후속 요청이 실행 중인 턴을
+추월하지 않습니다. 준비 실패 시 세션 generation을 바꾸고 늦게 도착한 응답은
+캐시에 설치하지 않고 정리합니다. Persistent daemon의 설정 지문에도 이 제한이
+포함됩니다.
+
 ### 모델 ID 변환
 
 Claude Code와 Copilot 모델 ID의 version separator 차이를 변환합니다.
@@ -141,25 +148,31 @@ GPT-5.6 모델과 GPT-6 Astra는 full ID를 사용합니다.
 
 ### 모델 discovery와 context
 
-Direct 실행 settings는 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 `/v1/models`
-discovery를 활성화합니다. LiteLLM settings는 활성화하지 않습니다. LiteLLM이
-`/v1/models`를 자체 alias로 응답하기 때문입니다. Endpoint는 Copilot SDK
-`listModels()` 결과를 backend ID 기준으로 중복 제거해 반환합니다.
+Runtime과 검증 catalog는 같은 `PRIMARY_MODELS`를 사용합니다. Direct 실행 설정의
+`modelPicker.replaceBuiltInOptions`로 주요 7개 모델을 정해진 순서대로 표시하며,
+Claude Code의 `Default` 별칭은 남습니다. Bridge 응답만 보고 추정하지 않고
+설치된 CLI의 native `supportedModels()` control 요청으로 실제 목록을 확인했습니다.
 
-- Claude Code 2.1.239가 기본 제공하는 Opus 5/4.8, Sonnet 5/4.6, Haiku 4.5는 중복 표시하지
-  않습니다.
-- Fable은 목록에서 제외합니다.
-- 나머지 Claude 모델은 dot version을 hyphen version으로 바꿉니다.
-- Claude가 아닌 모델은 discovery filter를 통과하도록
-  `github-copilot/claude-<copilot-model-id>` 형식으로 반환합니다.
-- 1M 이상 context를 선언한 non-native 모델에는 `[1m]` suffix를 붙입니다.
-- Display name에는 정확한 backend 모델 ID를 포함합니다.
+호환 client를 위한 gateway discovery는 유지하되 `/v1/models`에는 주요 모델 중
+built-in과 중복되지 않는 항목만 backend ID 기준으로 중복 제거해 반환합니다.
+`/v1/models?all=true`와 `ghcp-models`의 더 넓은 backend catalog는 유지하며,
+명시적인 모델 선택은 해당 모델이 사용 불가능할 때 실패합니다.
+LiteLLM은 독립적으로 설정한 gateway alias를 유지합니다.
 
-Bridge는 picker ID의 prefix와 suffix를 제거해 원래 Copilot 모델 ID를 복원합니다.
-Astra는 `github-copilot/claude-gpt-6-astra[1m]`으로 표시됩니다. Claude Code가
-unknown 모델을 200k context로 제한하지 않도록 GPT-5.6 Sol/Terra/Luna의
-1,050,000 token과 GPT-6 Astra의 1,178,000 token catalog context를 임시 launch
-settings에 전달합니다.
+네 GPT 모델은 launch와 picker 모두
+`github-copilot/claude-<copilot-model-id>[1m]`을 사용하고, bridge가 prefix/suffix를
+제거해 모델을 해석합니다. Claude Code frontend 예산은 1M으로, SDK catalog의
+GPT-5.6 1,050,000·Astra 1,178,000 한도 안에 둡니다. 임시 settings는 시작 모델의
+한도를 전역에 고정하는 대신 상속된 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 비웁니다.
+Claude 모델은 native 한도를 사용하며 Haiku로 바꾸면 200K로 돌아갑니다.
+Native 자동 압축과 사용자가 지정한 더 작은 window도 유지됩니다.
+
+Copilot의 input total에는 캐시 토큰이 포함되지만 Anthropic의 세 입력 범주는
+서로 겹치지 않습니다. 따라서 uncached input은
+`max(0, inputTokens - cacheReadTokens - cacheWriteTokens)`로 변환하고 원래 캐시
+카운터를 함께 전달합니다. 캐시를 사용한 230K 요청이 Claude Code에서 약 460K로
+보이는 문제를 막습니다. 명시적 0은 유지하며 usage 누락에만 기존 추정치를
+사용합니다. 이는 집계 수정이지 prompt-cache 제어 전체의 동등성을 뜻하지 않습니다.
 
 ### Reasoning effort
 
@@ -293,7 +306,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 - Anthropic Messages text, attachment, tool result와 SSE 변환
 - Claude/Copilot model ID와 family alias 변환
-- GPT-5.6과 GPT-6 Astra context override와 gateway discovery row
+- 주요 7개 피커, 모델별 context hint와 gateway discovery row
 - `ultracode`에서 `xhigh`로의 변환과 model별 unsupported effort 조정
 - SDK session 생성과 `session.setModel()`을 통한 reasoning effort 변경
 - Claude Code root session과 subagent의 SDK session 분리
@@ -305,7 +318,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - Request cancellation, state eviction, bounded replay, 실제 usage, strict model
   selection, request policy, daemon registry, tool-result idempotency
 - JSON/SSE의 명시적 usage 0은 추정치로 대체하지 않습니다. 누락/null일 때만
-  기존 fallback을 사용하며, Claude Code result envelope의 입력 토큰이 0이면
+  기존 fallback을 사용하며, Claude Code result envelope의 캐시 포함 입력 총합이 0이면
   실제 검증은 여전히 실패합니다.
 
 `npm run verify`는 실제 모델로 실제 경로를 구동합니다.
@@ -347,8 +360,8 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
 
-전체 실행 `2026-09-22T00-52-51-013Z`는 모델 작업자 3개와 모델별 시나리오 작업자
-2개로 77/77 통과했습니다. 앞선 7 × 2 실행의 네이티브 백그라운드 정지 이후
+피커·롱턴 수정을 포함한 전체 실행 `2026-09-22T03-37-17-139Z`는 모델 작업자 3개와
+모델별 시나리오 작업자 2개로 77/77 통과했습니다. 앞선 7 × 2 실행의 네이티브 백그라운드 정지 이후
 랩탑의 기동 부하를 낮춘 설정이며 기본값, timeout 예산, 통과 기준을 낮추지는
 않았습니다. 분리된 실행 이력은 README에, 최종 실행만의 결과는
 [검증 결과](VERIFICATION_KO.md)에 기록합니다.

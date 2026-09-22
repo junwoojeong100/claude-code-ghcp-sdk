@@ -43,6 +43,9 @@ test("rejects invalid numeric bridge settings before startup", () => {
   const invalidReplayLimit = runServerWith({ MAX_REPLAY_BYTES: "0" });
   assert.equal(invalidReplayLimit.status, 1);
   assert.match(invalidReplayLimit.stderr, /MAX_REPLAY_BYTES must be a positive integer/);
+  const invalidPreparationLimit = runServerWith({ SESSION_OPERATION_TIMEOUT_MS: "0" });
+  assert.equal(invalidPreparationLimit.status, 1);
+  assert.match(invalidPreparationLimit.stderr, /SESSION_OPERATION_TIMEOUT_MS must be a positive integer/);
 });
 
 let serverImports = 0;
@@ -52,7 +55,7 @@ async function offlineServer(t, overrides = {}) {
     HOST: "127.0.0.1", PORT: "4142", BRIDGE_API_KEY: "test-only",
     MAX_BODY_BYTES: undefined, MAX_REPLAY_BYTES: undefined,
     MAX_STATES: "", MAX_TOOL_RESULTS: "", CLEANUP_TIMEOUT_MS: "",
-    PENDING_TOOL_WAIT_MS: "", STATE_IDLE_TTL_MS: "",
+    PENDING_TOOL_WAIT_MS: "", STATE_IDLE_TTL_MS: "", SESSION_OPERATION_TIMEOUT_MS: "",
     ...overrides,
   };
   const previous = new Map(Object.keys(values).map((name) => [name, process.env[name]]));
@@ -85,6 +88,12 @@ async function offlineServer(t, overrides = {}) {
   assert.ok(handler && manager);
   return { handler, manager };
 }
+
+test("configures a bounded SDK preparation wait independently of the model-turn timeout", async (t) => {
+  const { manager } = await offlineServer(t, { SESSION_OPERATION_TIMEOUT_MS: "250" });
+  assert.equal(manager.sessionOperationTimeoutMs, 250);
+  assert.equal(manager.turnTimeoutMs, 300000);
+});
 
 async function tokenCountRequest(handler, chunks) {
   const req = {
@@ -177,6 +186,14 @@ test("measured zero usage is preserved while missing usage keeps the estimate", 
   const measured = await messageRequest(handler, body);
   assert.equal(measured.body.usage.input_tokens, 0);
   assert.equal(measured.body.usage.output_tokens, 0);
+  usage = { inputTokens: 230000, cacheReadTokens: 210000, cacheWriteTokens: 19997, outputTokens: 7 };
+  const cached = await messageRequest(handler, body);
+  assert.equal(cached.body.usage.input_tokens, 3);
+  assert.equal(
+    cached.body.usage.input_tokens + cached.body.usage.cache_read_input_tokens +
+      cached.body.usage.cache_creation_input_tokens,
+    230000,
+  );
   usage = null;
   const estimated = await messageRequest(handler, body);
   assert.ok(estimated.body.usage.input_tokens > 0);

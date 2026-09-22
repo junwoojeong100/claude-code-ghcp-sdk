@@ -84,7 +84,7 @@ export function daemonConfigFingerprint(env, requestedPort) {
   const configuration = Object.fromEntries(
     Object.keys(env)
       .filter((name) =>
-        /^(COPILOT_|CLEANUP_TIMEOUT_MS$|GH_CONFIG_DIR$|GH_TOKEN$|GITHUB_TOKEN$|HOME$|HTTPS?_PROXY$|NO_PROXY$|LOG_LEVEL$|MAX_|PENDING_TOOL_WAIT_MS$|STATE_IDLE_TTL_MS$)/.test(
+        /^(COPILOT_|CLEANUP_TIMEOUT_MS$|GH_CONFIG_DIR$|GH_TOKEN$|GITHUB_TOKEN$|HOME$|HTTPS?_PROXY$|NO_PROXY$|LOG_LEVEL$|MAX_|PENDING_TOOL_WAIT_MS$|SESSION_OPERATION_TIMEOUT_MS$|STATE_IDLE_TTL_MS$)/.test(
           name,
         ),
       )
