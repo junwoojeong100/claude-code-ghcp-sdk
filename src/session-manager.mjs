@@ -17,8 +17,9 @@ import {
 import {
   resolveCopilotModel,
   resolveReasoningEffort,
+  sdkContextOptionsFor,
 } from "./model-map.mjs";
-import { applyRequestPolicy } from "./request-policy.mjs";
+import { applyRequestPolicy, BridgeRequestError } from "./request-policy.mjs";
 
 const CONTINUATION_PROMPT =
   "Continue from the prior conversation and follow the current system instructions.";
@@ -35,6 +36,7 @@ const DEFAULT_MAX_TOOL_RESULTS = 32;
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
 const DEFAULT_SESSION_OPERATION_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_TURN_DURATION_MS = 30 * 60_000;
 // Claude can call a tool the client never declared (ExitPlanMode while in plan
 // mode). Such a call is expected never to be registered, so no result can ever
 // arrive -- but that is an expectation, not a guarantee: the runtime that
@@ -193,6 +195,12 @@ function createAbortError() {
   return error;
 }
 
+function contextLimitError(tokenLimit) {
+  return new BridgeRequestError(
+    `prompt is too long: GitHub Copilot would reduce conversation history${tokenLimit ? ` at ${tokenLimit} input tokens` : ""}. Compact the conversation before retrying.`,
+  );
+}
+
 export class SessionOperationTimeoutError extends Error {
   constructor(operation, timeoutMs) {
     super(`Timed out waiting for GitHub Copilot ${operation} after ${timeoutMs}ms.`);
@@ -226,8 +234,10 @@ function aggregateUsage(events) {
         usage.contentFilterTriggered ||
         Boolean(event.contentFilterTriggered),
       finishReason: event.finishReason || usage.finishReason,
-      inputTokens: usage.inputTokens + (event.inputTokens || 0),
-      outputTokens: usage.outputTokens + (event.outputTokens || 0),
+      inputTokens: usage.inputTokens == null || event.inputTokens == null
+        ? undefined : usage.inputTokens + event.inputTokens,
+      outputTokens: usage.outputTokens == null || event.outputTokens == null
+        ? undefined : usage.outputTokens + event.outputTokens,
       reasoningTokens:
         usage.reasoningTokens + (event.reasoningTokens || 0),
     }),
@@ -301,6 +311,7 @@ export class SessionManager {
     preferredModel,
     logLevel = "error",
     turnTimeoutMs = 300_000,
+    maxTurnDurationMs = DEFAULT_MAX_TURN_DURATION_MS,
     maxReplayBytes = DEFAULT_MAX_REPLAY_BYTES,
     maxStates = DEFAULT_MAX_STATES,
     maxToolResults = DEFAULT_MAX_TOOL_RESULTS,
@@ -321,6 +332,7 @@ export class SessionManager {
       });
     this.preferredModel = preferredModel;
     this.turnTimeoutMs = turnTimeoutMs;
+    this.maxTurnDurationMs = maxTurnDurationMs;
     this.maxReplayBytes = maxReplayBytes;
     this.maxStates = maxStates;
     this.maxToolResults = maxToolResults;
@@ -486,6 +498,17 @@ export class SessionManager {
       signal,
       diagnostics,
     });
+    if (state.contextReduction) {
+      const tokenLimit = state.contextReduction.tokenLimit ?? state.contextLimit;
+      emitTurnDiagnostic(this.onDiagnostic, {
+        event: "bridge.context_limit",
+        model: state.model,
+        phase: "between_requests",
+        ...(Number.isSafeInteger(tokenLimit) ? { tokenLimit } : {}),
+      });
+      await this.#evictState(state.identity.key, state, { abort: true, deletePersisted: true });
+      throw contextLimitError(tokenLimit);
+    }
     const currentHistory = historySnapshot(body.messages);
     const familyHead = this.familyHeads.get(state.identity.familyKey);
     // The family queue serializes identity changes. A cached or resumed state
@@ -583,12 +606,14 @@ export class SessionManager {
 
     const creation = (async () => {
     const tools = createSdkTools(body.tools);
+    const contextOptions = sdkContextOptionsFor(this.models.find((entry) => entry.id === model));
     const generation = this.sessionGenerations.get(key) || 0;
     const sessionId = `claude-ghcp-${hash(
       `${this.anonymousSessionId}:${key}:${generation}`,
     ).slice(0, 32)}`;
     const sessionOptions = {
       model,
+      ...contextOptions,
       availableTools: tools.map((tool) => `custom:${tool.name}`),
       tools,
       toolSearch: { enabled: false },
@@ -637,6 +662,7 @@ export class SessionManager {
 
     const state = {
       model,
+      contextOptions,
       activeTurns: 1,
       reasoningEffort,
       session,
@@ -666,12 +692,22 @@ export class SessionManager {
       this.#forgetPendingRequest(state, event.data.requestId);
     });
     for (const eventType of [
+      "session.compaction_start",
       "session.compaction_complete",
       "session.context_cleared",
       "session.snapshot_rewind",
       "session.truncation",
     ]) {
-      session.on(eventType, () => {
+      session.on(eventType, (event) => {
+        if (event.agentId) return;
+        if (eventType === "session.compaction_start" ||
+            event.data?.tokensRemovedDuringTruncation > 0 ||
+            event.data?.messagesRemovedDuringTruncation > 0 ||
+            event.data?.tokensRemoved > 0 || event.data?.messagesRemoved > 0) {
+          state.contextReduction = {
+            tokenLimit: Number.isSafeInteger(event.data?.tokenLimit) ? event.data.tokenLimit : state.contextLimit,
+          };
+        }
         state.completedToolCalls.clear();
         state.deliveredToolPrompts.clear();
         state.pendingByToolCallId.clear();
@@ -685,6 +721,20 @@ export class SessionManager {
         state.pendingRequestWaiters.clear();
       });
     }
+    session.on("session.usage_info", (event) => {
+      if (event.agentId || !Number.isSafeInteger(event.data?.tokenLimit)) return;
+      const { tokenLimit, currentTokens } = event.data;
+      if (state.contextLimit !== tokenLimit) {
+        state.contextLimit = tokenLimit;
+        emitTurnDiagnostic(this.onDiagnostic, {
+          event: "bridge.context_budget",
+          model,
+          contextTier: contextOptions.contextTier ?? "default",
+          tokenLimit,
+          ...(Number.isSafeInteger(currentTokens) ? { currentTokens } : {}),
+        });
+      }
+    });
 
     this.states.set(key, state);
     await this.#enforceStateLimit(key);
@@ -921,9 +971,13 @@ export class SessionManager {
     if (reasoningEffort === state.reasoningEffort) return;
 
     try {
+      const options = {
+        ...state.contextOptions,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      };
       await this.#sessionOperation("session.set_model", () => state.session.setModel(
         state.model,
-        reasoningEffort ? { reasoningEffort } : undefined,
+        Object.keys(options).length ? options : undefined,
       ), { signal, diagnostics });
     } catch (error) {
       state.invalidated = true;
@@ -945,6 +999,9 @@ export class SessionManager {
       let triggerFinished = false;
       let deferredCompletion = null;
       let aborting = false;
+      let timeout;
+      let hardTimeout;
+      let lastProgressAt = startedAt;
       const report = (event, details = {}) => {
         const outstanding = (name) => {
           const rpc = diagnostics.rpc[name];
@@ -963,6 +1020,7 @@ export class SessionManager {
           model: state.model,
           elapsedMs: Math.round(performance.now() - diagnostics.startedAt),
           turnElapsedMs: Math.round(performance.now() - startedAt),
+          idleMs: Math.round(performance.now() - lastProgressAt),
           stage,
           triggerFinished,
           turnStarted,
@@ -982,7 +1040,7 @@ export class SessionManager {
       const terminate = (error, reason) => {
         if (settled || aborting) return;
         aborting = true;
-        report(reason === "timeout" ? "bridge.turn_timeout" : "bridge.turn_aborted");
+        report(reason === "timeout" || reason === "duration_limit" ? "bridge.turn_timeout" : "bridge.turn_aborted", { reason });
         const abortStartedAt = performance.now();
         let abortTimer;
         const abortDeadline = new Promise((resolve) => {
@@ -1009,17 +1067,26 @@ export class SessionManager {
           });
       };
       const onAbort = () => terminate(createAbortError(), "client_abort");
-      const timeout = setTimeout(() => {
-        terminate(
+      const armIdleTimeout = () => {
+        if (settled || aborting) return;
+        lastProgressAt = performance.now();
+        clearTimeout(timeout);
+        timeout = setTimeout(() => terminate(
           new Error("Timed out waiting for the GitHub Copilot model turn."),
           "timeout",
-        );
-      }, this.turnTimeoutMs);
+        ), this.turnTimeoutMs);
+      };
+      armIdleTimeout();
+      hardTimeout = setTimeout(() => terminate(
+        new Error(`GitHub Copilot turn exceeded the hard duration limit (${this.maxTurnDurationMs}ms).`),
+        "duration_limit",
+      ), this.maxTurnDurationMs);
 
       const settle = (error, message) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        clearTimeout(hardTimeout);
         signal?.removeEventListener("abort", onAbort);
         for (const unsubscribe of subscriptions) unsubscribe();
         if (error) reject(error);
@@ -1120,7 +1187,7 @@ export class SessionManager {
       };
 
       const onMessage = (event) => {
-        if (event.agentId) return;
+        if (event.agentId || aborting || settled) return;
         turnStarted = true;
         messages.push(event.data);
         const { chunkCount, chunkIndex } = event.data;
@@ -1147,16 +1214,24 @@ export class SessionManager {
 
       const subscribe = (type, handler = () => {}) => state.session.on(type, (event) => {
         diagnostics.record(type, event.agentId ? "agent" : "root");
+        if (!event.agentId && (
+          ["assistant.turn_start", "assistant.message", "assistant.turn_end"].includes(type) ||
+          (["assistant.message_delta", "assistant.reasoning_delta"].includes(type) && event.data?.deltaContent?.length) ||
+          (type === "assistant.tool_call_delta" && event.data?.inputDelta?.length)
+        )) armIdleTimeout();
         handler(event);
       });
       subscriptions.push(
         subscribe("assistant.turn_start", onTurnStart),
         subscribe("assistant.message", onMessage),
         subscribe("assistant.message_delta", (event) => {
-          onEvent?.(event);
+          if (!aborting && !settled) onEvent?.(event);
         }),
         subscribe("assistant.tool_call_delta", (event) => {
-          onEvent?.(event);
+          if (!aborting && !settled) onEvent?.(event);
+        }),
+        subscribe("assistant.reasoning_delta", (event) => {
+          if (!aborting && !settled) onEvent?.(event);
         }),
         subscribe("assistant.usage", (event) => {
           if (!event.agentId) usageEvents.push(event.data);
@@ -1164,6 +1239,16 @@ export class SessionManager {
         subscribe("assistant.turn_end", onTurnEnd),
         subscribe("session.idle", finishTurn),
         subscribe("session.error", onError),
+        ...["session.compaction_start", "session.truncation"].map((type) => subscribe(type, (event) => {
+          if (event.agentId || settled || aborting || !state.contextReduction) return;
+          state.invalidated = true;
+          const tokenLimit = state.contextReduction.tokenLimit;
+          report("bridge.context_limit", {
+            phase: "active_turn",
+            ...(Number.isSafeInteger(tokenLimit) ? { tokenLimit } : {}),
+          });
+          terminate(contextLimitError(tokenLimit), "context_limit");
+        })),
         subscribe("external_tool.requested"),
         subscribe("external_tool.completed"),
       );

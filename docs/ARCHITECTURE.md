@@ -112,6 +112,11 @@ successor overtake an active turn. Failed setup advances the session generation;
 late replies are discarded and cleaned up rather than installed in the cache.
 The persistent daemon's configuration fingerprint includes this deadline.
 
+The turn's idle deadline is distinct from its hard duration limit. Root text,
+reasoning and tool-input deltas rearm the idle timer; empty deltas and subagent
+traffic do not. The hard cap bounds even an endlessly streaming turn. Both
+deadlines are included in daemon configuration fingerprints.
+
 ### Model ID Translation
 
 Translates the version-separator difference between Claude Code and Copilot model IDs.
@@ -152,12 +157,30 @@ global startup window. Claude models retain their native limits; switching to
 Haiku restores 200K. Native auto-compaction and explicit smaller windows remain
 active.
 
+The four primary GPT sessions also opt into `contextTier: "long_context"` and
+forward only discovered numeric context/prompt/output capability limits when
+creating, resuming or changing effort. The catalogue's large window alone does
+not select the runtime tier. Live measurements found an Astra default input
+budget of 272K; the explicit long tier plus its catalogue limits yields 1.05M.
+`bridge.context_budget` logs the effective SDK budget.
+
+SDK compaction can run even with `infiniteSessions.enabled` false. Root
+compaction/truncation is tracked during and between requests rather than silently
+reusing reduced backend history. Such states are evicted, and the request fails
+with a recognizable `prompt is too long` invalid-request error. HTTP streaming
+headers are deferred until model output/reasoning starts so pre-output failures
+retain HTTP 400 and trigger Claude Code's native compaction recovery. Once
+streaming starts, keepalive comments continue during pauses. Reasoning progress
+can start that stream without exposing reasoning text.
+
 Copilot usage reports total input including cached tokens. Anthropic reports
 three disjoint categories, so uncached input is
 `max(0, inputTokens - cacheReadTokens - cacheWriteTokens)`, alongside the original
 cache counters. This prevents a cached 230K-token request from appearing close
 to 460K in Claude Code. Explicit zeros stay zero; only missing usage uses the
-existing estimate. This fixes accounting, not full prompt-cache-control parity.
+existing estimate. A missing input/output counter in any SDK usage event keeps
+that aggregate unknown rather than converting it to a measured zero. This fixes
+accounting, not full prompt-cache-control parity.
 
 ### Reasoning Effort
 
@@ -325,8 +348,11 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 `npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
 
-The full run `2026-09-22T03-37-17-139Z`, including the picker and long-turn fixes,
-passed 77/77 with three model workers and two scenario workers per model. This laptop profile reduces startup pressure
+The full run `2026-09-22T12-29-58-559Z` revalidated commit `d84bd22`, including
+SDK context-tier alignment, native overflow recovery and progress-based turn
+deadlines. It passed 77/77 in 812 seconds with three model workers and two
+scenario workers per model, with unchanged code and user settings.
+This laptop profile reduces startup pressure
 after native background stalls in earlier 7 × 2 runs; defaults, timeout budgets
 and pass criteria are not reduced. See the README for the separate run history
 and [Verification Results](VERIFICATION.md) for the final run alone.

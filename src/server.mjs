@@ -66,6 +66,11 @@ const sessionOperationTimeoutMs = readPositiveIntegerEnv(
   "SESSION_OPERATION_TIMEOUT_MS",
   60_000,
 );
+const turnTimeoutMs = readPositiveIntegerEnv("TURN_IDLE_TIMEOUT_MS", 300_000);
+const maxTurnDurationMs = readPositiveIntegerEnv("TURN_MAX_DURATION_MS", 30 * 60_000);
+for (const [name, value] of [["TURN_IDLE_TIMEOUT_MS", turnTimeoutMs], ["TURN_MAX_DURATION_MS", maxTurnDurationMs]]) {
+  if (value > 2_147_483_647) throw new Error(`${name} exceeds the supported timer range.`);
+}
 
 if (
   !LOOPBACK_HOSTS.has(host) &&
@@ -93,6 +98,8 @@ const manager = new SessionManager({
   },
   pendingToolWaitMs,
   sessionOperationTimeoutMs,
+  turnTimeoutMs,
+  maxTurnDurationMs,
   stateIdleTtlMs,
 });
 await manager.start();
@@ -235,50 +242,67 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  let body;
-  try {
-    body = await readBody(req);
-    validateBody(body);
-  } catch (error) {
-    writeApiError(res, 400, "invalid_request_error", error.message);
-    return;
-  }
-
-  if (requestPath === TOKEN_COUNT_PATH) {
-    res.setHeader("x-ghcp-token-count-method", "estimated");
-    writeJson(res, 200, { input_tokens: estimateTokens(body) });
-    return;
-  }
-
-  const streaming = Boolean(body.stream);
   const abortController = new AbortController();
   const abortRequest = () => {
     if (!res.writableEnded) abortController.abort();
   };
+  // Listen before awaiting the upload: a close during body reading must not
+  // become abandoned inference queued after the client has already gone away.
+  // IncomingMessage's normal "close" means the upload finished, not cancellation.
   req.once("aborted", abortRequest);
   res.once("close", abortRequest);
   let keepAlive;
-  let stream;
-  const responseId = `msg_${requestId.replaceAll("-", "")}`;
-  const inputTokens = estimateTokens(body);
-  if (streaming) {
-    startSse(res);
-    keepAlive = setInterval(() => res.write(": ping\n\n"), 15_000);
-    stream = new AnthropicSseStream(res, {
-      id: responseId,
-      inputTokens,
-    });
-  }
+  let streaming = false;
 
   try {
+    if (req.aborted || res.destroyed) abortRequest();
+    abortController.signal.throwIfAborted();
+
+    let body;
+    try {
+      body = await readBody(req);
+      validateBody(body);
+    } catch (error) {
+      if (!res.destroyed) writeApiError(res, 400, "invalid_request_error", error.message);
+      return;
+    }
+
+    // Flags also cover a disconnect whose event preceded listener registration.
+    // Check before starting SSE or submitting any work to the session manager.
+    if (req.aborted || res.destroyed) abortRequest();
+    abortController.signal.throwIfAborted();
+
+    if (requestPath === TOKEN_COUNT_PATH) {
+      res.setHeader("x-ghcp-token-count-method", "estimated");
+      writeJson(res, 200, { input_tokens: estimateTokens(body) });
+      return;
+    }
+
+    streaming = Boolean(body.stream);
+    let stream;
+    let resolvedModel;
+    const responseId = `msg_${requestId.replaceAll("-", "")}`;
+    const inputTokens = estimateTokens(body);
+    const ensureStream = (model = resolvedModel) => {
+      if (!stream) {
+        if (!model) throw new Error("The model must be resolved before streaming.");
+        startSse(res);
+        keepAlive = setInterval(() => res.write(": ping\n\n"), 15_000);
+        stream = new AnthropicSseStream(res, { id: responseId, inputTokens });
+        stream.start(model);
+      }
+      return stream;
+    };
+
     const result = await manager.execute(body, req.headers, {
       requestId,
       responseId,
-      onReady: ({ model }) => stream?.start(model),
-      onEvent: (event) => stream?.handleSdkEvent(event),
+      onReady: ({ model }) => { resolvedModel = model; },
+      onEvent: (event) => {
+        if (streaming && !event.agentId) ensureStream().handleSdkEvent(event);
+      },
       signal: abortController.signal,
     });
-    clearInterval(keepAlive);
     const response = {
       id: responseId,
       model: result.model,
@@ -287,10 +311,9 @@ const server = http.createServer(async (req, res) => {
       usage: result.usage,
     };
 
-    if (streaming) stream.finish(response);
+    if (streaming) ensureStream(result.model).finish(response);
     else writeJsonMessage(res, response);
   } catch (error) {
-    clearInterval(keepAlive);
     if (error.name === "AbortError") {
       if (!res.destroyed && !res.headersSent) {
         writeApiError(
@@ -304,14 +327,14 @@ const server = http.createServer(async (req, res) => {
     }
     console.error(`[${requestId}] ${error.name}: ${error.message}`);
     if (res.destroyed) return;
-    if (streaming) {
-      writeSseError(res, error);
-      return;
-    }
     const invalidRequest =
       error instanceof BridgeRequestError ||
       error instanceof ModelUnavailableError ||
       error instanceof ReasoningEffortUnavailableError;
+    if (streaming && res.headersSent) {
+      writeSseError(res, error, invalidRequest ? "invalid_request_error" : "api_error");
+      return;
+    }
     writeApiError(
       res,
       invalidRequest ? 400 : 500,
@@ -319,6 +342,7 @@ const server = http.createServer(async (req, res) => {
       error.message,
     );
   } finally {
+    clearInterval(keepAlive);
     req.removeListener("aborted", abortRequest);
     res.removeListener("close", abortRequest);
   }

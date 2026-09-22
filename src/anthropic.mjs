@@ -452,11 +452,11 @@ export class AnthropicSseStream {
   }
 }
 
-export function writeSseError(res, error) {
+export function writeSseError(res, error, type = "api_error") {
   event(res, "error", {
     type: "error",
     error: {
-      type: "api_error",
+      type,
       message: error instanceof Error ? error.message : String(error),
     },
   });
