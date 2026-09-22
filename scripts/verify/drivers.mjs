@@ -1137,7 +1137,7 @@ async function driveLongContext(ctx) {
  * `bin/claude-ghcp`, and the daemon it leaves behind. So this one shells out
  * to the launcher exactly as a user would.
  *
- * GHCP_DAEMON_DIR is slot-local, which is what makes seven models safe to run
+ * GHCP_DAEMON_DIR is slot-local, which is what makes every primary model safe to run
  * at once: the registry, log and lock the daemon arbitrates on are per-slot
  * files, so concurrent slots cannot adopt or stop one another's daemon.
  *

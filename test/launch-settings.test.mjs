@@ -36,9 +36,8 @@ function writeSettings(model, env = {}) {
   }
 }
 
-test("uses model-scoped GPT 5.6 context hints and clears global context overrides", () => {
-  for (const variant of ["sol", "terra", "luna"]) {
-    const model = `gpt-5.6-${variant}`;
+test("uses model-scoped GPT-6 and retained GPT-5.6 context hints and clears global context overrides", () => {
+  for (const model of ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
     const settings = writeSettings(model);
     assert.equal(settings.env.ANTHROPIC_MODEL, `github-copilot/claude-${model}[1m]`);
     assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
@@ -74,9 +73,10 @@ test("clears inherited context overrides without replacing recognized Claude lim
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
   assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
   assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5");
   assert.equal(
     settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME,
-    "GitHub Copilot Claude Opus 5",
+    "GitHub Copilot Claude Opus 5.5",
   );
   assert.equal(
     settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME,
@@ -88,18 +88,27 @@ test("clears inherited context overrides without replacing recognized Claude lim
   );
 });
 
-test("temporary Direct settings curate exactly seven picker options without a routing allowlist", () => {
-  const settings = writeSettings("gpt-6-astra");
-  assert.equal(settings.modelPicker.replaceBuiltInOptions, true);
-  assert.equal(settings.modelPicker.options.length, 7);
-  assert.deepEqual(settings.modelPicker.options.map((option) => option.model), [
-    "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5",
-    "github-copilot/claude-gpt-5.6-sol[1m]",
-    "github-copilot/claude-gpt-5.6-terra[1m]",
-    "github-copilot/claude-gpt-5.6-luna[1m]",
-    "github-copilot/claude-gpt-6-astra[1m]",
-  ]);
-  assert.equal(settings.availableModels, undefined);
+test("temporary Direct settings pin exactly six picker options without a routing allowlist", () => {
+  for (const model of ["gpt-6-astra", "claude-opus-5.5", "gpt-5.6-sol"]) {
+    const settings = writeSettings(model);
+    assert.equal(settings.modelPicker.replaceBuiltInOptions, true);
+    assert.equal(settings.modelPicker.options.length, 6);
+    assert.deepEqual(settings.modelPicker.options.map((option) => option.model), [
+      "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5",
+      "github-copilot/claude-gpt-6-astra[1m]",
+      "github-copilot/claude-gpt-6-sol[1m]",
+      "github-copilot/claude-gpt-6-luna[1m]",
+    ]);
+    assert.equal(settings.availableModels, undefined);
+  }
+});
+
+test("launching Claude Opus 5.5 uses the Opus family row instead of a custom option", () => {
+  const settings = writeSettings("claude-opus-5.5");
+  assert.equal(settings.env.ANTHROPIC_MODEL, "claude-opus-5-5");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5");
+  assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
+  assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
 });
 
 test("enables native Claude ToolSearch only with explicit GHCP opt-in", () => {

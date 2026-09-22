@@ -9,9 +9,9 @@
 # The string after anthropic/ is sent as the request body's model.
 
 model_list:
-  - model_name: claude-opus-5
+  - model_name: claude-opus-5.5
     litellm_params:
-      model: anthropic/claude-opus-5
+      model: anthropic/claude-opus-5.5
       api_base: os.environ/GHCP_BRIDGE_URL
       api_key: os.environ/GHCP_BRIDGE_TOKEN
 
@@ -37,27 +37,21 @@ model_list:
       api_base: os.environ/GHCP_BRIDGE_URL
       api_key: os.environ/GHCP_BRIDGE_TOKEN
 
-  - model_name: gpt-5.6-sol
-    litellm_params:
-      model: anthropic/gpt-5.6-sol
-      api_base: os.environ/GHCP_BRIDGE_URL
-      api_key: os.environ/GHCP_BRIDGE_TOKEN
-
-  - model_name: gpt-5.6-terra
-    litellm_params:
-      model: anthropic/gpt-5.6-terra
-      api_base: os.environ/GHCP_BRIDGE_URL
-      api_key: os.environ/GHCP_BRIDGE_TOKEN
-
-  - model_name: gpt-5.6-luna
-    litellm_params:
-      model: anthropic/gpt-5.6-luna
-      api_base: os.environ/GHCP_BRIDGE_URL
-      api_key: os.environ/GHCP_BRIDGE_TOKEN
-
   - model_name: gpt-6-astra
     litellm_params:
       model: anthropic/gpt-6-astra
+      api_base: os.environ/GHCP_BRIDGE_URL
+      api_key: os.environ/GHCP_BRIDGE_TOKEN
+
+  - model_name: gpt-6-sol
+    litellm_params:
+      model: anthropic/gpt-6-sol
+      api_base: os.environ/GHCP_BRIDGE_URL
+      api_key: os.environ/GHCP_BRIDGE_TOKEN
+
+  - model_name: gpt-6-luna
+    litellm_params:
+      model: anthropic/gpt-6-luna
       api_base: os.environ/GHCP_BRIDGE_URL
       api_key: os.environ/GHCP_BRIDGE_TOKEN
 

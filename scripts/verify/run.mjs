@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Verification runner: the full scenario catalog x 7 primary Copilot models.
+ * Verification runner: the full scenario catalog x 6 primary Copilot models.
  *
  * Contract:
  *  - Every slot runs the real path. Real Claude Code binary, real bridge, real
@@ -12,7 +12,7 @@
  *
  * Usage:
  *   node scripts/verify/run.mjs
- *   node scripts/verify/run.mjs --models claude-opus-5 --scenarios v01-repo-recon
+ *   node scripts/verify/run.mjs --models claude-opus-5.5 --scenarios v01-repo-recon
  *   node scripts/verify/run.mjs --dry-run
  *   PENDING_TOOL_WAIT_MS=30000 node scripts/verify/run.mjs --timeout-scale 2
  */
