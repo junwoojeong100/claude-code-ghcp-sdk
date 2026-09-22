@@ -961,12 +961,18 @@ async function driveSessionResume(ctx) {
 
   const first = await run1(
     ctx,
-    `Note these deployment facts for later: the build id is ${fixture.buildId} and the deploy window is ${fixture.deployWindow}. ` +
-      "Reply with just: noted.",
+    `The example deployment has build id ${fixture.buildId} and deploy window ${fixture.deployWindow}. Keep these literal values in this conversation only. ` +
+      "Do not use tools, write files, or save persistent memory. Do not add or infer a calendar date. Reply with just: noted.",
     { extraArgs: ["--session-id", sessionId], label: "seed" },
   );
 
   const checks = new Checks();
+  // Seed memory writes can be auto-loaded later, bypassing transcript inheritance.
+  checks.add(
+    "seed used no tools",
+    first.toolUses.length === 0,
+    `tools: ${first.toolNames().join(", ") || "none"}`,
+  );
   if (phaseVerdict("seed", first, ctx).outcome !== "pass") {
     return verdict(checks, first, ctx, { phase: "seed", sessionId }, { seed: first, resume: null, fork: null });
   }
@@ -975,12 +981,18 @@ async function driveSessionResume(ctx) {
   // A separate process: resume has to reload state, not remember it in RAM.
   const second = await run1(
     ctx,
-    "What build id did I give you earlier? Reply with only the id.",
+    "What is the example deployment's build id? Reply with only the original value from our conversation. " +
+      "Do not use tools, files, or persistent memory.",
     { extraArgs: ["--resume", sessionId], label: "resume" },
   );
 
   checks.add("resumed turn kept the session id", second.sessionId === sessionId, `${second.sessionId}`);
   checks.add("recalls the build id", mentions(second.answer, fixture.buildId), second.answer.slice(0, 160));
+  checks.add(
+    "resume used no tools",
+    second.toolUses.length === 0,
+    `tools: ${second.toolNames().join(", ") || "none"}`,
+  );
   checks.add(
     "answered from context, not from the filesystem",
     !second.usedTool("Read", "Grep", "Glob", "Bash"),
@@ -996,10 +1008,16 @@ async function driveSessionResume(ctx) {
   // the conversation it was supposed to branch away from.
   const forked = await run1(
     ctx,
-    "What deploy window did I give you earlier? Reply with only the window.",
+    "What is the example deployment's deploy window? Reply with only the original weekday, time, and timezone from our conversation, " +
+      "without adding a calendar date. Do not use tools, files, or persistent memory.",
     { extraArgs: ["--resume", sessionId, "--fork-session"], label: "fork" },
   );
 
+  checks.add(
+    "fork used no tools",
+    forked.toolUses.length === 0,
+    `tools: ${forked.toolNames().join(", ") || "none"}`,
+  );
   checks.add(
     "fork inherited the seed turn's context",
     mentions(forked.answer, fixture.deployWindow),
@@ -1151,7 +1169,12 @@ async function driveDaemonBackground(ctx) {
     // Cleanup calls have no label; every command used as evidence must complete.
     if (label) {
       const { stdout, stderr, error, ...completion } = out;
-      evidence.commands[label] = { ...completion, error: error?.message ?? null };
+      const prefix = `command-${label.replaceAll(" ", "-")}`;
+      const stdoutFile = `${prefix}.stdout.log`;
+      const stderrFile = `${prefix}.stderr.log`;
+      fs.writeFileSync(path.join(slotDir, stdoutFile), stdout ?? "", { mode: 0o600 });
+      fs.writeFileSync(path.join(slotDir, stderrFile), stderr ?? "", { mode: 0o600 });
+      evidence.commands[label] = { ...completion, error: error?.message ?? null, stdoutFile, stderrFile };
       checks.add(`${label}: command completed`, out.completed === true,
         `exit=${out.status} signal=${out.signal} ${error?.message ?? ""}`);
     }
@@ -1168,6 +1191,38 @@ async function driveDaemonBackground(ctx) {
   };
 
   let backgroundId = null;
+  const preserveDaemonDiagnostics = () => {
+    if (evidence.daemonDiagnostics) return;
+    const diagnostics = { capturedAt: new Date().toISOString(), logs: {}, backgroundState: null, errors: [] };
+    evidence.daemonDiagnostics = diagnostics;
+    for (const [source, name] of [
+      [path.join(daemonDir, "bridge.log"), "daemon-bridge.log"],
+      [path.join(configDir, "daemon.log"), "claude-daemon.log"],
+    ]) {
+      try {
+        fs.copyFileSync(source, path.join(slotDir, name));
+        fs.chmodSync(path.join(slotDir, name), 0o600);
+        diagnostics.logs[name] = name;
+      } catch (error) {
+        diagnostics.logs[name] = null;
+        if (error.code !== "ENOENT") diagnostics.errors.push(`${name}: ${error.message}`);
+      }
+    }
+    if (backgroundId) {
+      try {
+        const state = JSON.parse(fs.readFileSync(path.join(configDir, "jobs", backgroundId, "state.json"), "utf8"));
+        // Native job records also contain provider credentials and socket keys.
+        diagnostics.backgroundState = Object.fromEntries(
+          ["state", "detail", "createdAt", "updatedAt", "firstTerminalAt"]
+            .filter((key) => ["string", "number"].includes(typeof state[key]))
+            .map((key) => [key, typeof state[key] === "string" ? state[key].slice(0, 200) : state[key]]),
+        );
+      } catch (error) {
+        if (error.code !== "ENOENT") diagnostics.errors.push(`background state: ${error.code ?? error.name}`);
+      }
+    }
+    checks.add("daemon diagnostics preserved", diagnostics.errors.length === 0, diagnostics.errors.join("; "));
+  };
 
   try {
     // --- 1. launch, detached -----------------------------------------
@@ -1345,6 +1400,7 @@ async function driveDaemonBackground(ctx) {
     );
 
     // --- 7. stop actually stops, and leaves nothing behind ------------
+    preserveDaemonDiagnostics();
     const stopped = await sh(bin("claude-ghcp-stop"), [], 60, "daemon stop");
     let stopReport = {};
     try {
@@ -1365,6 +1421,7 @@ async function driveDaemonBackground(ctx) {
     // The daemon and the detached agent both outlive this function by design,
     // so a slot that throws anywhere above would leak a process and a bound
     // port for the rest of the run.
+    preserveDaemonDiagnostics();
     if (backgroundId) {
       try { await sh(ctx.claudeBin, ["stop", backgroundId], 30); } catch {}
     }

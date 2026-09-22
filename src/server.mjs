@@ -267,6 +267,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const result = await manager.execute(body, req.headers, {
+      requestId,
       responseId,
       onReady: ({ model }) => stream?.start(model),
       onEvent: (event) => stream?.handleSdkEvent(event),
@@ -277,7 +278,7 @@ const server = http.createServer(async (req, res) => {
       id: responseId,
       model: result.model,
       message: result.message,
-      inputTokens: result.usage?.inputTokens || inputTokens,
+      inputTokens: result.usage?.inputTokens ?? inputTokens,
       usage: result.usage,
     };
 

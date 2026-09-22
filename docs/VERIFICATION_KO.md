@@ -7,8 +7,8 @@
 모든 슬롯은 실제 경로를 그대로 지납니다: 진짜 Claude Code 바이너리 → 브리지 → Copilot SDK → Copilot 모델. 목이나 스텁은 없습니다. 판정은 모델이 무엇을 말했는지가 아니라 **디스크 상태, git 이력, 훅 로그, stream-json 이벤트**로 합니다.
 
 - Claude Code: `2.1.278`
-- 실행 시각: 2026-09-21T23:07:19.056Z → 2026-09-21T23:21:41.753Z
-- 소요: 863초
+- 실행 시각: 2026-09-22T00:52:51.013Z → 2026-09-22T01:05:52.772Z
+- 소요: 782초
 - 호스트: darwin arm64 / node v22.16.0
 
 ## 정책, 완전성 및 코드 출처
@@ -16,11 +16,10 @@
 - 정책: strict-all-pass-v1
 - 범위: full (77 전체 매트릭스 카탈로그 슬롯)
 - 예상: 77 / 실제: 77
-- 결과: NOT GREEN
+- 결과: PASS
 - 엄격한 통과는 비어 있지 않은 예상 매트릭스의 정확하고 중복 없는 완료, 모든 슬롯의 pass, 사용자 설정 보존 및 시작/종료 코드 출처 일치를 요구합니다.
-- 진단: Every expected slot must pass; fail, blocked and unknown outcomes are not passes.
-- 코드 출처 start: commit: 3b42a61af1d461f3aa6c9bcc807fcb7afdfdd4e1; dirty: true; fingerprint: sha256 verification-code-v1 0101162ad82ba5f80f123368628f64a325b17dc79eb9ef47897385e9dd2b0f6e; files: 41
-- 코드 출처 end: commit: 3b42a61af1d461f3aa6c9bcc807fcb7afdfdd4e1; dirty: true; fingerprint: sha256 verification-code-v1 0101162ad82ba5f80f123368628f64a325b17dc79eb9ef47897385e9dd2b0f6e; files: 41
+- 코드 출처 start: commit: c5993091af3aa905d51257130543f82f497fd2f7; dirty: true; fingerprint: sha256 verification-code-v1 ca257bf4ee47104ef0999ceb6d1387e2801164132c054d75b8fcfaf0eafee84c; files: 41
+- 코드 출처 end: commit: c5993091af3aa905d51257130543f82f497fd2f7; dirty: true; fingerprint: sha256 verification-code-v1 ca257bf4ee47104ef0999ceb6d1387e2801164132c054d75b8fcfaf0eafee84c; files: 41
 
 ## 기록된 실행 설정
 
@@ -28,7 +27,7 @@
 | --- | --- | --- |
 | `--timeout-scale` | 2 | 검증 전용 timeout 배율 |
 | `PENDING_TOOL_WAIT_MS` | 30000 ms (30 s) | 별도의 pending-tool 대기. --timeout-scale을 곱하지 않음 |
-| `--model-concurrency` | 7 | 동시에 실행할 모델 작업자 수 |
+| `--model-concurrency` | 3 | 동시에 실행할 모델 작업자 수 |
 | `--scenario-concurrency` | 2 | 모델별로 동시에 실행할 시나리오 작업자 수 |
 | `bridgeHealthMs` | 240000 ms (240 s) | 검증용 bridge health 대기 |
 | `planTurnMs` | 180000 ms (180 s) | plan-mode의 각 headless 턴 |
@@ -62,15 +61,15 @@ Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한, SIG
 | `v02-surgical-edit` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v03-test-fix-loop` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v04-shell-ops` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v05-multi-step` | PASS | PASS | BLOCK | PASS | PASS | PASS | PASS |
+| `v05-multi-step` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v06-subagent` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v07-mcp-playwright` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v08-hooks-memory` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v09-session-resume` | FAIL | FAIL | PASS | PASS | PASS | PASS | PASS |
+| `v09-session-resume` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v10-long-context` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v11-daemon-background` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
-**pass 74 / fail 2 / blocked 1** — 전체 77슬롯, 통과 기준 77.
+**pass 77 / fail 0 / blocked 0** — 전체 77슬롯, 통과 기준 77.
 
 BLOCK(blocked)는 통과가 아닙니다. 실행하지 못한 슬롯이며 분모에 그대로 남습니다. DUP는 중복 기록, UNKNOWN은 알 수 없는 결과입니다.
 
@@ -180,15 +179,16 @@ MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp
 
 ### `v09-session-resume` — 프로세스 간 세션 재개
 
-작업을 덮었다 다시 여는 상황 — 두 번째 프로세스가 첫 번째의 문맥을 그대로 이어받아야 한다.
+작업을 덮었다 다시 여는 상황 — 이후 프로세스가 도구나 영구 메모리 없이 대화 문맥에서 원래 문자열을 그대로 기억해야 한다.
 
 **이 시나리오가 잡아내려는 브리지 결함**: 세션 상태가 업스트림 연결에 묶여 있어 재개 시 빈 대화가 열리고 아무 근거 없이 답하는 경우.
 
 판정 기준:
 - The resumed process reports the same session id.
 - It recalls the planted build id.
-- It used no file-reading tool: the answer came from conversation context.
+- The seed, resumed, and forked processes use no tools, including persistent-memory reads or writes.
 - A forked resume inherits the same context under a session id of its own.
+- The fork recalls the original deploy-window string without adding a calendar date.
 
 ### `v10-long-context` — 대형 컨텍스트 검색과 추론
 
@@ -237,51 +237,13 @@ Claude Code 2.1.278는 다음 도구를 제공하지 않습니다: `TodoWrite`, 
 - `bash-background` (가중치 2, `BashOutput` 필요) — 백그라운드 셸/출력 폴링
 - `todo` (가중치 2, `TodoWrite` 필요) — TodoWrite 작업 추적
 
-## 통과하지 못한 슬롯
-
-### claude-sonnet-5 × `v09-session-resume` — fail
-
-- FAIL fork inherited the seed turn's context — `Thursday 2026-09-24 02:00 UTC`
-- fork inherited the seed turn's context: Thursday 2026-09-24 02:00 UTC
-
-### claude-haiku-4.5 × `v05-multi-step` — blocked
-
-- FAIL src/greet.mjs carries "Good morning" — `export function greet(name) {
-  return "Hello, " + name + "!";
-}
-`
-- FAIL VERSION carries "0.2.0" — `0.1.0
-`
-- FAIL CHANGELOG.md carries "ZS75BN" — `file missing`
-- FAIL analysis.ipynb carries "0.08" — `{
- "cells": [
-  {
-   "cell_type": "markdown",
-   "id": "intro",
-   "metadata": {},
-   "source": [
-    "# Rate analysis\n`
-- FAIL notebook is still a valid nbformat 4 document — `nbformat=4 cells=2`
-- FAIL the PDF's token came back — `looked for PDFDOCC38821 in: I'll complete the four changes and then extract the tokens from the PDF and image.`
-- FAIL the image's token came back — `looked for IMGTAG99AB92 in: I'll complete the four changes and then extract the tokens from the PDF and image.`
-- FAIL main: completed — `timed out after 602s`
-- FAIL main: expected model served — `modelUsage was empty`
-- FAIL main: result.stop_reason present — `missing`
-- FAIL main: usage reports input tokens — `input=0`
-- main: timed out after 602s
-
-### claude-opus-5 × `v09-session-resume` — fail
-
-- FAIL resume: usage reports input tokens — `input=0`
-- resume: usage reports input tokens: input=0
-
 ## 재현
 
 아래 명령은 기록된 설정을 다시 사용합니다. 기록되지 않은 설정에는 과거 값을 추정하지 않고 현재 기본값을 적용합니다.
 
 ```bash
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 7 --scenario-concurrency 2 # 7개 모델 × 11개 시나리오
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 7 --scenario-concurrency 2 --dry-run # 실행 없이 계획만
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 # 7개 모델 × 11개 시나리오
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 --dry-run # 실행 없이 계획만
 npm run verify:probe        # 없는 도구 목록의 근거가 되는 능력 프로브
 npm run verify:report       # 최근 실행 결과 요약
 ```

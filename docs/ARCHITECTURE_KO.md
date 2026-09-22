@@ -304,6 +304,9 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
 - Request cancellation, state eviction, bounded replay, 실제 usage, strict model
   selection, request policy, daemon registry, tool-result idempotency
+- JSON/SSE의 명시적 usage 0은 추정치로 대체하지 않습니다. 누락/null일 때만
+  기존 fallback을 사용하며, Claude Code result envelope의 입력 토큰이 0이면
+  실제 검증은 여전히 실패합니다.
 
 `npm run verify`는 실제 모델로 실제 경로를 구동합니다.
 
@@ -325,6 +328,12 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - 슬롯마다 자체 workspace, `settings.json`, `CLAUDE_CONFIG_DIR`을 갖습니다.
   실행기는 변경 감지를 위해 `~/.claude/settings.json`의 실행 전후 해시를
   읽지만, 내용을 저장하거나 슬롯 설정으로 사용하지 않습니다.
+- 재개/fork 검사는 seed·resume·fork 모두 도구 없이 원래 문자열을 회상해야 합니다.
+  영구 메모리 쓰기로 대화 이력 상속을 대신할 수 없으며, 추론한 날짜를 덧붙인
+  응답은 원래 배포 시간 문자열로 인정하지 않습니다.
+- 런처 검증은 명령별 stdout/stderr와 종료 전에 복사한 bridge/native daemon 로그를
+  보존합니다. 백그라운드 작업 스냅샷은 상태·시간 필드만 허용하며 provider 환경과
+  소켓 인증 정보는 제외합니다.
 - 새 실행은 `strict-all-pass-v1`을 적용합니다. 전체 실행은 예상한 고유 슬롯
   77개 모두, 부분 실행은 선택한 모든 슬롯이 통과해야 합니다. 누락·중복·예상 밖
   슬롯, 사용자 설정 변경, 구현 출처 기록 누락·변경이 있으면 기록된 슬롯이 모두
@@ -337,6 +346,20 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
   고를 수 있습니다.
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
+
+전체 실행 `2026-09-22T00-52-51-013Z`는 모델 작업자 3개와 모델별 시나리오 작업자
+2개로 77/77 통과했습니다. 앞선 7 × 2 실행의 네이티브 백그라운드 정지 이후
+랩탑의 기동 부하를 낮춘 설정이며 기본값, timeout 예산, 통과 기준을 낮추지는
+않았습니다. 분리된 실행 이력은 README에, 최종 실행만의 결과는
+[검증 결과](VERIFICATION_KO.md)에 기록합니다.
+
+실행 중인 bridge 턴의 timeout과 클라이언트 취소 시 요청 ID로 연결되는
+`bridge.turn_timeout` / `bridge.turn_aborted` 스냅샷을 남기고,
+`bridge.turn_abort_completed`로 중단 승인 여부를 기록합니다. 작업 단계, RPC 승인 수,
+root/subagent 이벤트 수와 최대 8개의 최근 이벤트 종류·시각만 기록하며 프롬프트,
+도구 페이로드, 첨부 파일, 인증 정보는 기록하지 않습니다. 진단 출력 실패는 알리되
+요청 종료 결과를 바꾸지 않습니다. 이 관측 기능은 재시도나 timeout 연장을 추가하거나
+미완료 슬롯을 통과로 바꾸지 않습니다.
 
 대규모 multi-page PDF corpus, workflow fan-out, 정확한 compact/rewind boundary mapping,
 crash 시점 in-flight tool 복구는 위 자동 범위에 포함되지 않습니다.

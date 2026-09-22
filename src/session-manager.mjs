@@ -44,9 +44,68 @@ const PENDING_TOOL_UNREGISTERED = "pending_tool_unregistered";
 // Copilot can still register a dropped tool call moments after the turn ended,
 // so a bounded number of dropped call ids is remembered to ignore it.
 const MAX_DROPPED_TOOL_CALLS = 64;
+const MAX_RECENT_TURN_EVENTS = 8;
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function turnDiagnostics(requestId, responseId) {
+  const startedAt = performance.now();
+  const rpc = {
+    send: { started: 0, acknowledged: 0, failed: 0 },
+    toolResult: { started: 0, acknowledged: 0, failed: 0 },
+  };
+  const eventCounts = {};
+  const recentEvents = [];
+  // Callers supply fixed event/operation names, never SDK payloads.
+  const record = (type, scope) => {
+    const key = `${scope}:${type}`;
+    eventCounts[key] = (eventCounts[key] || 0) + 1;
+    recentEvents.push({ type, scope, elapsedMs: Math.round(performance.now() - startedAt) });
+    if (recentEvents.length > MAX_RECENT_TURN_EVENTS) recentEvents.shift();
+  };
+  return {
+    requestId,
+    responseId,
+    startedAt,
+    rpc,
+    eventCounts,
+    recentEvents,
+    record,
+    async call(name, operation) {
+      rpc[name].started += 1;
+      record(`${name}.started`, "rpc");
+      try {
+        const result = await operation();
+        rpc[name].acknowledged += 1;
+        record(`${name}.acknowledged`, "rpc");
+        return result;
+      } catch (error) {
+        rpc[name].failed += 1;
+        record(`${name}.failed`, "rpc");
+        throw error;
+      }
+    },
+  };
+}
+
+function emitTurnDiagnostic(onDiagnostic, event) {
+  const failed = () => {
+    try {
+      console.error(JSON.stringify({
+        event: "bridge.diagnostic_error",
+        diagnosticEvent: event.event,
+        requestId: event.requestId,
+        responseId: event.responseId,
+      }));
+    } catch {}
+  };
+  try {
+    Promise.resolve(onDiagnostic(event)).catch(failed);
+  } catch {
+    failed();
+  }
 }
 
 function toolResultHash(value, prompt, toolName) {
@@ -306,7 +365,8 @@ export class SessionManager {
     return resolveReasoningEffort({ requested, model });
   }
 
-  async execute(body, headers, { onReady, onEvent, signal } = {}) {
+  async execute(body, headers, { requestId, responseId, onReady, onEvent, signal } = {}) {
+    const diagnostics = turnDiagnostics(requestId, responseId);
     const familyKey = claudeSessionFamily(
       headers,
       this.anonymousSessionId,
@@ -317,6 +377,7 @@ export class SessionManager {
         onReady,
         onEvent,
         signal,
+        diagnostics,
       }),
     );
     const tracked = run.catch(() => {}).finally(() => {
@@ -328,7 +389,7 @@ export class SessionManager {
     return run;
   }
 
-  async #executeForFamily(body, headers, { onReady, onEvent, signal }) {
+  async #executeForFamily(body, headers, { onReady, onEvent, signal, diagnostics }) {
     if (signal?.aborted) throw createAbortError();
     await this.#evictExpiredStates();
     body = applyRequestPolicy(body, this.onDiagnostic);
@@ -382,7 +443,7 @@ export class SessionManager {
       state.activeTurns += 1;
     }
     const run = state.queue.then(() =>
-      this.#executeLocked(state, body, reasoningEffort, onEvent, signal),
+      this.#executeLocked(state, body, reasoningEffort, onEvent, signal, diagnostics),
     );
     // A rejected turn must not prevent later requests from using this session.
     state.queue = run.catch(() => {});
@@ -539,10 +600,11 @@ export class SessionManager {
     }
   }
 
-  async #executeLocked(state, body, reasoningEffort, onEvent, signal) {
+  async #executeLocked(state, body, reasoningEffort, onEvent, signal, diagnostics) {
     if (signal?.aborted) throw createAbortError();
     await this.#applyReasoningEffort(state, reasoningEffort);
     const input = extractTurnInput(body);
+    const send = (options) => diagnostics.call("send", () => state.session.send(options));
 
     if (input.kind === "tool-results" && !state.fresh) {
       if (input.toolResults.length > this.maxToolResults) {
@@ -598,7 +660,7 @@ export class SessionManager {
         const turn = await this.#waitForTurn(
           state,
           async () => {
-            await state.session.send({
+            await send({
               prompt,
               attachments: deliverPrompt ? input.attachments : [],
             });
@@ -606,6 +668,7 @@ export class SessionManager {
           },
           onEvent,
           signal,
+          diagnostics,
         );
         for (const result of changedCompleted) {
           state.completedToolCalls.set(result.toolUseId, {
@@ -620,12 +683,12 @@ export class SessionManager {
       if (!pendingResults.length) {
         if (deliverPrompt) {
           const turn = await this.#waitForTurn(state, async () => {
-            await state.session.send({
+            await send({
               prompt: input.prompt || CONTINUATION_PROMPT,
               attachments: input.attachments,
             });
             state.deliveredToolPrompts.add(promptKey);
-          }, onEvent, signal);
+          }, onEvent, signal, diagnostics);
           for (const result of results) result.completed.lastTurn = turn;
           return turn;
         }
@@ -637,12 +700,13 @@ export class SessionManager {
         return this.#waitForTurn(
           state,
           () =>
-            state.session.send({
+            send({
               prompt: CONTINUATION_PROMPT,
               attachments: [],
             }),
           onEvent,
           signal,
+          diagnostics,
         );
       }
 
@@ -652,7 +716,7 @@ export class SessionManager {
           // Queue the user's instruction before any tool result can resume the
           // model. Keep it separate from tool output and remember the accepted
           // send even if one of the result submissions must later be retried.
-          await state.session.send({
+          await send({
             prompt: input.prompt || CONTINUATION_PROMPT,
             attachments: input.attachments,
             mode: "enqueue",
@@ -666,14 +730,14 @@ export class SessionManager {
               toolUseId,
               signal,
             );
-            await submitToolResult(
+            await diagnostics.call("toolResult", () => submitToolResult(
               state.session,
               {
                 requestId: pending.requestId,
                 result: value,
               },
               { toolCallId: toolUseId },
-            );
+            ));
             state.pendingByToolCallId.delete(toolUseId);
             const completed = {
               lastTurn: null,
@@ -692,7 +756,7 @@ export class SessionManager {
           (submission) => submission.status === "rejected",
         );
         if (failure) throw failure.reason;
-      }, onEvent, signal);
+      }, onEvent, signal, diagnostics);
       let completedTurn = turn;
       if (
         handledTools.some(({ completed }) => completed.toolName === "Agent") &&
@@ -748,9 +812,10 @@ export class SessionManager {
 
     return this.#waitForTurn(
       state,
-      () => state.session.send({ prompt: prompt || CONTINUATION_PROMPT, attachments }),
+      () => send({ prompt: prompt || CONTINUATION_PROMPT, attachments }),
       onEvent,
       signal,
+      diagnostics,
     );
   }
 
@@ -764,10 +829,11 @@ export class SessionManager {
     state.reasoningEffort = reasoningEffort;
   }
 
-  #waitForTurn(state, trigger, onEvent, signal) {
+  #waitForTurn(state, trigger, onEvent, signal, diagnostics) {
     const messages = [];
     const subscriptions = [];
     const usageEvents = [];
+    const startedAt = performance.now();
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -776,9 +842,45 @@ export class SessionManager {
       let triggerFinished = false;
       let deferredCompletion = null;
       let aborting = false;
-      const terminate = (error) => {
+      const report = (event, details = {}) => {
+        const outstanding = (name) => {
+          const rpc = diagnostics.rpc[name];
+          return rpc.started - rpc.acknowledged - rpc.failed;
+        };
+        const stage = outstanding("send") ? "send"
+          : outstanding("toolResult") ? "tool_result"
+          : state.pendingRequestWaiters.size ? "tool_registration"
+          : !triggerFinished ? "trigger" : "model";
+        emitTurnDiagnostic(this.onDiagnostic, {
+          event,
+          timestamp: new Date().toISOString(),
+          requestId: diagnostics.requestId,
+          responseId: diagnostics.responseId,
+          state: hash(state.identity.key).slice(0, 12),
+          model: state.model,
+          elapsedMs: Math.round(performance.now() - diagnostics.startedAt),
+          turnElapsedMs: Math.round(performance.now() - startedAt),
+          stage,
+          triggerFinished,
+          turnStarted,
+          completionStarted,
+          deferredCompletion: Boolean(deferredCompletion),
+          messages: messages.length,
+          toolRequests: messages.reduce((count, message) => count + (message.toolRequests?.length || 0), 0),
+          usageEvents: usageEvents.length,
+          pendingToolCalls: state.pendingByToolCallId.size,
+          pendingRegistrations: state.pendingRequestWaiters.size,
+          rpc: Object.fromEntries(Object.entries(diagnostics.rpc).map(([name, value]) => [name, { ...value }])),
+          eventCounts: { ...diagnostics.eventCounts },
+          recentEvents: diagnostics.recentEvents.slice(),
+          ...details,
+        });
+      };
+      const terminate = (error, reason) => {
         if (settled || aborting) return;
         aborting = true;
+        report(reason === "timeout" ? "bridge.turn_timeout" : "bridge.turn_aborted");
+        const abortStartedAt = performance.now();
         let abortTimer;
         const abortDeadline = new Promise((resolve) => {
           abortTimer = setTimeout(
@@ -795,13 +897,19 @@ export class SessionManager {
           .finally(() => clearTimeout(abortTimer))
           .then(({ acknowledged }) => {
             if (!acknowledged) state.invalidated = true;
+            report("bridge.turn_abort_completed", {
+              reason,
+              acknowledged,
+              abortElapsedMs: Math.round(performance.now() - abortStartedAt),
+            });
             settle(error);
           });
       };
-      const onAbort = () => terminate(createAbortError());
+      const onAbort = () => terminate(createAbortError(), "client_abort");
       const timeout = setTimeout(() => {
         terminate(
           new Error("Timed out waiting for the GitHub Copilot model turn."),
+          "timeout",
         );
       }, this.turnTimeoutMs);
 
@@ -934,21 +1042,27 @@ export class SessionManager {
         finish(new Error(event.data?.message || "GitHub Copilot SDK session error."));
       };
 
+      const subscribe = (type, handler = () => {}) => state.session.on(type, (event) => {
+        diagnostics.record(type, event.agentId ? "agent" : "root");
+        handler(event);
+      });
       subscriptions.push(
-        state.session.on("assistant.turn_start", onTurnStart),
-        state.session.on("assistant.message", onMessage),
-        state.session.on("assistant.message_delta", (event) => {
+        subscribe("assistant.turn_start", onTurnStart),
+        subscribe("assistant.message", onMessage),
+        subscribe("assistant.message_delta", (event) => {
           onEvent?.(event);
         }),
-        state.session.on("assistant.tool_call_delta", (event) => {
+        subscribe("assistant.tool_call_delta", (event) => {
           onEvent?.(event);
         }),
-        state.session.on("assistant.usage", (event) => {
+        subscribe("assistant.usage", (event) => {
           if (!event.agentId) usageEvents.push(event.data);
         }),
-        state.session.on("assistant.turn_end", onTurnEnd),
-        state.session.on("session.idle", finishTurn),
-        state.session.on("session.error", onError),
+        subscribe("assistant.turn_end", onTurnEnd),
+        subscribe("session.idle", finishTurn),
+        subscribe("session.error", onError),
+        subscribe("external_tool.requested"),
+        subscribe("external_tool.completed"),
       );
 
       signal?.addEventListener("abort", onAbort, { once: true });

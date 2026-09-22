@@ -260,9 +260,12 @@ function anthropicStopReason(message, usage) {
 }
 
 function anthropicUsage(inputTokens, message, usage) {
+  // The collector returns null without events, but zero-fills missing counters.
+  // Those defaults are indistinguishable from measured zeros here, so only
+  // nullish fields use the existing fallback.
   return {
-    input_tokens: usage?.inputTokens || inputTokens,
-    output_tokens: usage?.outputTokens || message.outputTokens || 0,
+    input_tokens: usage?.inputTokens ?? inputTokens,
+    output_tokens: usage?.outputTokens ?? message.outputTokens ?? 0,
     ...(usage?.cacheReadTokens
       ? { cache_read_input_tokens: usage.cacheReadTokens }
       : {}),

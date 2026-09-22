@@ -134,6 +134,7 @@ const label = arg("--permission-mode") === "plan" ? "plan"
   : args.includes("--session-id") ? "seed"
   : prompt === "Reply with exactly: ok" ? "control"
   : prompt.startsWith("Use the CronCreate") ? "cron" : defaultPhase;
+fs.writeFileSync(path.join(${JSON.stringify(slotDir)}, "prompt-" + label + ".txt"), prompt);
 const spec = phases[label];
 if (!spec) throw new Error("Unknown fake phase " + label);
 for (const [name, text] of Object.entries(spec.writes ?? {})) {
@@ -142,7 +143,7 @@ for (const [name, text] of Object.entries(spec.writes ?? {})) {
 }
 const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
 const originalId = args.includes("--session-id") ? arg("--session-id") : args.includes("--resume") ? arg("--resume") : "test-session";
-const sessionId = label === "fork" ? originalId + "-fork" : originalId;
+const sessionId = label === "fork" && !spec.reuseSessionId ? originalId + "-fork" : originalId;
 emit({ type: "system", subtype: "init", session_id: sessionId, ...spec.init });
 const tools = spec.tools ?? [];
 if (tools.length) {
@@ -182,6 +183,108 @@ for (const scenario of Object.values(SCENARIOS)) {
       assert.ok(fs.existsSync(phase.transcriptPath));
       assert.ok(result.checks.some((check) => check.name === `${label}: completed` && check.ok));
     }
+  });
+}
+
+test("v09 prompts ask for literal deployment facts without tools or leaked follow-up answers", async (t) => {
+  const ctx = fakeContext(t, SCENARIOS.resume);
+  const result = await DRIVERS[SCENARIOS.resume](ctx);
+  assert.equal(result.outcome, "pass", result.reason);
+  const prompts = Object.fromEntries(["seed", "resume", "fork"].map((phase) => [
+    phase, fs.readFileSync(path.join(ctx.slotDir, `prompt-${phase}.txt`), "utf8"),
+  ]));
+  assert.ok(prompts.seed.includes(ctx.fixture.buildId));
+  assert.ok(prompts.seed.includes(ctx.fixture.deployWindow));
+  assert.match(prompts.seed, /literal/);
+  assert.match(prompts.seed, /conversation only/);
+  assert.match(prompts.seed, /Do not add or infer a calendar date/);
+  for (const phase of ["seed", "resume", "fork"]) {
+    assert.match(prompts[phase], /Do not use tools/);
+    assert.match(prompts[phase], /persistent memory/);
+    assert.equal(result.checks.find((check) => check.name === `${phase} used no tools`)?.ok, true);
+  }
+  for (const phase of ["resume", "fork"]) {
+    assert.match(prompts[phase], /original .* from our conversation/);
+    assert.ok(!prompts[phase].includes(ctx.fixture.buildId));
+    assert.ok(!prompts[phase].includes(ctx.fixture.deployWindow));
+  }
+  assert.match(prompts.resume, /What is the example deployment's build id\?/);
+  assert.match(prompts.fork, /What is the example deployment's deploy window\?/);
+  assert.match(prompts.fork, /original weekday, time, and timezone/);
+  assert.match(prompts.fork, /without adding a calendar date/);
+});
+
+test("v09 keeps a provider refusal failed even when the expected fact appears in the transcript", async (t) => {
+  const ctx = fakeContext(t, SCENARIOS.resume, "fork", {
+    result: { is_error: true, stop_reason: "refusal", result: "The provider refused this request." },
+  });
+  const result = await DRIVERS[SCENARIOS.resume](ctx);
+  assert.equal(result.outcome, "fail");
+  assert.equal(result.checks.find((check) => check.name === "fork inherited the seed turn's context")?.ok, true);
+  assert.equal(result.checks.find((check) => check.name === "fork: no error in result envelope")?.ok, false);
+});
+
+for (const phase of ["seed", "resume", "fork"]) {
+  for (const tool of ["Write", "Read", "mcp__memory__create_entities"]) {
+    test(`v09 rejects ${phase} persistent-memory tool ${tool} despite correct recall`, async (t) => {
+      const ctx = fakeContext(t, SCENARIOS.resume, phase, {
+        tools: [{
+          name: tool,
+          input: tool.startsWith("mcp__") ? { entities: [] } : { file_path: "memory/MEMORY.md" },
+          content: "Deployment facts saved in persistent memory.",
+        }],
+      });
+      const result = await DRIVERS[SCENARIOS.resume](ctx);
+      assert.equal(result.outcome, "fail", result.reason);
+      assert.equal(result.checks.find((check) => check.name === `${phase} used no tools`)?.ok, false);
+      assert.equal(result.checks.find((check) => check.name === "recalls the build id")?.ok, true);
+      assert.equal(result.checks.find((check) => check.name === "fork inherited the seed turn's context")?.ok, true);
+      assert.equal(result.evidence.phases[phase].outcome, "pass", "tool-free recall is separate from transport health");
+    });
+  }
+}
+
+test("v09 accepts the original deploy window with existing comma and whitespace tolerance", async (t) => {
+  const ctx = fakeContext(t, SCENARIOS.resume, "fork", { answer: "Thursday,  02:00 UTC" });
+  const result = await DRIVERS[SCENARIOS.resume](ctx);
+  assert.equal(result.outcome, "pass", result.reason);
+});
+
+for (const [name, answer] of [
+  ["invented calendar date", "Thursday 2026-09-24 02:00 UTC"],
+  ["contradictory calendar date", "Thursday 2026-09-25 02:00 UTC"],
+  ["wrong weekday", "Friday 02:00 UTC"],
+  ["wrong hour", "Thursday 03:00 UTC"],
+  ["wrong timezone", "Thursday 02:00 PST"],
+]) {
+  test(`v09 rejects a fork answer with ${name}`, async (t) => {
+    const ctx = fakeContext(t, SCENARIOS.resume, "fork", { answer });
+    const result = await DRIVERS[SCENARIOS.resume](ctx);
+    assert.equal(result.outcome, "fail", result.reason);
+    assert.deepEqual(result.checks.filter((check) => !check.ok).map((check) => check.name), [
+      "fork inherited the seed turn's context",
+    ]);
+  });
+}
+
+test("v09 rejects an incorrect build id despite a correct fork answer", async (t) => {
+  const ctx = fakeContext(t, SCENARIOS.resume, "resume", { answer: "BUILD9875" });
+  const result = await DRIVERS[SCENARIOS.resume](ctx);
+  assert.equal(result.outcome, "fail", result.reason);
+  assert.deepEqual(result.checks.filter((check) => !check.ok).map((check) => check.name), ["recalls the build id"]);
+});
+
+for (const [name, defect] of [
+  ["the original session id", { reuseSessionId: true }],
+  ["no session id", { init: { session_id: null }, result: { session_id: null } }],
+]) {
+  test(`v09 rejects a correct fork answer under ${name}`, async (t) => {
+    const ctx = fakeContext(t, SCENARIOS.resume, "fork", defect);
+    const result = await DRIVERS[SCENARIOS.resume](ctx);
+    assert.equal(result.outcome, "fail", result.reason);
+    assert.deepEqual(result.checks.filter((check) => !check.ok).map((check) => check.name), [
+      "fork runs under a session id of its own",
+    ]);
   });
 }
 
@@ -455,7 +558,7 @@ test("a missing mandatory phase is blocked", () => {
   assert.equal(phase.evidence.completed, false);
 });
 
-async function fakeDaemon(t, faultAt = 0, fault = "timeout") {
+async function fakeDaemon(t, faultAt = 0, fault = "timeout", { missingOutput = false, invalidState = false } = {}) {
   const slotDir = fs.mkdtempSync(path.join(os.tmpdir(), "verify-daemon-driver-test-"));
   t.after(() => fs.rmSync(slotDir, { recursive: true, force: true }));
   const workspace = path.join(slotDir, "workspace");
@@ -482,8 +585,21 @@ export async function runProcess(file, args, { cwd, env }) {
   if (name === "claude-ghcp") {
     if (args.includes("--background")) {
       running = true;
-      fs.writeFileSync(path.join(cwd, fixture.backgroundResult), fixture.channelValue);
+      if (!${missingOutput}) fs.writeFileSync(path.join(cwd, fixture.backgroundResult), fixture.channelValue);
       for (const file of ["bridge.json", "bridge.log"]) fs.writeFileSync(path.join(daemon, file), "fixture");
+      fs.writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, "daemon.log"), "native worker started");
+      const jobDir = path.join(env.CLAUDE_CONFIG_DIR, "jobs", "abcdef12");
+      fs.mkdirSync(jobDir, { recursive: true });
+      fs.writeFileSync(path.join(jobDir, "state.json"), ${invalidState}
+        ? "PRIVATE_DIAGNOSTIC_SENTINEL invalid JSON"
+        : JSON.stringify({
+          state: ${missingOutput} ? "working" : "idle",
+          detail: ${missingOutput} ? "starting..." : "completed",
+          createdAt: "2026-09-22T00:00:00.000Z",
+          updatedAt: "2026-09-22T00:00:01.000Z",
+          providerEnv: { ANTHROPIC_AUTH_TOKEN: "PRIVATE_DIAGNOSTIC_SENTINEL" },
+          ptyAuth: "PRIVATE_DIAGNOSTIC_SENTINEL",
+        }));
       stdout = "backgrounded · abcdef12";
     } else if (args.includes("-p")) stdout = fixture.buildNumber;
     if (!args.includes("-p")) {
@@ -511,9 +627,46 @@ export async function runProcess(file, args, { cwd, env }) {
   const { calls } = await import(pathToFileURL(stub).href);
   const result = await isolatedDrivers["v11-daemon-background"]({
     fixture, slotDir, workspace, configDir, model: MODEL, claudeBin: path.join(slotDir, "fake-cli"),
+    ...(missingOutput ? { timeouts: {
+      backgroundLaunchMs: 1000, foregroundLaunchMs: 1000, persistentLaunchMs: 1000, detachedOutputMs: 1,
+    } } : {}),
   });
-  return { result, calls };
+  return { result, calls, slotDir };
 }
+
+test("v11 preserves command and daemon logs before cleanup without exposing private job fields", async (t) => {
+  const { result, slotDir } = await fakeDaemon(t);
+  assert.equal(result.outcome, "pass", result.reason);
+  const { commands, daemonDiagnostics } = result.evidence;
+  const launch = commands["background launch"];
+  assert.equal(fs.readFileSync(path.join(slotDir, launch.stdoutFile), "utf8"), "backgrounded · abcdef12");
+  assert.equal(fs.readFileSync(path.join(slotDir, launch.stderrFile), "utf8"), "");
+  assert.equal(fs.statSync(path.join(slotDir, launch.stdoutFile)).mode & 0o777, 0o600);
+  assert.equal(fs.readFileSync(path.join(slotDir, daemonDiagnostics.logs["daemon-bridge.log"]), "utf8"), "fixture");
+  assert.equal(fs.readFileSync(path.join(slotDir, daemonDiagnostics.logs["claude-daemon.log"]), "utf8"), "native worker started");
+  assert.equal(fs.statSync(path.join(slotDir, "daemon-bridge.log")).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(path.join(slotDir, "daemon", "bridge.log")), false);
+  assert.deepEqual(Object.keys(daemonDiagnostics.backgroundState), ["state", "detail", "createdAt", "updatedAt"]);
+  assert.doesNotMatch(JSON.stringify(daemonDiagnostics), /PRIVATE_DIAGNOSTIC_SENTINEL|providerEnv|ptyAuth/);
+});
+
+test("v11 records native startup stalls without accepting a successful launcher as completed work", async (t) => {
+  const { result, calls } = await fakeDaemon(t, 0, "timeout", { missingOutput: true });
+  assert.equal(result.outcome, "fail");
+  assert.match(result.reason, /detached agent wrote.*file never appeared/);
+  assert.equal(result.evidence.daemonDiagnostics.backgroundState.state, "working");
+  assert.equal(result.evidence.daemonDiagnostics.backgroundState.detail, "starting...");
+  assert.equal(result.evidence.commands["background launch"].completed, true);
+  assert.equal(calls.length, 11, "cleanup must still run after missing output");
+});
+
+test("v11 surfaces corrupt diagnostic state without leaking its contents or skipping cleanup", async (t) => {
+  const { result, calls } = await fakeDaemon(t, 0, "timeout", { invalidState: true });
+  assert.equal(result.outcome, "fail");
+  assert.match(result.reason, /daemon diagnostics preserved: background state: SyntaxError/);
+  assert.doesNotMatch(JSON.stringify(result.evidence.daemonDiagnostics), /PRIVATE_DIAGNOSTIC_SENTINEL/);
+  assert.equal(calls.length, 11, "cleanup must still run after diagnostic errors");
+});
 
 test("v11 rejects incomplete commands even when their evidence and exit status look successful", async (t) => {
   const labels = ["background launch", "initial status", "agent roster", "foreground launch",
