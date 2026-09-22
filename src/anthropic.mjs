@@ -260,11 +260,13 @@ function anthropicStopReason(message, usage) {
 }
 
 function anthropicUsage(inputTokens, message, usage) {
-  // The collector returns null without events, but zero-fills missing counters.
-  // Those defaults are indistinguishable from measured zeros here, so only
-  // nullish fields use the existing fallback.
+  // Copilot's input total includes cache tokens; Anthropic's three input
+  // counters are disjoint. Adding cached tokens again overstates context use.
+  const uncachedInput = usage?.inputTokens == null
+    ? inputTokens
+    : Math.max(0, usage.inputTokens - (usage.cacheReadTokens ?? 0) - (usage.cacheWriteTokens ?? 0));
   return {
-    input_tokens: usage?.inputTokens ?? inputTokens,
+    input_tokens: uncachedInput,
     output_tokens: usage?.outputTokens ?? message.outputTokens ?? 0,
     ...(usage?.cacheReadTokens
       ? { cache_read_input_tokens: usage.cacheReadTokens }

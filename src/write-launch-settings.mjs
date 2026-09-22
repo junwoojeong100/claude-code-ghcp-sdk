@@ -1,5 +1,5 @@
 import { writeGatewaySettings } from "./claude-gateway-env.mjs";
-import { contextWindowTokensFor } from "./model-map.mjs";
+import { launchModelFor, primaryModelPicker } from "./model-map.mjs";
 
 const [outputPath, baseUrl, token, frontendModel] = process.argv.slice(2);
 if (!outputPath || !baseUrl || !token || !frontendModel) {
@@ -9,7 +9,6 @@ if (!outputPath || !baseUrl || !token || !frontendModel) {
   process.exit(2);
 }
 
-const contextWindowTokens = contextWindowTokensFor(frontendModel);
 const nativeToolSearch = process.env.GHCP_NATIVE_TOOL_SEARCH ?? "0";
 if (!["0", "1"].includes(nativeToolSearch)) {
   throw new Error("GHCP_NATIVE_TOOL_SEARCH must be 0 or 1.");
@@ -17,7 +16,8 @@ if (!["0", "1"].includes(nativeToolSearch)) {
 writeGatewaySettings(outputPath, {
   baseUrl,
   token,
-  model: frontendModel,
+  model: launchModelFor(frontendModel),
+  modelPicker: primaryModelPicker(),
   familyModels: {
     opus: "claude-opus-5",
     sonnet: "claude-sonnet-5",
@@ -34,8 +34,7 @@ writeGatewaySettings(outputPath, {
     ENABLE_TOOL_SEARCH: nativeToolSearch === "1" ? "true" : "",
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
-    ...(contextWindowTokens
-      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindowTokens) }
-      : {}),
+    // Context belongs to the selected model, not the model used at startup.
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS: "",
   },
 });

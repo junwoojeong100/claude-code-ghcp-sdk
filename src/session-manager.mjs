@@ -34,6 +34,7 @@ const DEFAULT_PENDING_TOOL_WAIT_MS = 10_000;
 const DEFAULT_MAX_TOOL_RESULTS = 32;
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
+const DEFAULT_SESSION_OPERATION_TIMEOUT_MS = 60_000;
 // Claude can call a tool the client never declared (ExitPlanMode while in plan
 // mode). Such a call is expected never to be registered, so no result can ever
 // arrive -- but that is an expectation, not a guarantee: the runtime that
@@ -192,6 +193,13 @@ function createAbortError() {
   return error;
 }
 
+export class SessionOperationTimeoutError extends Error {
+  constructor(operation, timeoutMs) {
+    super(`Timed out waiting for GitHub Copilot ${operation} after ${timeoutMs}ms.`);
+    this.name = "SessionOperationTimeoutError";
+  }
+}
+
 async function bestEffortWithin(operation, timeoutMs) {
   let timer;
   try {
@@ -299,6 +307,7 @@ export class SessionManager {
     onDiagnostic,
     abortTimeoutMs = DEFAULT_ABORT_TIMEOUT_MS,
     cleanupTimeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
+    sessionOperationTimeoutMs = DEFAULT_SESSION_OPERATION_TIMEOUT_MS,
     pendingToolWaitMs = DEFAULT_PENDING_TOOL_WAIT_MS,
     stateIdleTtlMs = DEFAULT_STATE_IDLE_TTL_MS,
     client,
@@ -317,6 +326,8 @@ export class SessionManager {
     this.maxToolResults = maxToolResults;
     this.abortTimeoutMs = abortTimeoutMs;
     this.cleanupTimeoutMs = cleanupTimeoutMs;
+    this.sessionOperationTimeoutMs = sessionOperationTimeoutMs;
+    this.shutdownController = new AbortController();
     this.onDiagnostic = onDiagnostic || (() => {});
     this.pendingToolWaitMs = pendingToolWaitMs;
     this.stateIdleTtlMs = stateIdleTtlMs;
@@ -332,6 +343,7 @@ export class SessionManager {
   }
 
   async start() {
+    if (this.shutdownController.signal.aborted) this.shutdownController = new AbortController();
     await this.client.start();
     this.models = await this.client.listModels();
     const sessions = await this.client.listSessions().catch(() => []);
@@ -343,10 +355,11 @@ export class SessionManager {
   }
 
   async stop() {
-    await Promise.allSettled(this.stateCreations.values());
-    for (const [key, state] of this.states) {
-      await this.#evictState(key, state, { abort: true });
-    }
+    this.shutdownController.abort();
+    await Promise.allSettled([...this.familyQueues.values(), ...this.stateCreations.values()]);
+    await Promise.allSettled(
+      [...this.states].map(([key, state]) => this.#evictState(key, state, { abort: true })),
+    );
     await Promise.allSettled(this.stateEvictions.values());
     this.familyHeads.clear();
     await this.client.stop();
@@ -366,27 +379,96 @@ export class SessionManager {
   }
 
   async execute(body, headers, { requestId, responseId, onReady, onEvent, signal } = {}) {
+    signal = signal
+      ? AbortSignal.any([signal, this.shutdownController.signal])
+      : this.shutdownController.signal;
     const diagnostics = turnDiagnostics(requestId, responseId);
     const familyKey = claudeSessionFamily(
       headers,
       this.anonymousSessionId,
     );
     const previous = this.familyQueues.get(familyKey) || Promise.resolve();
-    const run = previous.then(() =>
-      this.#executeForFamily(body, headers, {
+    let started = false;
+    const run = previous.then(() => {
+      started = true;
+      return this.#executeForFamily(body, headers, {
         onReady,
         onEvent,
         signal,
         diagnostics,
-      }),
-    );
+      });
+    });
     const tracked = run.catch(() => {}).finally(() => {
       if (this.familyQueues.get(familyKey) === tracked) {
         this.familyQueues.delete(familyKey);
       }
     });
     this.familyQueues.set(familyKey, tracked);
-    return run;
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        if (!started) {
+          signal.removeEventListener("abort", onAbort);
+          reject(createAbortError());
+        }
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      run.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+      if (signal.aborted) onAbort();
+    });
+  }
+
+  #sessionOperation(operation, invoke, { signal, diagnostics, onAbandoned } = {}) {
+    const startedAt = performance.now();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error, value) => {
+        if (settled) return false;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        diagnostics?.record(`${operation}.${error ? "failed" : "acknowledged"}`, "setup");
+        if (error) {
+          emitTurnDiagnostic(this.onDiagnostic, {
+            event: "bridge.session_operation_failed",
+            operation,
+            requestId: diagnostics?.requestId,
+            responseId: diagnostics?.responseId,
+            reason: error.name === "AbortError" ? "aborted"
+              : error instanceof SessionOperationTimeoutError ? "timeout" : "error",
+            elapsedMs: Math.round(performance.now() - startedAt),
+            timeoutMs: this.sessionOperationTimeoutMs,
+          });
+          reject(error);
+        } else resolve(value);
+        return true;
+      };
+      const onAbort = () => finish(createAbortError());
+      const timer = setTimeout(
+        () => finish(new SessionOperationTimeoutError(operation, this.sessionOperationTimeoutMs)),
+        this.sessionOperationTimeoutMs,
+      );
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
+      diagnostics?.record(`${operation}.started`, "setup");
+      Promise.resolve().then(() => {
+        if (signal?.aborted) throw createAbortError();
+        return invoke();
+      }).then((value) => {
+        if (!finish(null, value) && onAbandoned) {
+          Promise.resolve().then(() => onAbandoned(value)).catch(() => {
+            emitTurnDiagnostic(this.onDiagnostic, { event: "bridge.session_cleanup_failed", operation });
+          });
+        }
+      }, (error) => finish(error));
+    });
+  }
+
+  async #discardSession(session, sessionId) {
+    emitTurnDiagnostic(this.onDiagnostic, { event: "bridge.session_creation_abandoned" });
+    await bestEffortWithin(() => abortSession(session), this.cleanupTimeoutMs);
+    await bestEffortWithin(() => disconnectSession(session), this.cleanupTimeoutMs);
+    await bestEffortWithin(() => deleteClientSession(this.client, sessionId), this.cleanupTimeoutMs);
+    this.knownSessionIds.delete(sessionId);
   }
 
   async #executeForFamily(body, headers, { onReady, onEvent, signal, diagnostics }) {
@@ -401,6 +483,8 @@ export class SessionManager {
     let state = await this.#getOrCreateState(body, headers, {
       model,
       reasoningEffort,
+      signal,
+      diagnostics,
     });
     const currentHistory = historySnapshot(body.messages);
     const familyHead = this.familyHeads.get(state.identity.familyKey);
@@ -432,6 +516,8 @@ export class SessionManager {
       state = await this.#getOrCreateState(body, headers, {
         model,
         reasoningEffort,
+        signal,
+        diagnostics,
       });
     }
     state.historySnapshot = currentHistory;
@@ -463,7 +549,7 @@ export class SessionManager {
     }
   }
 
-  async #getOrCreateState(body, headers, { model, reasoningEffort }) {
+  async #getOrCreateState(body, headers, { model, reasoningEffort, signal, diagnostics }) {
     const systemMessage = extractSystem(body.system, body.messages);
     const identity = createStateIdentity({
       anonymousSessionId: this.anonymousSessionId,
@@ -517,24 +603,36 @@ export class SessionManager {
 
     let session;
     let resumed = false;
-    if (this.knownSessionIds.has(sessionId)) {
-      try {
-        session = await this.client.resumeSession(sessionId, {
-          ...sessionOptions,
-          continuePendingWork: true,
-        });
-        resumed = true;
-      } catch {
-        this.knownSessionIds.delete(sessionId);
+    const waitForSession = (operation, invoke) => this.#sessionOperation(operation, invoke, {
+      signal,
+      diagnostics,
+      onAbandoned: (lateSession) => this.#discardSession(lateSession, sessionId),
+    });
+    try {
+      if (this.knownSessionIds.has(sessionId)) {
+        try {
+          session = await waitForSession("session.resume", () => this.client.resumeSession(sessionId, {
+            ...sessionOptions,
+            continuePendingWork: true,
+          }));
+          resumed = true;
+        } catch (error) {
+          if (error.name === "AbortError" || error instanceof SessionOperationTimeoutError) throw error;
+          this.knownSessionIds.delete(sessionId);
+        }
       }
-    }
 
-    if (!session) {
-      session = await this.client.createSession({
-        sessionId,
-        ...sessionOptions,
-      });
-      this.knownSessionIds.add(sessionId);
+      if (!session) {
+        session = await waitForSession("session.create", () => this.client.createSession({
+          sessionId,
+          ...sessionOptions,
+        }));
+        this.knownSessionIds.add(sessionId);
+      }
+    } catch (error) {
+      this.knownSessionIds.delete(sessionId);
+      this.sessionGenerations.set(key, generation + 1);
+      throw error;
     }
 
     const state = {
@@ -602,7 +700,7 @@ export class SessionManager {
 
   async #executeLocked(state, body, reasoningEffort, onEvent, signal, diagnostics) {
     if (signal?.aborted) throw createAbortError();
-    await this.#applyReasoningEffort(state, reasoningEffort);
+    await this.#applyReasoningEffort(state, reasoningEffort, signal, diagnostics);
     const input = extractTurnInput(body);
     const send = (options) => diagnostics.call("send", () => state.session.send(options));
 
@@ -819,13 +917,18 @@ export class SessionManager {
     );
   }
 
-  async #applyReasoningEffort(state, reasoningEffort) {
+  async #applyReasoningEffort(state, reasoningEffort, signal, diagnostics) {
     if (reasoningEffort === state.reasoningEffort) return;
 
-    await state.session.setModel(
-      state.model,
-      reasoningEffort ? { reasoningEffort } : undefined,
-    );
+    try {
+      await this.#sessionOperation("session.set_model", () => state.session.setModel(
+        state.model,
+        reasoningEffort ? { reasoningEffort } : undefined,
+      ), { signal, diagnostics });
+    } catch (error) {
+      state.invalidated = true;
+      throw error;
+    }
     state.reasoningEffort = reasoningEffort;
   }
 

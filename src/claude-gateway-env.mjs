@@ -10,6 +10,7 @@ export const CLAUDE_PROVIDER_SELECTORS = Object.freeze([
 ]);
 
 export const CLAUDE_INHERITED_MODEL_OPTIONS = Object.freeze([
+  "ANTHROPIC_DEFAULT_MODEL",
   "ANTHROPIC_DEFAULT_FABLE_MODEL",
   "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
   "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION",
@@ -30,6 +31,7 @@ export function createGatewaySettings({
   familyModels,
   displayNames,
   description,
+  modelPicker,
   extraEnv = {},
 }) {
   const usesFamilyModel = Object.values(familyModels).includes(model);
@@ -44,6 +46,7 @@ export function createGatewaySettings({
   };
 
   return {
+    ...(modelPicker ? { modelPicker } : {}),
     env: {
       ANTHROPIC_BASE_URL: baseUrl,
       ANTHROPIC_AUTH_TOKEN: token,

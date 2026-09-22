@@ -7,8 +7,8 @@
 모든 슬롯은 실제 경로를 그대로 지납니다: 진짜 Claude Code 바이너리 → 브리지 → Copilot SDK → Copilot 모델. 목이나 스텁은 없습니다. 판정은 모델이 무엇을 말했는지가 아니라 **디스크 상태, git 이력, 훅 로그, stream-json 이벤트**로 합니다.
 
 - Claude Code: `2.1.278`
-- 실행 시각: 2026-09-22T00:52:51.013Z → 2026-09-22T01:05:52.772Z
-- 소요: 782초
+- 실행 시각: 2026-09-22T03:37:17.139Z → 2026-09-22T03:50:31.395Z
+- 소요: 794초
 - 호스트: darwin arm64 / node v22.16.0
 
 ## 정책, 완전성 및 코드 출처
@@ -18,8 +18,8 @@
 - 예상: 77 / 실제: 77
 - 결과: PASS
 - 엄격한 통과는 비어 있지 않은 예상 매트릭스의 정확하고 중복 없는 완료, 모든 슬롯의 pass, 사용자 설정 보존 및 시작/종료 코드 출처 일치를 요구합니다.
-- 코드 출처 start: commit: c5993091af3aa905d51257130543f82f497fd2f7; dirty: true; fingerprint: sha256 verification-code-v1 ca257bf4ee47104ef0999ceb6d1387e2801164132c054d75b8fcfaf0eafee84c; files: 41
-- 코드 출처 end: commit: c5993091af3aa905d51257130543f82f497fd2f7; dirty: true; fingerprint: sha256 verification-code-v1 ca257bf4ee47104ef0999ceb6d1387e2801164132c054d75b8fcfaf0eafee84c; files: 41
+- 코드 출처 start: commit: 96e5e46eb96e5cc3974f8e8cc55721aa0b1367a1; dirty: true; fingerprint: sha256 verification-code-v1 c19b6ba224ec3906fb9930fc23db72476101d4884dae47b9e96089177fecd6ad; files: 41
+- 코드 출처 end: commit: 96e5e46eb96e5cc3974f8e8cc55721aa0b1367a1; dirty: true; fingerprint: sha256 verification-code-v1 c19b6ba224ec3906fb9930fc23db72476101d4884dae47b9e96089177fecd6ad; files: 41
 
 ## 기록된 실행 설정
 

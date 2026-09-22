@@ -1,3 +1,15 @@
+const PRIMARY_MODEL_NAMES = Object.freeze({
+  "claude-opus-5": "Claude Opus 5",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-haiku-4.5": "Claude Haiku 4.5",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
+  "gpt-6-astra": "GPT-6 Astra",
+});
+
+export const PRIMARY_MODELS = Object.freeze(Object.keys(PRIMARY_MODEL_NAMES));
+
 const FAMILY_CANDIDATES = {
   fable: ["claude-fable-5"],
   opus: [
@@ -210,6 +222,7 @@ function gatewayDisplayName(model) {
 
 export function gatewayModelEntries(models) {
   return adapterModels(models)
+    .filter((model) => PRIMARY_MODELS.includes(model.id))
     .filter((model) => !CLAUDE_CODE_BUILT_IN_MODELS.has(model.id))
     .map((model) => ({
       id: gatewayPickerId(model),
@@ -224,4 +237,22 @@ export function gatewayModelEntries(models) {
 export function contextWindowTokensFor(model) {
   const copilotModel = copilotModelForFrontend(model);
   return MODEL_CONTEXT_WINDOW_TOKENS.get(copilotModel) ?? null;
+}
+
+export function launchModelFor(model) {
+  const backend = copilotModelForFrontend(model);
+  return contextWindowTokensFor(backend) >= ONE_MILLION_CONTEXT_TOKENS
+    ? `${pickerModelFor(backend)}[1m]`
+    : frontendModelFor(backend);
+}
+
+export function primaryModelPicker() {
+  return {
+    replaceBuiltInOptions: true,
+    options: PRIMARY_MODELS.map((id) => ({
+      model: launchModelFor(id),
+      label: gatewayDisplayName({ id, name: PRIMARY_MODEL_NAMES[id] }),
+      description: "Routed through GitHub Copilot SDK",
+    })),
+  };
 }
