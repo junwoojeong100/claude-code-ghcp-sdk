@@ -199,6 +199,15 @@ test("daemon reuse includes the SDK session-operation timeout in its fingerprint
   );
 });
 
+test("daemon reuse includes both turn deadline settings", () => {
+  for (const name of ["TURN_IDLE_TIMEOUT_MS", "TURN_MAX_DURATION_MS"]) {
+    assert.notEqual(
+      daemonConfigFingerprint({ [name]: "300000" }),
+      daemonConfigFingerprint({ [name]: "600000" }),
+    );
+  }
+});
+
 test("restarting on a changed config fingerprint clears settings files", async (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), "ghcp-daemon-"));
   // An unparseable MAX_ value makes the replacement bridge exit while it reads

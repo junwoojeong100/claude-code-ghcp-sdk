@@ -219,8 +219,20 @@ cache-read, cache-creation 필드로 나누며, 같은 토큰을 중복으로 �
 SDK session 생성·재개·effort 변경에는 `SESSION_OPERATION_TIMEOUT_MS`라는 별도의
 대기 제한(기본 **60,000ms**)을 적용합니다. 준비 중이거나 큐에서 기다리는 요청도
 취소할 수 있고, 늦게 도착한 준비 응답이 폐기된 세션을 복구하지 못하게 합니다.
-모델 추론 timeout과는 별개입니다. 무한 대기 대신 내용을 포함하지 않는
+모델 턴에는 실제 root의 텍스트·추론·도구 입력 진행으로 갱신되는 **5분 idle 제한**과,
+갱신되지 않는 **30분 전체 상한**을 따로 적용합니다
+(`TURN_IDLE_TIMEOUT_MS`, `TURN_MAX_DURATION_MS`). 답변이 계속 생성되는 중인데도
+5분 경과만으로 끊지 않습니다. 준비 단계 무한 대기는 내용을 포함하지 않는
 `bridge.session_operation_failed` 진단으로 실패를 알립니다.
+
+주요 GPT 모델은 SDK의 long-context tier를 명시하고 조회한 catalog의 숫자 한도를
+함께 전달합니다. SDK 기본 tier는 표시된 모델 window보다 작을 수 있습니다.
+야간 실측에서 Astra의 입력 한도는 기본 272K였지만, long tier와 catalog
+capabilities를 적용하자 1.05M이었습니다. 실제 한도는 `bridge.context_budget`으로
+기록합니다. SDK의 자체 압축·잘라내기로 문맥이 조용히 유실되지 않도록 해당 상태를
+무효화하고, Claude Code가 원본 transcript를 압축할 수 있는 context-limit 오류를
+반환합니다. 모델 스트리밍 전에 발견된 오류는 HTTP 200 스트림으로 바꾸지 않고
+HTTP 400으로 유지해야 native overflow 복구가 작동합니다.
 
 이미 실행 중인 foreground bridge는 로드한 이전 코드를 계속 사용합니다. 기존
 Claude Code를 종료한 뒤 같은 프로젝트 디렉터리에서 이전 모델로 재개합니다.
@@ -370,6 +382,10 @@ VS Code나 JetBrains의 통합 터미널에서 실행 스크립트를 직접 실
 ## 검증
 
 ### 모델 피커·긴 대화 후속 개선
+
+이후 야간 조사에서 SDK context tier 정합성, 명시적 overflow 복구, 진행 기반
+턴 대기 제한을 추가했습니다. 아래 전체 77/77 기록은 이 야간 수정 전의 실행이며,
+수정된 runtime을 새로 전체 검증했다는 뜻은 아닙니다.
 
 설치된 Claude Code 2.1.278의 native control API에서 주요 7개 모델과 `Default`
 별칭만 표시되는 것을 확인했습니다. Astra -> Haiku -> GPT-5.6 Sol 전환 시

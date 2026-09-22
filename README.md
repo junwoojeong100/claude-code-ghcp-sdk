@@ -202,9 +202,23 @@ compaction. Automatic compaction remains owned by Claude Code.
 SDK session creation, resume and effort changes now have a separate
 `SESSION_OPERATION_TIMEOUT_MS` deadline (default **60,000 ms**). Cancellation
 also works during setup and while queued; a late setup reply cannot restore an
-abandoned session. The model-turn timeout remains separate. Failures emit
+abandoned session. A model turn has a **5-minute idle timeout** reset by real
+root text, reasoning or tool-input progress, plus a separate **30-minute hard
+cap** (`TURN_IDLE_TIMEOUT_MS`, `TURN_MAX_DURATION_MS`). An active long response
+is no longer cut off merely because five minutes elapsed. Failures emit
 content-free `bridge.session_operation_failed` diagnostics instead of waiting
 indefinitely before the model-turn timer starts.
+
+The primary GPT models explicitly select the SDK's long-context tier and pass
+through their discovered numeric catalogue limits. The SDK's default tier can
+be smaller than the advertised model window: the overnight probe measured
+Astra at 272K input tokens by default, versus 1.05M after applying its long tier
+and catalogue capabilities. `bridge.context_budget` records the actual runtime
+limit. SDK-side compaction/truncation is not accepted as silent history loss:
+the bridge invalidates that state and returns a recognizable context-limit
+error so Claude Code can compact its canonical transcript. Errors detected
+before model streaming retain HTTP 400 instead of becoming a successful HTTP
+200 stream, which is necessary for native overflow recovery.
 
 An already-running foreground bridge keeps its loaded code. Exit the old Claude
 Code process, then resume from the same project directory using the previous
@@ -321,6 +335,11 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 ## Validation
 
 ### Picker and long-conversation follow-up
+
+The subsequent overnight investigation added SDK context-tier alignment,
+explicit overflow recovery and progress-based turn deadlines. The full 77/77
+record below predates those overnight corrections; it is not a new full-matrix
+claim for the modified runtime.
 
 The installed Claude Code 2.1.278 reported the seven configured picker models
 and its `Default` alias through its native control API. Switching Astra ->

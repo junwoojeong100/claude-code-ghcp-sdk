@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AnthropicSseStream, startSse } from "../src/anthropic.mjs";
+import { AnthropicSseStream, startSse, writeJsonMessage } from "../src/anthropic.mjs";
 import { SessionManager } from "../src/session-manager.mjs";
 import { PRIMARY_MODELS } from "../scripts/verify/scenarios.mjs";
 
@@ -144,6 +144,156 @@ function request(effort, model = "gpt-5.6-sol") {
 function transientBudget(tokens) {
   return `<system-reminder>\n<total_tokens>${tokens} tokens left</total_tokens>\n</system-reminder>`;
 }
+
+test("SDK context tier and catalogue limits survive creation and effort changes", async () => {
+  const limits = { max_context_window_tokens: 1178000, max_prompt_tokens: 1050000, max_output_tokens: 128000 };
+  const client = new FakeClient([{ id: "gpt-6-astra", capabilities: {
+    limits, supports: { reasoningEffort: true }, supportedReasoningEfforts: ["low", "high"],
+  } }]);
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: ".", client, onDiagnostic: (event) => diagnostics.push(event) });
+  await manager.start();
+  try {
+    await manager.execute(request("low", "gpt-6-astra"), {});
+    assert.equal(client.created[0].contextTier, "long_context");
+    assert.deepEqual(client.created[0].modelCapabilities, { limits });
+    client.session.emit("session.usage_info", { tokenLimit: 1050000, currentTokens: 400000 });
+    client.session.emit("session.usage_info", { tokenLimit: 1050000, currentTokens: 500000 });
+    const budget = diagnostics.filter((event) => event.event === "bridge.context_budget");
+    assert.equal(budget.length, 1);
+    assert.equal(budget[0].tokenLimit, 1050000);
+    await manager.execute(request("high", "gpt-6-astra"), {});
+    assert.deepEqual(client.session.setModelCalls.at(-1), { model: "gpt-6-astra",
+      options: { contextTier: "long_context", modelCapabilities: { limits }, reasoningEffort: "high" } });
+  } finally { await manager.stop(); }
+});
+
+for (const [type, data] of [
+  ["assistant.message_delta", { deltaContent: "progress" }],
+  ["assistant.reasoning_delta", { deltaContent: "reasoning", reasoningId: "r" }],
+  ["assistant.tool_call_delta", { inputDelta: "{\"value\":", toolCallId: "t" }],
+]) {
+  test(`meaningful root ${type} progress prevents an absolute-time cutoff`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: ".", client, turnTimeoutMs: 60, maxTurnDurationMs: 1000 });
+    let interval;
+    let completion;
+    client.session.sendImplementation = async () => {
+      client.session.emit("assistant.turn_start");
+      interval = setInterval(() => client.session.emit(type, data), 15);
+      completion = setTimeout(() => {
+        clearInterval(interval);
+        client.session.emit("assistant.message", { content: "complete", toolRequests: [] });
+        client.session.emit("session.idle");
+      }, 170);
+    };
+    await manager.start();
+    try {
+      assert.equal((await manager.execute(request(), {})).message.content, "complete");
+      assert.equal(client.session.abortCalls, 0);
+    } finally { clearInterval(interval); clearTimeout(completion); await manager.stop(); }
+  });
+}
+
+test("empty and subagent deltas cannot keep a silent root turn alive", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client, turnTimeoutMs: 50, maxTurnDurationMs: 1000 });
+  let interval;
+  client.session.sendImplementation = async () => {
+    interval = setInterval(() => {
+      client.session.emit("assistant.message_delta", { deltaContent: "" });
+      client.session.emit("assistant.reasoning_delta", { deltaContent: "child work" }, { agentId: "child" });
+      client.session.emit("assistant.tool_call_delta", { inputDelta: "child work" }, { agentId: "child" });
+    }, 10);
+  };
+  await manager.start();
+  try {
+    await assert.rejects(manager.execute(request(), {}), /Timed out waiting/);
+    assert.equal(client.session.abortCalls, 1);
+  } finally { clearInterval(interval); await manager.stop(); }
+});
+
+test("continuous root progress still has an independent hard deadline", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: ".", client, turnTimeoutMs: 80, maxTurnDurationMs: 130,
+    onDiagnostic: (event) => diagnostics.push(event) });
+  let interval;
+  client.session.sendImplementation = async () => {
+    interval = setInterval(() => client.session.emit("assistant.message_delta", { deltaContent: "more" }), 10);
+  };
+  await manager.start();
+  try {
+    await assert.rejects(manager.execute(request(), {}), /hard duration limit/);
+    assert.equal(diagnostics.find((event) => event.event === "bridge.turn_timeout").reason, "duration_limit");
+    assert.equal(client.session.abortCalls, 1);
+  } finally { clearInterval(interval); await manager.stop(); }
+});
+
+test("SDK truncation fails explicitly and the next compacted request starts a fresh session", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const old = client.session;
+  const next = new FakeSession();
+  client.createSessionImplementation = () => client.created.length === 1 ? old : next;
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: ".", client, onDiagnostic: (event) => diagnostics.push(event) });
+  const forwarded = [];
+  old.sendImplementation = async () => {
+    old.emit("session.truncation", { tokenLimit: 272000, messagesRemovedDuringTruncation: 2,
+      tokensRemovedDuringTruncation: 50000, performedBy: "PRIVATE_PAYLOAD" });
+    old.emit("assistant.message_delta", { deltaContent: "must not return a truncated answer" });
+    old.emit("assistant.message", { content: "must not return a truncated answer", toolRequests: [] });
+    old.emit("session.idle");
+  };
+  await manager.start();
+  try {
+    await assert.rejects(manager.execute(request(), {}, { onEvent: (event) => forwarded.push(event) }),
+      (error) => error.name === "BridgeRequestError" && /prompt is too long/.test(error.message));
+    assert.deepEqual(forwarded, []);
+    assert.equal(old.abortCalls, 1);
+    assert.equal(client.deleted.length, 1);
+    assert.equal((await manager.execute({ ...request(), messages: [{ role: "user", content: "Compacted retained history" }] }, {})).message.content, "ok");
+    assert.notEqual(client.created[0].sessionId, client.created[1].sessionId);
+    assert.equal(diagnostics.find((event) => event.event === "bridge.context_limit").tokenLimit, 272000);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_PAYLOAD/);
+  } finally { await manager.stop(); }
+});
+
+test("subagent truncation does not abort the root session", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client });
+  client.session.sendImplementation = async () => {
+    client.session.emit("session.truncation", { tokenLimit: 100, messagesRemovedDuringTruncation: 2,
+      tokensRemovedDuringTruncation: 20 }, { agentId: "other-agent" });
+    client.session.emit("assistant.message", { content: "root still healthy", toolRequests: [] });
+    client.session.emit("session.idle");
+  };
+  await manager.start();
+  try {
+    assert.equal((await manager.execute(request(), {})).message.content, "root still healthy");
+    assert.equal(client.session.abortCalls, 0);
+  } finally { await manager.stop(); }
+});
+
+test("SDK compaction between HTTP turns cannot silently hide history from the next request", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const old = client.session;
+  const replacement = new FakeSession();
+  client.createSessionImplementation = () => client.created.length === 1 ? old : replacement;
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: ".", client, onDiagnostic: (e) => diagnostics.push(e) });
+  await manager.start();
+  try {
+    await manager.execute(request(), {});
+    old.emit("session.compaction_start", { tokenLimit: 272000, currentTokens: 273000, trigger: "threshold" });
+    old.emit("session.compaction_complete", { success: true, tokenLimit: 272000, tokensRemoved: 50000, messagesRemoved: 3 });
+    await assert.rejects(manager.execute(request(), {}), /prompt is too long/);
+    assert.equal(old.sendCalls.length, 1, "do not send the next prompt into reduced upstream history");
+    assert.equal(client.deleted.length, 1);
+    assert.equal((await manager.execute(request(), {})).message.content, "ok");
+    assert.ok(diagnostics.some((e) => e.event === "bridge.context_limit" && e.phase === "between_requests"));
+  } finally { await manager.stop(); }
+});
 
 async function settlementWithin(promise, ms = 200) {
   let timer;
@@ -918,16 +1068,26 @@ test("successful turns do not emit turn diagnostics", async () => {
   }
 });
 
-for (const [label, usageEvent] of [
-  ["returns null without usage events", null],
-  ["preserves explicit input zero", { inputTokens: 0, outputTokens: 7 }],
-  ["currently defaults omitted input to zero", { outputTokens: 7 }],
+for (const [label, usageEvents, inputTokens, outputTokens] of [
+  ["returns null without usage events", [], undefined, undefined],
+  ["preserves explicit input zero", [{ inputTokens: 0, outputTokens: 7 }], 0, 7],
+  ["preserves explicit output zero", [{ inputTokens: 12, outputTokens: 0 }], 12, 0],
+  ["preserves omitted input", [{ outputTokens: 7 }], undefined, 7],
+  ["preserves omitted output", [{ inputTokens: 12 }], 12, undefined],
+  ["preserves both missing counters", [{}], undefined, undefined],
+  ["treats null counters as missing", [{ inputTokens: null, outputTokens: null }], undefined, undefined],
+  ["sums complete counters", [{ inputTokens: 12, outputTokens: 3 }, { inputTokens: 8, outputTokens: 5 }], 20, 8],
+  ["sums explicit zero counters", [{ inputTokens: 0, outputTokens: 0 }, { inputTokens: 0, outputTokens: 0 }], 0, 0],
+  ["does not hide missing earlier input", [{ outputTokens: 3 }, { inputTokens: 8, outputTokens: 5 }], undefined, 8],
+  ["does not hide missing later input", [{ inputTokens: 12, outputTokens: 3 }, { outputTokens: 5 }], undefined, 8],
+  ["does not hide missing earlier output", [{ inputTokens: 12 }, { inputTokens: 8, outputTokens: 5 }], 20, undefined],
+  ["does not hide missing later output", [{ inputTokens: 12, outputTokens: 3 }, { inputTokens: 8 }], 20, undefined],
 ]) {
-  test(`usage collection ${label}`, async () => {
+  test(`usage collection ${label} through JSON and SSE`, async () => {
     const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
     const manager = new SessionManager({ baseDirectory: ".", client });
     client.session.sendImplementation = async () => {
-      if (usageEvent) client.session.emit("assistant.usage", usageEvent);
+      for (const usage of usageEvents) client.session.emit("assistant.usage", usage);
       client.session.emit("assistant.message", {
         content: "done", toolRequests: [], outputTokens: 99,
       });
@@ -936,20 +1096,66 @@ for (const [label, usageEvent] of [
     await manager.start();
     try {
       const result = await manager.execute(request(), {});
-      assert.deepEqual(result.usage, usageEvent === null ? null : {
+      assert.deepEqual(result.usage, usageEvents.length === 0 ? null : {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         contentFilterTriggered: false,
         finishReason: null,
-        inputTokens: 0,
-        outputTokens: 7,
+        inputTokens,
+        outputTokens,
         reasoningTokens: 0,
       });
+      const expected = { input_tokens: inputTokens ?? 321, output_tokens: outputTokens ?? 99 };
+      const json = fakeResponse();
+      writeJsonMessage(json, { id: "msg_usage", inputTokens: 321, ...result });
+      assert.deepEqual(JSON.parse(json.chunks.join("")).usage, expected);
+      const sse = fakeResponse();
+      startSse(sse);
+      new AnthropicSseStream(sse, { id: "msg_usage", inputTokens: 321 }).finish(result);
+      const events = sseEvents(sse);
+      assert.equal(events.find((event) => event.type === "message_start").message.usage.input_tokens, 321);
+      assert.deepEqual(events.find((event) => event.type === "message_delta").usage, expected);
     } finally {
       await manager.stop();
     }
   });
 }
+
+test("cache-only usage preserves fallback counters and finish metadata", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client });
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.usage", { inputTokens: 10, cacheReadTokens: 3, outputTokens: 5 });
+    client.session.emit("assistant.usage", { cacheWriteTokens: 4, reasoningTokens: 2, finishReason: "length" });
+    client.session.emit("assistant.message", { content: "done", toolRequests: [], outputTokens: 99 });
+    client.session.emit("session.idle");
+  };
+  await manager.start();
+  try {
+    const result = await manager.execute(request(), {});
+    assert.deepEqual(result.usage, {
+      cacheReadTokens: 3, cacheWriteTokens: 4, reasoningTokens: 2,
+      inputTokens: undefined, outputTokens: undefined,
+      contentFilterTriggered: false, finishReason: "length",
+    });
+    const json = fakeResponse();
+    writeJsonMessage(json, { id: "msg_cache", inputTokens: 321, ...result });
+    const body = JSON.parse(json.chunks.join(""));
+    assert.deepEqual(body.usage, {
+      input_tokens: 321, output_tokens: 99,
+      cache_read_input_tokens: 3, cache_creation_input_tokens: 4,
+    });
+    assert.equal(body.stop_reason, "max_tokens");
+    const sse = fakeResponse();
+    startSse(sse);
+    new AnthropicSseStream(sse, { id: "msg_cache", inputTokens: 321 }).finish(result);
+    const delta = sseEvents(sse).find((event) => event.type === "message_delta");
+    assert.deepEqual(delta.usage, body.usage);
+    assert.equal(delta.delta.stop_reason, "max_tokens");
+  } finally {
+    await manager.stop();
+  }
+});
 
 test("returns actual SDK usage when an assistant usage event is available", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);

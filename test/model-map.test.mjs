@@ -14,6 +14,7 @@ import {
   PRIMARY_MODELS,
   resolveCopilotModel,
   resolveReasoningEffort,
+  sdkContextOptionsFor,
 } from "../src/model-map.mjs";
 
 const availableIds = [
@@ -31,6 +32,24 @@ const availableIds = [
   "auto",
   "gpt-5-mini",
 ];
+
+test("primary GPT models opt into SDK long context using only advertised numeric limits", () => {
+  for (const id of ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    const limits = { max_context_window_tokens: 1178000, max_prompt_tokens: 1050000, max_output_tokens: 128000 };
+    assert.deepEqual(sdkContextOptionsFor({ id, capabilities: { limits: { ...limits, unrelated: "not-forwarded" } } }), {
+      contextTier: "long_context", modelCapabilities: { limits },
+    });
+  }
+  for (const model of [
+    { id: "gpt-6-astra" },
+    { id: "gpt-6-astra", capabilities: { limits: { max_context_window_tokens: 200000 } } },
+    { id: "claude-haiku-4.5", capabilities: { limits: { max_context_window_tokens: 200000 } } },
+    { id: "unverified-model", capabilities: { limits: { max_context_window_tokens: 1000000 } } },
+  ]) assert.deepEqual(sdkContextOptionsFor(model), {});
+  assert.deepEqual(sdkContextOptionsFor({ id: "gpt-6-astra", capabilities: { limits: {
+    max_context_window_tokens: 1178000, max_prompt_tokens: -1, max_output_tokens: "128000",
+  } } }), { contextTier: "long_context", modelCapabilities: { limits: { max_context_window_tokens: 1178000 } } });
+});
 
 test("maps Claude Code version syntax to Copilot model syntax", () => {
   assert.equal(copilotModelForFrontend("claude-sonnet-4-6"), "claude-sonnet-4.6");

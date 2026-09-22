@@ -128,6 +128,11 @@ SDK session 생성·재개와 `setModel()`에는 추론 timeout과 별도로
 캐시에 설치하지 않고 정리합니다. Persistent daemon의 설정 지문에도 이 제한이
 포함됩니다.
 
+모델 턴의 idle 대기와 전체 시간 상한은 별개입니다. Root의 실제 텍스트·추론·
+도구 입력 delta는 idle timer를 갱신하지만, 빈 delta나 subagent 이벤트는
+갱신하지 않습니다. 계속 출력하는 턴에도 전체 시간 상한은 유지하며, 두 값 모두
+daemon 설정 지문에 포함됩니다.
+
 ### 모델 ID 변환
 
 Claude Code와 Copilot 모델 ID의 version separator 차이를 변환합니다.
@@ -167,12 +172,29 @@ GPT-5.6 1,050,000·Astra 1,178,000 한도 안에 둡니다. 임시 settings는 �
 Claude 모델은 native 한도를 사용하며 Haiku로 바꾸면 200K로 돌아갑니다.
 Native 자동 압축과 사용자가 지정한 더 작은 window도 유지됩니다.
 
+주요 GPT 네 모델의 SDK 세션은 생성·재개·effort 변경 시
+`contextTier: "long_context"`를 명시하고, 조회한 catalog의 숫자
+context/prompt/output 한도만 전달합니다. Catalog에 큰 window가 표시되는 것만으로
+runtime의 tier가 선택되지는 않습니다. 실제 Astra 입력 예산은 기본 272K였고,
+long tier와 catalog 한도를 함께 적용하자 1.05M이었습니다.
+`bridge.context_budget`으로 유효한 SDK 예산을 기록합니다.
+
+SDK는 `infiniteSessions.enabled`가 false여도 자체 압축을 수행할 수 있습니다.
+턴 도중과 요청 사이의 root 압축·잘라내기를 추적해 축소된 backend 문맥을 조용히
+재사용하지 않습니다. 해당 상태를 폐기하고 `prompt is too long` invalid-request
+오류를 반환합니다. 모델 출력·추론이 시작되기 전에는 HTTP 스트리밍 header를
+확정하지 않아, 초기 오류가 HTTP 400으로 전달되고 Claude Code의 native 압축
+복구가 작동하게 합니다. 스트리밍이 시작되면 쉬는 동안에도 keepalive를 유지합니다.
+추론 진행 이벤트로 스트림을 열더라도 추론 텍스트 자체를 노출하지는 않습니다.
+
 Copilot의 input total에는 캐시 토큰이 포함되지만 Anthropic의 세 입력 범주는
 서로 겹치지 않습니다. 따라서 uncached input은
 `max(0, inputTokens - cacheReadTokens - cacheWriteTokens)`로 변환하고 원래 캐시
 카운터를 함께 전달합니다. 캐시를 사용한 230K 요청이 Claude Code에서 약 460K로
 보이는 문제를 막습니다. 명시적 0은 유지하며 usage 누락에만 기존 추정치를
-사용합니다. 이는 집계 수정이지 prompt-cache 제어 전체의 동등성을 뜻하지 않습니다.
+사용합니다. SDK usage 이벤트 중 입력/출력 카운터가 하나라도 누락되면 해당 합계도
+알 수 없는 값으로 유지하며 실측 0으로 바꾸지 않습니다. 이는 집계 수정이지
+prompt-cache 제어 전체의 동등성을 뜻하지 않습니다.
 
 ### Reasoning effort
 

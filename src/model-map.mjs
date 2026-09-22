@@ -239,6 +239,20 @@ export function contextWindowTokensFor(model) {
   return MODEL_CONTEXT_WINDOW_TOKENS.get(copilotModel) ?? null;
 }
 
+export function sdkContextOptionsFor(model) {
+  const advertised = model?.capabilities?.limits;
+  if (!MODEL_CONTEXT_WINDOW_TOKENS.has(model?.id) ||
+      !Number.isSafeInteger(advertised?.max_context_window_tokens) ||
+      advertised.max_context_window_tokens < ONE_MILLION_CONTEXT_TOKENS) return {};
+  const limits = Object.fromEntries(
+    ["max_context_window_tokens", "max_prompt_tokens", "max_output_tokens"]
+      .filter((name) => Number.isSafeInteger(advertised[name]) && advertised[name] > 0)
+      .map((name) => [name, advertised[name]]),
+  );
+  // The runtime's default tier can be much smaller than the model catalogue.
+  return { contextTier: "long_context", modelCapabilities: { limits } };
+}
+
 export function launchModelFor(model) {
   const backend = copilotModelForFrontend(model);
   return contextWindowTokensFor(backend) >= ONE_MILLION_CONTEXT_TOKENS
