@@ -258,6 +258,9 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 - Mode `0600`, argument handling, and provider detection for LiteLLM settings
 - Request cancellation, state eviction, bounded replay, actual usage, strict
   model selection, request policy, daemon registry, and tool-result idempotency
+- Explicit zero usage is preserved in JSON and SSE instead of replaced with an
+  estimate. Only missing/null usage uses the existing fallback; a zero Claude
+  Code result-envelope input count still fails live verification.
 
 `npm run verify` drives the real path with real models:
 
@@ -280,6 +283,12 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 - Each slot gets its own workspace, `settings.json`, and `CLAUDE_CONFIG_DIR`.
   The runner reads a before/after digest of `~/.claude/settings.json` to detect
   changes; it does not store the contents or use them as slot settings.
+- Resume/fork checks require literal recall with no tools in the seed, resume,
+  or fork. Persistent-memory writes cannot substitute for transcript inheritance,
+  and an inferred calendar date is not accepted as the original deploy window.
+- Launcher verification retains command stdout/stderr and copies bridge/native
+  daemon logs before shutdown removes them. Its background-job snapshot allowlists
+  state/timing fields, excluding provider environment and socket credentials.
 - New runs use `strict-all-pass-v1`: all 77 unique expected slots must pass for
   a full run, and every selected slot must pass for a focused run. Missing,
   duplicate or unexpected slots, changed user settings, or missing/changed
@@ -291,6 +300,20 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
   automatic latest-run selection can otherwise pick a focused or incomplete run.
 
 `npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
+
+The full run `2026-09-22T00-52-51-013Z` passed 77/77 with three model workers and
+two scenario workers per model. This laptop profile reduces startup pressure
+after native background stalls in earlier 7 × 2 runs; defaults, timeout budgets
+and pass criteria are not reduced. See the README for the separate run history
+and [Verification Results](VERIFICATION.md) for the final run alone.
+
+Active bridge turn timeouts and client cancellations emit request-correlated
+`bridge.turn_timeout` / `bridge.turn_aborted` snapshots, followed by
+`bridge.turn_abort_completed`. They record operation stage, RPC acknowledgments,
+root/subagent event counts, at most eight recent event types/timings, and abort
+acknowledgment—not prompts, tool payloads, attachments, or credentials. Diagnostic
+sink failures are reported without changing request settlement. These observations
+do not add retries, extend timeouts, or turn an incomplete slot into a pass.
 
 Large multi-page PDF corpora, broad workflow fan-out, exact compact/rewind
 boundary mapping, and crash-time in-flight tool recovery are outside the

@@ -235,8 +235,8 @@ export const SCENARIOS = Object.freeze([
 
   scenario("v09-session-resume", "Session resume across processes", "프로세스 간 세션 재개", {
     intent:
-      "Closing the laptop and picking the same conversation back up: a second process must inherit the first one's context.",
-    intentKo: "작업을 덮었다 다시 여는 상황 — 두 번째 프로세스가 첫 번째의 문맥을 그대로 이어받아야 한다.",
+      "Closing the laptop and picking the same conversation back up: later processes must recall literal values from conversation context, without tools or persistent memory.",
+    intentKo: "작업을 덮었다 다시 여는 상황 — 이후 프로세스가 도구나 영구 메모리 없이 대화 문맥에서 원래 문자열을 그대로 기억해야 한다.",
     bridgeRisk:
       "Session state is keyed on the upstream connection, so resuming re-opens an empty conversation that answers from nothing.",
     bridgeRiskKo:
@@ -245,8 +245,9 @@ export const SCENARIOS = Object.freeze([
     pass: [
       "The resumed process reports the same session id.",
       "It recalls the planted build id.",
-      "It used no file-reading tool: the answer came from conversation context.",
+      "The seed, resumed, and forked processes use no tools, including persistent-memory reads or writes.",
       "A forked resume inherits the same context under a session id of its own.",
+      "The fork recalls the original deploy-window string without adding a calendar date.",
     ],
     budgetSeconds: 300,
   }),

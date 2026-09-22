@@ -129,7 +129,7 @@ for (const value of [undefined, ""]) {
   });
 }
 
-async function messageRequest(handler, value, url = "/v1/messages") {
+async function messageRequest(handler, value, url = "/v1/messages", onRequest) {
   const req = Object.assign(new EventEmitter(), {
     method: "POST", url, headers: { "x-api-key": "test-only" },
     async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); },
@@ -140,9 +140,76 @@ async function messageRequest(handler, value, url = "/v1/messages") {
     setHeader(name, value) { this.headers[name] = value; },
     end(body) { this.body = JSON.parse(body); this.writableEnded = true; },
   });
-  await handler(req, res);
+  const response = handler(req, res);
+  onRequest?.(req, res);
+  await response;
   return res;
 }
+
+test("model requests receive server-generated request and response correlation IDs", async (t) => {
+  const { handler, manager } = await offlineServer(t);
+  let options;
+  t.mock.method(manager, "execute", async (_body, _headers, value) => {
+    options = value;
+    return { model: "gpt-5.6-sol", message: { content: "ok", toolRequests: [] } };
+  });
+  const response = await messageRequest(handler, {
+    model: "gpt-5.6-sol", messages: [{ role: "user", content: "PRIVATE_PROMPT" }],
+    requestId: "PRIVATE_UNTRUSTED_ID",
+  });
+  assert.match(options.requestId, /^[a-f0-9-]{36}$/);
+  assert.equal(options.responseId, `msg_${options.requestId.replaceAll("-", "")}`);
+  assert.equal(response.body.id, options.responseId);
+  assert.ok(options.signal instanceof AbortSignal);
+  assert.equal(options.signal.aborted, false);
+});
+
+test("measured zero usage is preserved while missing usage keeps the estimate", async (t) => {
+  const { handler, manager } = await offlineServer(t);
+  let usage;
+  t.mock.method(manager, "execute", async () => ({
+    model: "gpt-5.6-sol",
+    message: { content: "ok", toolRequests: [], outputTokens: 7 },
+    usage,
+  }));
+  const body = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "hello" }] };
+  usage = { inputTokens: 0, outputTokens: 0 };
+  const measured = await messageRequest(handler, body);
+  assert.equal(measured.body.usage.input_tokens, 0);
+  assert.equal(measured.body.usage.output_tokens, 0);
+  usage = null;
+  const estimated = await messageRequest(handler, body);
+  assert.ok(estimated.body.usage.input_tokens > 0);
+  assert.equal(estimated.body.usage.output_tokens, 7);
+});
+
+test("a disconnected model request aborts its correlated manager call", async (t) => {
+  const { handler, manager } = await offlineServer(t);
+  let started;
+  const executing = new Promise((resolve) => { started = resolve; });
+  let options;
+  t.mock.method(manager, "execute", (_body, _headers, value) => {
+    options = value;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        reject(Object.assign(new Error("The Claude Code request was aborted."), { name: "AbortError" }));
+      }, { once: true });
+      started();
+    });
+  });
+  let socket;
+  const response = messageRequest(handler, {
+    model: "gpt-5.6-sol", messages: [{ role: "user", content: "hello" }],
+  }, "/v1/messages", (_req, res) => { socket = res; });
+  await executing;
+  socket.emit("close");
+  const result = await response;
+  assert.equal(options.signal.aborted, true);
+  assert.equal(options.responseId, `msg_${options.requestId.replaceAll("-", "")}`);
+  assert.equal(result.status, 499);
+  assert.equal(result.body.error.type, "client_closed_request");
+  assert.equal(socket.listenerCount("close"), 0);
+});
 
 test("invalid request shapes return 400 before SSE and leave the bridge usable", async (t) => {
   const { handler, manager } = await offlineServer(t);

@@ -384,6 +384,352 @@ test("replaces a session when turn timeout abort is not acknowledged", async () 
   }
 });
 
+for (const acknowledged of [false, true]) {
+  test(`turn timeout diagnostics distinguish ${acknowledged ? "model silence" : "an unacknowledged send"}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const diagnostics = [];
+    const manager = new SessionManager({
+      baseDirectory: ".",
+      client,
+      turnTimeoutMs: 20,
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+    client.session.sendImplementation = () => acknowledged
+      ? Promise.resolve()
+      : new Promise(() => {});
+
+    await manager.start();
+    try {
+      await assert.rejects(manager.execute(request(), {}, {
+        requestId: "request-timeout",
+        responseId: "msg_timeout",
+      }), /Timed out waiting for the GitHub Copilot model turn/);
+      const [timeout, abort] = diagnostics;
+      assert.equal(timeout.event, "bridge.turn_timeout");
+      assert.equal(timeout.requestId, "request-timeout");
+      assert.equal(timeout.responseId, "msg_timeout");
+      assert.match(timeout.state, /^[a-f0-9]{12}$/);
+      assert.ok(Number.isFinite(Date.parse(timeout.timestamp)));
+      assert.ok(timeout.elapsedMs >= timeout.turnElapsedMs);
+      assert.ok(timeout.turnElapsedMs >= 0);
+      assert.equal(timeout.stage, acknowledged ? "model" : "send");
+      assert.equal(timeout.triggerFinished, acknowledged);
+      assert.equal(timeout.turnStarted, false);
+      assert.equal(timeout.messages, 0);
+      assert.equal(timeout.pendingToolCalls, 0);
+      assert.deepEqual(timeout.rpc.send, {
+        started: 1, acknowledged: Number(acknowledged), failed: 0,
+      });
+      assert.equal(abort.event, "bridge.turn_abort_completed");
+      assert.equal(abort.reason, "timeout");
+      assert.equal(abort.acknowledged, true);
+      assert.equal(client.session.abortCalls, 1);
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+test("turn diagnostics bound event history and exclude payloads and identifiers", async () => {
+  const secret = "DIAGNOSTIC_SECRET";
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: ".",
+    client,
+    turnTimeoutMs: 20,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  client.session.sendImplementation = async () => {
+    for (let index = 0; index < 32; index += 1) {
+      client.session.emit("assistant.message_delta", { deltaContent: secret });
+      client.session.emit("assistant.message_delta", { deltaContent: secret }, { agentId: secret });
+    }
+    client.session.emit("assistant.message", {
+      content: secret,
+      toolRequests: [{ name: secret, toolCallId: secret, arguments: { secret } }],
+    }, { agentId: secret });
+    client.session.emit("external_tool.requested", {
+      requestId: secret, toolCallId: secret, toolName: secret, arguments: { secret },
+    });
+  };
+
+  await manager.start();
+  try {
+    await assert.rejects(manager.execute({
+      ...request(),
+      system: secret,
+      tools: [{ name: secret, description: secret, input_schema: { type: "object" } }],
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: secret },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: secret } },
+        ],
+      }],
+    }, {
+      "x-claude-code-session-id": secret,
+      "x-claude-code-agent-id": secret,
+      authorization: secret,
+    }), /Timed out/);
+    const timeout = diagnostics[0];
+    assert.equal(timeout.eventCounts["root:assistant.message_delta"], 32);
+    assert.equal(timeout.eventCounts["agent:assistant.message_delta"], 32);
+    assert.equal(timeout.eventCounts["agent:assistant.message"], 1);
+    assert.equal(timeout.eventCounts["root:external_tool.requested"], 1);
+    assert.equal(timeout.turnStarted, false);
+    assert.equal(timeout.messages, 0);
+    assert.equal(timeout.pendingToolCalls, 1);
+    assert.equal(timeout.recentEvents.length, 8);
+    assert.ok(timeout.recentEvents.every((event) => event.elapsedMs >= 0));
+    assert.equal(JSON.stringify(diagnostics).includes(secret), false);
+    assert.equal(client.session.handlers.get("assistant.message").size, 0);
+    assert.equal(client.session.handlers.get("external_tool.requested").size, 1);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("turn diagnostics distinguish a partial result submission from model silence", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: ".",
+    client,
+    turnTimeoutMs: 20,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  const headers = { "x-claude-code-session-id": "session-1" };
+  const toolBody = {
+    ...request(),
+    tools: [{ name: "Read", input_schema: { type: "object" } }],
+  };
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "",
+      toolRequests: [1, 2, 3].map((id) => ({
+        name: "Read", toolCallId: `tool-${id}`, arguments: {},
+      })),
+    });
+    for (const id of [1, 2, 3]) {
+      client.session.emit("external_tool.requested", {
+        requestId: `request-${id}`, toolCallId: `tool-${id}`, toolName: "Read",
+      });
+    }
+  };
+  let releaseResult;
+  client.session.handlePendingToolCallImplementation = async ({ requestId }) => {
+    if (requestId === "request-3") {
+      await new Promise((resolve) => { releaseResult = resolve; });
+    }
+    client.session.emit("external_tool.completed", { requestId });
+    return { success: true };
+  };
+
+  await manager.start();
+  try {
+    await manager.execute(toolBody, headers);
+    assert.deepEqual(diagnostics, []);
+    await assert.rejects(manager.execute({
+      ...toolBody,
+      messages: [{
+        role: "user",
+        content: [1, 2, 3].map((id) => ({
+          type: "tool_result", tool_use_id: `tool-${id}`, content: "PRIVATE_TOOL_RESULT",
+        })),
+      }],
+    }, headers, { requestId: "results-request" }), /Timed out/);
+    const timeout = diagnostics[0];
+    assert.equal(timeout.requestId, "results-request");
+    assert.equal(timeout.stage, "tool_result");
+    assert.equal(timeout.triggerFinished, false);
+    assert.equal(timeout.pendingToolCalls, 1);
+    assert.equal(timeout.pendingRegistrations, 0);
+    assert.deepEqual(timeout.rpc.send, { started: 0, acknowledged: 0, failed: 0 });
+    assert.deepEqual(timeout.rpc.toolResult, { started: 3, acknowledged: 2, failed: 0 });
+    assert.equal(timeout.eventCounts["root:external_tool.completed"], 2);
+    assert.equal(client.session.handledToolCalls.length, 3);
+    assert.equal(JSON.stringify(diagnostics).includes("PRIVATE_TOOL_RESULT"), false);
+    releaseResult();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(timeout.rpc.toolResult.acknowledged, 2);
+  } finally {
+    releaseResult?.();
+    await manager.stop();
+  }
+});
+
+test("turn diagnostics identify a pending tool registration", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: ".",
+    client,
+    turnTimeoutMs: 20,
+    pendingToolWaitMs: 1000,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.message", {
+      content: "PRIVATE_MODEL_OUTPUT",
+      toolRequests: [{ name: "Read", toolCallId: "private-call", arguments: {} }],
+    });
+  };
+  await manager.start();
+  try {
+    await assert.rejects(manager.execute({
+      ...request(),
+      tools: [{ name: "Read", input_schema: { type: "object" } }],
+    }, {}), /Timed out/);
+    const timeout = diagnostics[0];
+    assert.equal(timeout.stage, "tool_registration");
+    assert.equal(timeout.triggerFinished, true);
+    assert.equal(timeout.completionStarted, true);
+    assert.equal(timeout.messages, 1);
+    assert.equal(timeout.toolRequests, 1);
+    assert.equal(timeout.pendingRegistrations, 1);
+    assert.equal(JSON.stringify(diagnostics).includes("PRIVATE_MODEL_OUTPUT"), false);
+    assert.equal(JSON.stringify(diagnostics).includes("private-call"), false);
+  } finally {
+    await manager.stop();
+  }
+});
+
+for (const acknowledged of [false, true]) {
+  test(`client abort diagnostics preserve deferred completion and report abort acknowledgment ${acknowledged}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const diagnostics = [];
+    const controller = new AbortController();
+    const manager = new SessionManager({
+      baseDirectory: ".",
+      client,
+      turnTimeoutMs: 1000,
+      abortTimeoutMs: 20,
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+    let releaseSend;
+    let ready;
+    const started = new Promise((resolve) => { ready = resolve; });
+    client.session.sendImplementation = async () => {
+      client.session.emit("assistant.turn_start");
+      client.session.emit("assistant.message", { content: "PRIVATE_OUTPUT", toolRequests: [] });
+      client.session.emit("assistant.turn_end");
+      ready();
+      await new Promise((resolve) => { releaseSend = resolve; });
+    };
+    if (!acknowledged) client.session.abortImplementation = () => new Promise(() => {});
+    await manager.start();
+    try {
+      const rejected = assert.rejects(manager.execute(request(), {}, {
+        requestId: "aborted-request",
+        signal: controller.signal,
+      }), { name: "AbortError" });
+      await started;
+      controller.abort(new Error("PRIVATE_ABORT_REASON"));
+      assert.equal(diagnostics.length, 1);
+      assert.equal(diagnostics[0].event, "bridge.turn_aborted");
+      assert.equal(diagnostics[0].requestId, "aborted-request");
+      assert.equal(diagnostics[0].stage, "send");
+      assert.equal(diagnostics[0].deferredCompletion, true);
+      assert.equal(diagnostics[0].turnStarted, true);
+      assert.equal(diagnostics[0].eventCounts["root:assistant.turn_end"], 1);
+      await rejected;
+      assert.equal(diagnostics[1].event, "bridge.turn_abort_completed");
+      assert.equal(diagnostics[1].reason, "client_abort");
+      assert.equal(diagnostics[1].acknowledged, acknowledged);
+      assert.ok(diagnostics[1].abortElapsedMs >= 0);
+      assert.equal(JSON.stringify(diagnostics).includes("PRIVATE_"), false);
+    } finally {
+      releaseSend?.();
+      client.session.abortImplementation = null;
+      await manager.stop();
+    }
+  });
+}
+
+for (const asynchronous of [false, true]) {
+  test(`turn diagnostic ${asynchronous ? "rejections" : "exceptions"} are logged without changing the timeout`, async (t) => {
+    const logged = [];
+    t.mock.method(console, "error", (line) => logged.push(JSON.parse(line)));
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const fail = () => { throw new Error("PRIVATE_DIAGNOSTIC_ERROR"); };
+    const manager = new SessionManager({
+      baseDirectory: ".",
+      client,
+      turnTimeoutMs: 20,
+      onDiagnostic: asynchronous ? async () => fail() : fail,
+    });
+    client.session.sendImplementation = async () => {};
+    await manager.start();
+    try {
+      await assert.rejects(manager.execute(request(), {}, {
+        requestId: "failed-diagnostic-request",
+      }), /Timed out waiting for the GitHub Copilot model turn/);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(logged.length, 2);
+      assert.ok(logged.every((event) => event.event === "bridge.diagnostic_error"));
+      assert.ok(logged.every((event) => event.requestId === "failed-diagnostic-request"));
+      assert.deepEqual(logged.map((event) => event.diagnosticEvent), [
+        "bridge.turn_timeout", "bridge.turn_abort_completed",
+      ]);
+      assert.equal(JSON.stringify(logged).includes("PRIVATE_DIAGNOSTIC_ERROR"), false);
+      assert.equal(client.session.abortCalls, 1);
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+test("successful turns do not emit turn diagnostics", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: ".",
+    client,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  await manager.start();
+  try {
+    assert.equal((await manager.execute(request(), {})).message.content, "ok");
+    assert.deepEqual(diagnostics, []);
+  } finally {
+    await manager.stop();
+  }
+});
+
+for (const [label, usageEvent] of [
+  ["returns null without usage events", null],
+  ["preserves explicit input zero", { inputTokens: 0, outputTokens: 7 }],
+  ["currently defaults omitted input to zero", { outputTokens: 7 }],
+]) {
+  test(`usage collection ${label}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: ".", client });
+    client.session.sendImplementation = async () => {
+      if (usageEvent) client.session.emit("assistant.usage", usageEvent);
+      client.session.emit("assistant.message", {
+        content: "done", toolRequests: [], outputTokens: 99,
+      });
+      client.session.emit("session.idle");
+    };
+    await manager.start();
+    try {
+      const result = await manager.execute(request(), {});
+      assert.deepEqual(result.usage, usageEvent === null ? null : {
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        contentFilterTriggered: false,
+        finishReason: null,
+        inputTokens: 0,
+        outputTokens: 7,
+        reasoningTokens: 0,
+      });
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
 test("returns actual SDK usage when an assistant usage event is available", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
   const manager = new SessionManager({

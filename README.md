@@ -287,50 +287,80 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 
 ## Validation
 
-### 2026-09-22 closeout (KST)
+### 2026-09-22 live revalidation (KST)
 
-The second full run below is the final live verification for this closeout.
-**Strict result: NOT GREEN.** Both full runs finalized with exactly 77 unique
-expected records and no missing, duplicate or unexpected slots. Results remain
-separate; passes from different runs are not combined into an all-pass matrix.
+**Strict result: PASS — 77/77 (100%) in one complete run.** The laptop's installed
+native Claude Code **2.1.278** executed every scenario through the bridge and
+Copilot SDK. The final run took **782 seconds (13 min 2 s)**, with no failed,
+blocked, missing, duplicate or unexpected slots and unchanged code/user settings.
+This is the selected matrix's pass rate, not a claim of complete feature coverage
+or guaranteed success on future executions.
 
-- Offline tests: **280/280 passed** (0 failed, cancelled or skipped).
-- Focused Haiku verification: **3/3 passed**, meaning three repetitions of
-  `claude-haiku-4.5` × `v04-shell-ops`, not three different scenarios or a full-matrix pass.
+- Offline tests: **337/337 passed**, 57 more than the original 280; none failed,
+  cancelled or skipped.
+- Latest focused regressions: **7/7 resume/fork** and **7/7 launcher/background**,
+  in two separate runs, not combined into the full-matrix result.
+- Independent audit: **1,337 recorded checks**, **105 headless phase transcripts**,
+  positive raw result-envelope input usage, and retained command/daemon evidence
+  for the seven launcher slots.
 
-| Full run | Run ID (UTC) | Pass / fail / blocked / unknown | Duration | User-settings integrity |
-|---|---|---|---|---|
-| First — NOT GREEN | `2026-09-21T22-54-08-294Z` | 76 / 1 / 0 / 0 | 456 s | Before/after digests differ; writer and cause unknown |
-| Second, final — NOT GREEN | `2026-09-21T23-07-19-056Z` | 74 / 2 / 1 / 0 | 863 s | Before/after digests match |
+Full-run history remains separate, under each run's recorded implementation:
 
-Remaining non-passes:
+| Full run | Run ID (UTC) | Pass / fail / blocked / unknown | Model × scenario workers | Duration | User settings |
+|---|---|---|---|---|---|
+| Previous closeout 1 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 76 / 1 / 0 / 0 | 7 × 2 | 456 s | Changed; writer/cause unknown |
+| Previous closeout 2 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 74 / 2 / 1 / 0 | 7 × 2 | 863 s | Intact |
+| Fresh baseline — NOT GREEN | `2026-09-22T00-01-29-757Z` | 76 / 1 / 0 / 0 | 7 × 2 | 943 s | Intact |
+| First correction — NOT GREEN | `2026-09-22T00-30-59-086Z` | 75 / 2 / 0 / 0 | 7 × 2 | 973 s | Intact |
+| Final — PASS | `2026-09-22T00-52-51-013Z` | **77 / 0 / 0 / 0** | **3 × 2** | **782 s** | **Intact** |
 
-- First run: Sonnet `v09-session-resume` failed build-ID recall, context-only
-  answering (it used `Write`/`Read`), and fork-context inheritance checks.
-- Second run: Sonnet `v09-session-resume` failed the fork-context inheritance
-  check; Opus `v09-session-resume` failed the resumed-turn usage check (`input=0`);
-  Haiku `v05-multi-step` was **blocked** after a 602 s main-turn timeout, with
-  0/4 requested edits landed and neither attachment token returned.
+The previous closeout's Sonnet fork mismatch, Opus zero-result usage, and Haiku
+timeout are retained as historical failures, not retrospectively reclassified.
+Fresh baseline testing instead caught a Luna native background worker stuck at
+startup. The first correction caught an Opus fork refusal and the same native
+startup symptom on Haiku. Both startup stalls occurred before the first bridge
+model request.
 
-Both runs recorded the same start/end commit
-`3b42a61af1d461f3aa6c9bcc807fcb7afdfdd4e1` (dirty checkout) and identical
-41-file `verification-code-v1` SHA-256 fingerprint:
-`0101162ad82ba5f80f123368628f64a325b17dc79eb9ef47897385e9dd2b0f6e`.
-The implementation matched within and across runs; the first run's settings
-change is a separate integrity failure, not an attributed root cause.
+The changes strengthen evidence rather than relax the gate:
 
-Both generated verification documents use **only the second full run**. Raw
-local evidence remains ignored under `.verify-runs/`: `summary.json` and
-`slots.jsonl` in each run directory above; final console
-`worktree-full-2-5VAuJx` (lines 94–99); offline log `offline-handoff-kBZzxb`
-(lines 1688–1695); focused logs `worktree-focused-1.ERWlLC`,
-`worktree-focused-2.BLp7uS`, and `worktree-focused-3.AARTsW` (lines 16–24 each).
-No additional fixes, tests or live reruns were performed during this documentation
-closeout; unresolved outcomes are retained, not waived.
+- Resume/fork prompts ask for the example deployment's original facts. All three
+  phases must use no tools, so persistent-memory writes cannot masquerade as
+  inherited conversation context. Wrong dates, facts and session IDs still fail.
+- Explicit usage zero is no longer replaced by estimates. A zero Claude Code
+  result envelope still fails; finalized assistant usage or cumulative
+  `modelUsage` is not substituted to make it pass.
+- Content-free timeout/cancellation diagnostics and pre-cleanup native daemon
+  snapshots distinguish bridge stalls from native startup stalls. Command
+  stdout/stderr and daemon logs survive cleanup.
+
+Broad earlier-message extraction wording produced an Opus refusal in both a
+focused 6/7 run and the first corrected full run. Clarified factual questions
+then passed all seven models without changing safety controls or accepting
+refusals. The final full run used the existing concurrency flags to reduce
+startup pressure from 14 to 6 matrix workers; timeout budgets and the all-pass
+policy were unchanged. This profile passed, but the upstream causes of the
+earlier intermittent SDK/native stalls are not established or claimed eliminated.
+
+The final run recorded commit
+`c5993091af3aa905d51257130543f82f497fd2f7` (dirty checkout) and matching start/end
+41-file `verification-code-v1` SHA-256 fingerprints:
+`ca257bf4ee47104ef0999ceb6d1387e2801164132c054d75b8fcfaf0eafee84c`.
+Both generated verification documents use **only that final full run**.
+Its ignored local artifact directory contains `summary.json`, `slots.jsonl`,
+`console.log`, `offline.log`, `audit.json`, phase transcripts and launcher logs.
+The two latest focused runs are under
+`.verify-runs/20260922-resume-regression/2026-09-22T00-48-55-531Z` and
+`.verify-runs/20260922-daemon-regression/2026-09-22T00-48-55-531Z`.
+Earlier focused failures and diagnostic probes remain separate local records;
+none of their successful cells contribute to the final 77/77.
 
 ```bash
 # Unit and structural tests. No model calls, no credits.
 npm test
+
+# Reproduce the fully passing laptop profile (six concurrent matrix workers)
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- \
+  --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2
 
 # Full verification matrix: 11 scenarios x 7 models = 77 live slots (timeout scale: 1)
 npm run verify

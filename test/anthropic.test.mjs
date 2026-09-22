@@ -405,6 +405,95 @@ test("uses actual SDK usage and finish reason in non-streaming responses", () =>
   });
 });
 
+for (const [name, usage, outputTokens, expected] of [
+  [
+    "preserves measured zeros without cache",
+    { inputTokens: 0, outputTokens: 0 },
+    7,
+    { input_tokens: 0, output_tokens: 0 },
+  ],
+  [
+    "preserves measured zeros alongside cache counters",
+    { inputTokens: 0, outputTokens: 0, cacheReadTokens: 3, cacheWriteTokens: 4 },
+    7,
+    { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 },
+  ],
+  [
+    "falls back only for missing output",
+    { inputTokens: 0 },
+    7,
+    { input_tokens: 0, output_tokens: 7 },
+  ],
+  [
+    "falls back only for missing input",
+    { outputTokens: 0 },
+    7,
+    { input_tokens: 10, output_tokens: 0 },
+  ],
+  [
+    "falls back for missing SDK usage",
+    undefined,
+    7,
+    { input_tokens: 10, output_tokens: 7 },
+  ],
+  [
+    "falls back for null SDK usage",
+    null,
+    7,
+    { input_tokens: 10, output_tokens: 7 },
+  ],
+  [
+    "falls back for missing SDK counters",
+    {},
+    7,
+    { input_tokens: 10, output_tokens: 7 },
+  ],
+  [
+    "falls back for null SDK counters",
+    { inputTokens: null, outputTokens: null },
+    7,
+    { input_tokens: 10, output_tokens: 7 },
+  ],
+  [
+    "uses zero output when SDK and message counts are missing",
+    undefined,
+    undefined,
+    { input_tokens: 10, output_tokens: 0 },
+  ],
+]) {
+  for (const streaming of [false, true]) {
+    test(`${streaming ? "SSE" : "JSON"} usage ${name}`, () => {
+      const response = fakeResponse();
+      const payload = {
+        id: "msg-usage-fallback",
+        inputTokens: 10,
+        message: { content: "done", outputTokens, toolRequests: [] },
+        model: "gpt-5.6-sol",
+        usage,
+      };
+      let actual;
+      if (streaming) {
+        startSse(response);
+        const stream = new AnthropicSseStream(response, {
+          id: payload.id,
+          inputTokens: payload.inputTokens,
+        });
+        stream.finish(payload);
+        const events = sseEvents(response);
+        assert.equal(
+          events.find((event) => event.type === "message_start").message.usage.input_tokens,
+          10,
+        );
+        actual = events.find((event) => event.type === "message_delta").usage;
+      } else {
+        writeJsonMessage(response, payload);
+        actual = JSON.parse(response.chunks.at(-1)).usage;
+      }
+      assert.deepEqual(actual, expected);
+    });
+  }
+}
+
 test("serializes prior conversation for cold recovery", () => {
   const rendered = serializeConversation([
     { role: "user", content: "hello" },
