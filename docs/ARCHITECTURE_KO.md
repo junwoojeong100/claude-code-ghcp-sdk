@@ -382,8 +382,10 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
 
-피커·롱턴 수정을 포함한 전체 실행 `2026-09-22T03-37-17-139Z`는 모델 작업자 3개와
-모델별 시나리오 작업자 2개로 77/77 통과했습니다. 앞선 7 × 2 실행의 네이티브 백그라운드 정지 이후
+전체 실행 `2026-09-22T12-29-58-559Z`는 SDK context tier 정합성, native overflow
+복구, 진행 기반 턴 대기 제한을 포함한 commit `d84bd22`를 재검증했습니다.
+코드·사용자 설정을 유지한 채 모델 작업자 3개와 모델별 시나리오 작업자 2개로
+812초 만에 77/77 통과했습니다. 앞선 7 × 2 실행의 네이티브 백그라운드 정지 이후
 랩탑의 기동 부하를 낮춘 설정이며 기본값, timeout 예산, 통과 기준을 낮추지는
 않았습니다. 분리된 실행 이력은 README에, 최종 실행만의 결과는
 [검증 결과](VERIFICATION_KO.md)에 기록합니다.

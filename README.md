@@ -337,9 +337,9 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 ### Picker and long-conversation follow-up
 
 The subsequent overnight investigation added SDK context-tier alignment,
-explicit overflow recovery and progress-based turn deadlines. The full 77/77
-record below predates those overnight corrections; it is not a new full-matrix
-claim for the modified runtime.
+explicit overflow recovery and progress-based turn deadlines. Those corrections
+are now covered by a fresh **77/77 full run** on commit `d84bd22`,
+`2026-09-22T12-29-58-559Z`, documented below.
 
 The installed Claude Code 2.1.278 reported the seven configured picker models
 and its `Default` alias through its native control API. Switching Astra ->
@@ -351,7 +351,7 @@ compactions**, then recalled the exact marker planted in its first turn.
 That probe used a test-only 100K compact window (67K trigger), not a reduced
 product default. Artifacts are under
 `.verify-runs/long-conversation-2026-09-22T02-30-14-506Z/`.
-The offline suite passes **353/353** tests, including hung setup, cancellation,
+At that earlier stage the offline suite passed **353/353** tests, including hung setup, cancellation,
 late replies, shutdown, and cache-accounting regressions.
 
 The seven-model resume/fork and long-context scenarios also passed **14/14** in
@@ -359,24 +359,26 @@ a separate focused run:
 `.verify-runs/picker-longturn-regression/2026-09-22T02-40-55-670Z/`.
 Its code fingerprint and user settings matched before and after execution.
 
-These follow-up changes also passed a **fresh full 77/77 run**,
-`2026-09-22T03-37-17-139Z`. The latest full-run result below and both generated
-verification reports now refer to that run, not the earlier passing snapshot.
+The earlier picker/long-turn changes passed **77/77** in
+`2026-09-22T03-37-17-139Z`. That snapshot remains in the history; the latest
+result and both generated reports use the new context/streaming-recovery run.
 
 ### 2026-09-22 live revalidation (KST)
 
 **Strict result: PASS — 77/77 (100%) in one complete run.** The laptop's installed
 native Claude Code **2.1.278** executed every scenario through the bridge and
-Copilot SDK. The final run took **794 seconds (13 min 14 s)**, with no failed,
+Copilot SDK. The final run took **812 seconds (13 min 32 s)**, with no failed,
 blocked, missing, duplicate or unexpected slots and unchanged code/user settings.
 This is the selected matrix's pass rate, not a claim of complete feature coverage
 or guaranteed success on future executions.
 
-- Offline tests: **353/353 passed**, 73 more than the original 280; none failed,
-  cancelled or skipped.
-- Additional focused evidence: **14/14 resume/fork and long-context slots**, plus
-  **10 Astra turns with four automatic compactions**. Neither contributes cells
-  to the fresh full-matrix result.
+- Existing offline evidence for this runtime: **388/388 passed**, with no failures,
+  cancellations or skips; **205/205** targeted tests were rerun during publication
+  cleanup. These are earlier offline records, not additional model calls in this run.
+- Additional recovery probes: **Astra 24/24 turns** with one native compaction
+  and first-marker recall at up to **809,115 input tokens**, and **Haiku 9/9 turns**
+  with two native compactions. These separate probes do not contribute cells to
+  the full matrix.
 - Independent audit: **1,337 recorded checks**, **105 headless phase transcripts**,
   positive raw result-envelope input usage, and retained command/daemon evidence
   for the seven launcher slots.
@@ -390,7 +392,8 @@ Full-run history remains separate, under each run's recorded implementation:
 | Fresh baseline — NOT GREEN | `2026-09-22T00-01-29-757Z` | 76 / 1 / 0 / 0 | 7 × 2 | 943 s | Intact |
 | First correction — NOT GREEN | `2026-09-22T00-30-59-086Z` | 75 / 2 / 0 / 0 | 7 × 2 | 973 s | Intact |
 | Before picker/long-turn follow-up — PASS | `2026-09-22T00-52-51-013Z` | 77 / 0 / 0 / 0 | 3 × 2 | 782 s | Intact |
-| Current picker/long-turn fixes — PASS | `2026-09-22T03-37-17-139Z` | **77 / 0 / 0 / 0** | **3 × 2** | **794 s** | **Intact** |
+| Picker/long-turn fixes — PASS | `2026-09-22T03-37-17-139Z` | 77 / 0 / 0 / 0 | 3 × 2 | 794 s | Intact |
+| Latest context/streaming recovery — PASS | `2026-09-22T12-29-58-559Z` | **77 / 0 / 0 / 0** | **3 × 2** | **812 s** | **Intact** |
 
 The previous closeout's Sonnet fork mismatch, Opus zero-result usage, and Haiku
 timeout are retained as historical failures, not retrospectively reclassified.
@@ -420,12 +423,15 @@ deadline described above. This profile passed, but the upstream causes of the
 earlier intermittent SDK/native stalls are not established or claimed eliminated.
 
 The final run recorded commit
-`96e5e46eb96e5cc3974f8e8cc55721aa0b1367a1` (dirty checkout) and matching start/end
+`d84bd2210ee6d6bd2911c4341ae756060d42b36f` (clean checkout) and matching start/end
 41-file `verification-code-v1` SHA-256 fingerprints:
-`c19b6ba224ec3906fb9930fc23db72476101d4884dae47b9e96089177fecd6ad`.
+`7a5c1d856bc02110531fd0a013bd894a779f4309cfcd20a9e26bd765f0c8725a`.
 Both generated verification documents use **only that final full run**.
-Its ignored local directory `.verify-runs/2026-09-22T03-37-17-139Z/` contains `summary.json`, `slots.jsonl`,
-`console.log`, `offline.log`, `audit.json`, phase transcripts and launcher logs.
+Its ignored local directory `.verify-runs/2026-09-22T12-29-58-559Z/` contains
+`summary.json`, `slots.jsonl`, `console.log`, `audit.json`, phase transcripts and
+launcher logs. Earlier offline evidence remains in
+`.verify-runs/soak-20260922-1403/overnight/runtime-fix-offline-v2.log`; it was not
+relabelled as part of this new execution.
 Earlier separate focused runs remain under
 `.verify-runs/20260922-resume-regression/2026-09-22T00-48-55-531Z` and
 `.verify-runs/20260922-daemon-regression/2026-09-22T00-48-55-531Z`.

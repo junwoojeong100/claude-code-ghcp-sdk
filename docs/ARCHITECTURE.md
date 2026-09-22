@@ -348,8 +348,11 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 `npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
 
-The full run `2026-09-22T03-37-17-139Z`, including the picker and long-turn fixes,
-passed 77/77 with three model workers and two scenario workers per model. This laptop profile reduces startup pressure
+The full run `2026-09-22T12-29-58-559Z` revalidated commit `d84bd22`, including
+SDK context-tier alignment, native overflow recovery and progress-based turn
+deadlines. It passed 77/77 in 812 seconds with three model workers and two
+scenario workers per model, with unchanged code and user settings.
+This laptop profile reduces startup pressure
 after native background stalls in earlier 7 × 2 runs; defaults, timeout budgets
 and pass criteria are not reduced. See the README for the separate run history
 and [Verification Results](VERIFICATION.md) for the final run alone.
