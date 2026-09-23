@@ -143,7 +143,49 @@ export function mentions(haystack, needle) {
 }
 
 export function mentionsToken(haystack, needle) {
-  return normaliseToken(haystack).includes(normaliseToken(needle));
+  return readToken(haystack, needle) !== null;
+}
+
+// Media tokens are `${six-letter prefix}${six hex}` (fixtures.mjs, probe.mjs),
+// and the six hex characters are all of their entropy.
+const MEDIA_ENTROPY = 6;
+const TOKEN_SEPARATOR = "[\\s,_-]*";
+const TOKEN_GLYPH = "[0-9a-z]";
+
+/**
+ * Where an answer reports a media token, and how many of its random glyphs the
+ * model misread; null when it does not report it.
+ *
+ * The attachment checks exist to catch a bridge that drops the PDF or image
+ * block from a tool_result. A model that never received the block cannot put
+ * five of six random hex characters in their places -- 91 of 16^6 suffixes,
+ * about 1 in 184,000 -- so one wrong glyph still proves the bytes arrived. It
+ * does not prove the model reads well, and the matrix does not gate on that:
+ * under strict-all-pass, gpt-6-luna reading the F of IMGTAGA3F755 as E and
+ * Haiku typing the slashed zero of IMGTAG84370D as Ø each failed a whole run
+ * that said nothing about the bridge. So the prefix must match, the suffix may
+ * differ in one position, and the token must stop where the needle does: a
+ * dropped, extra or shifted glyph still fails.
+ */
+export function readToken(haystack, needle) {
+  const want = normaliseToken(needle);
+  const prefix = want.slice(0, -MEDIA_ENTROPY);
+  const suffix = want.slice(-MEDIA_ENTROPY);
+  const pattern = new RegExp(
+    [...prefix].map((char) => char.replace(/[^0-9a-z]/, "\\$&")).join(TOKEN_SEPARATOR) +
+      `${TOKEN_SEPARATOR}(${TOKEN_GLYPH}(?:${TOKEN_SEPARATOR}${TOKEN_GLYPH}){${MEDIA_ENTROPY - 1}})(?!${TOKEN_GLYPH})`,
+    "g",
+  );
+  const text = String(haystack ?? "").toLowerCase().replace(/ø/g, "0");
+  let best = null;
+  for (const match of text.matchAll(pattern)) {
+    const read = normaliseToken(match[1]);
+    const misread = [...read].filter((char, index) => char !== suffix[index]).length;
+    if (misread <= 1 && (best === null || misread < best.misread)) {
+      best = { token: (prefix + read).toUpperCase(), misread };
+    }
+  }
+  return best;
 }
 
 /**
@@ -655,16 +697,23 @@ async function driveMultiStep(ctx) {
   // prompt says, so the only way to report one is to have received the bytes:
   // a PDF page and an image, both of which arrive as non-text content blocks
   // inside a tool_result. That block is what a text-only translation layer
-  // drops, and dropping it is invisible from the prose alone.
+  // drops, and dropping it is invisible from the prose alone. The detail
+  // quotes the answer's tail, where the prompt asks for the tokens, and names
+  // a tolerated misread so a pass never hides one.
+  const reported = (token) => {
+    const read = readToken(run.answer, token);
+    if (read === null) return `looked for ${token} in: ${run.answer.slice(-200)}`;
+    return read.misread ? `read ${read.token} for ${token}: one glyph misread` : `read ${token}`;
+  };
   checks.add(
     "the PDF's token came back",
     mentionsToken(run.answer, fixture.pdfToken),
-    `looked for ${fixture.pdfToken} in: ${run.answer.slice(0, 200)}`,
+    reported(fixture.pdfToken),
   );
   checks.add(
     "the image's token came back",
     mentionsToken(run.answer, fixture.pngToken),
-    `looked for ${fixture.pngToken} in: ${run.answer.slice(0, 200)}`,
+    reported(fixture.pngToken),
   );
 
   return verdict(checks, run, ctx, {

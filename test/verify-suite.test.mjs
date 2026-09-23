@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { ABSENT_TOOLS, COVERAGE_TARGET, FEATURES, coverage } from "../scripts/verify/features.mjs";
 import { PRIMARY_MODELS, SCENARIOS, gateFor, planRun, validateCatalog } from "../scripts/verify/scenarios.mjs";
-import { DRIVERS, mentions, mentionsToken } from "../scripts/verify/drivers.mjs";
+import { DRIVERS, mentions, mentionsToken, readToken } from "../scripts/verify/drivers.mjs";
 import { FIXTURE_IDS, buildFixture } from "../scripts/verify/fixtures.mjs";
 import { buildPng } from "../scripts/verify/media.mjs";
 import { PROBES } from "../scripts/verify/probe.mjs";
@@ -146,8 +146,9 @@ test("the two matchers forgive different separators, and say which", () => {
     const answer = `the image reads IMG${separator}TAG${separator}351417`;
     assert.ok(mentionsToken(answer, needle), `separator ${JSON.stringify(separator)} did not collapse`);
   }
-  // Forgiving separators must not forgive a wrong token.
-  assert.equal(mentionsToken("the image reads IMG-TAG-351418", needle), false);
+  // Forgiving separators must not forgive a wrong token. One misread glyph is
+  // tolerated (readToken says why), so the control is two glyphs off.
+  assert.equal(mentionsToken("the image reads IMG-TAG-351408", needle), false);
   assert.equal(mentionsToken("the image reads PDFDOC-351417", needle), false);
 
   // mentions() stops one separator short, and that is the point: it reads
@@ -158,6 +159,32 @@ test("the two matchers forgive different separators, and say which", () => {
     assert.ok(mentions(answer, needle), `separator ${JSON.stringify(separator)} did not collapse`);
   }
   assert.equal(mentions("the image reads IMG-TAG-351417", needle), false);
+});
+
+test("a media token survives one misread glyph and nothing looser", () => {
+  // Both misreads that failed a whole strict-all-pass matrix on a bridge that
+  // had delivered the image intact.
+  assert.deepEqual(readToken("Image token: IMGTAGA3E755", "IMGTAGA3F755"), { token: "IMGTAGA3E755", misread: 1 });
+  assert.deepEqual(readToken("IMGTAG8437ØD", "IMGTAG84370D"), { token: "IMGTAG84370D", misread: 0 });
+
+  const needle = "IMGTAG351417";
+  assert.equal(readToken("the image reads IMG-TAG 351417", needle).misread, 0);
+  // The exact read wins over a near one elsewhere in the answer.
+  assert.equal(readToken("IMGTAG351418, sorry, IMGTAG351417", needle).misread, 0);
+  // Two wrong glyphs, a wrong prefix, or a token that does not stop where the
+  // needle does are all still a miss.
+  for (const answer of [
+    "IMGTAG351408",
+    "IMGTAS351417",
+    "IMGTAG35141",
+    "IMGTAG3514177",
+    "IMGTAG 35141 7X",
+    "IMGTAG51417",
+    "PDFDOC351417",
+  ]) {
+    assert.equal(readToken(answer, needle), null, answer);
+    assert.equal(mentionsToken(answer, needle), false, answer);
+  }
 });
 
 test("mentions() does not read a cited line range as the constant", () => {
@@ -300,11 +327,13 @@ test("the multimodal probe's tokens survive however a model segments the glyphs"
     }
 
     // Forgiving the separator must not forgive a wrong token. Derived from the
-    // drawn one so the control cannot collide with it by chance.
-    const bump = (token) => token.slice(0, -1) + (token.endsWith("0") ? "1" : "0");
+    // drawn one so the control cannot collide with it by chance, and two
+    // glyphs off because readToken tolerates exactly one.
+    const flip = (char) => (char === "0" ? "1" : "0");
+    const bump = (token) => token.slice(0, -2) + flip(token.at(-2)) + flip(token.at(-1));
     const wrong = judge(`${bump(fixture.pdfToken)}\n${bump(fixture.pngToken)}`);
-    assert.equal(wrong.pdfToken, false, `${fixture.pdfToken} matched a token one character off`);
-    assert.equal(wrong.pngToken, false, `${fixture.pngToken} matched a token one character off`);
+    assert.equal(wrong.pdfToken, false, `${fixture.pdfToken} matched a token two characters off`);
+    assert.equal(wrong.pngToken, false, `${fixture.pngToken} matched a token two characters off`);
 
     // Nor may one attachment's token satisfy the other's check: the two are
     // drawn independently, and that is what separates "read both files" from

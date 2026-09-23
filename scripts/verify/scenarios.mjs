@@ -166,7 +166,7 @@ export const SCENARIOS = Object.freeze([
       "All four changes are present on disk.",
       "The notebook still parses as a valid nbformat 4 document.",
       "No step was reported done without the file backing it.",
-      "The tokens inside the attached PDF and PNG both came back.",
+      "The tokens inside the attached PDF and PNG both came back, each with at most one of its six random glyphs misread.",
     ],
     budgetSeconds: 300,
   }),

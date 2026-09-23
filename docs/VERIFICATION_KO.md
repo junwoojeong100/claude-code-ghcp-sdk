@@ -138,7 +138,7 @@ BLOCK(blocked)는 통과가 아닙니다. 실행하지 못한 슬롯이며 분�
 - All four changes are present on disk.
 - The notebook still parses as a valid nbformat 4 document.
 - No step was reported done without the file backing it.
-- The tokens inside the attached PDF and PNG both came back.
+- The tokens inside the attached PDF and PNG both came back, each with at most one of its six random glyphs misread.
 
 ### `v06-subagent` — 서브에이전트 위임
 
