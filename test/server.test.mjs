@@ -515,6 +515,69 @@ test("explicit body and replay byte limits override the defaults", async (t) => 
   assert.equal(rejected.body.error.message, "Request body exceeds MAX_BODY_BYTES.");
 });
 
+test("startup requires BRIDGE_API_KEY unless unauthenticated use is explicit", () => {
+  const missing = runServerWith({ BRIDGE_API_KEY: "", BRIDGE_ALLOW_UNAUTHENTICATED: "" });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /BRIDGE_API_KEY is required/);
+});
+
+test("BRIDGE_API_KEY guards every model route with an Anthropic 401 while /health stays open", async (t) => {
+  const { handler, manager } = await offlineServer(t, { BRIDGE_API_KEY: "bridge-secret" });
+  const diagnostics = captureDiagnostics(t);
+  t.mock.method(manager, "execute", async () => ({
+    model: "gpt-5.6-sol", message: { content: "ok", toolRequests: [] },
+  }));
+  const body = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "hello" }] };
+  const wrong = [
+    {}, { "x-api-key": "" }, { "x-api-key": "wrong" }, { "x-api-key": "bridge-secre" },
+    { "x-api-key": "bridge-secret-and-more" }, { authorization: "Bearer wrong" }, { authorization: "Bearer " },
+  ];
+  const right = [
+    { "x-api-key": "bridge-secret" }, { authorization: "Bearer bridge-secret" },
+    { authorization: "bearer bridge-secret" }, { authorization: "Bearer wrong", "x-api-key": "bridge-secret" },
+    // What the launcher configures: ANTHROPIC_AUTH_TOKEN plus a blank ANTHROPIC_API_KEY.
+    { authorization: "Bearer bridge-secret", "x-api-key": "" },
+  ];
+  for (const [method, url] of [["POST", "/v1/messages"], ["POST", "/v1/messages/count_tokens"], ["GET", "/v1/models"]]) {
+    for (const headers of wrong) {
+      const rejected = await messageRequest(handler, body, url, undefined, { method, headers });
+      assert.equal(rejected.status, 401, `${method} ${url} ${JSON.stringify(headers)}`);
+      assert.deepEqual(rejected.body, {
+        type: "error",
+        error: { type: "authentication_error", message: "Invalid bridge credential." },
+      });
+    }
+    for (const headers of right) {
+      const accepted = await messageRequest(handler, body, url, undefined, { method, headers });
+      assert.equal(accepted.status, 200, `${method} ${url} ${JSON.stringify(headers)}`);
+    }
+  }
+  // Only /v1/messages reaches the model; count_tokens and /v1/models answer locally.
+  assert.equal(manager.execute.mock.callCount(), right.length);
+  const health = await messageRequest(handler, {}, "/health", undefined, { method: "GET", headers: {} });
+  assert.equal(health.status, 200);
+  assert.equal(health.body.ok, true);
+  const failures = diagnostics.filter((event) => event.event === "bridge.request_failed");
+  assert.equal(failures.length, wrong.length);
+  for (const failure of failures) {
+    assert.deepEqual(failure, {
+      event: "bridge.request_failed", requestId: failure.requestId, status: 401,
+      errorType: "authentication_error", retryAfterSeconds: null, streaming: false, headersSent: false,
+    });
+  }
+});
+
+test("BRIDGE_ALLOW_UNAUTHENTICATED=1 without a key serves requests without credentials", async (t) => {
+  const { handler, manager } = await offlineServer(t, { BRIDGE_API_KEY: "", BRIDGE_ALLOW_UNAUTHENTICATED: "1" });
+  t.mock.method(manager, "execute", async () => ({
+    model: "gpt-5.6-sol", message: { content: "ok", toolRequests: [] },
+  }));
+  const response = await messageRequest(handler, {
+    model: "gpt-5.6-sol", messages: [{ role: "user", content: "hello" }],
+  }, "/v1/messages", undefined, { headers: {} });
+  assert.equal(response.status, 200);
+});
+
 const PRIVATE_UPSTREAM = "PRIVATE_UPSTREAM_TEXT";
 for (const [label, error, expected] of [
   ["a rate limit", sessionError({

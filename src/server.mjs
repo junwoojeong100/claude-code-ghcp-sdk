@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
   AnthropicSseStream,
@@ -46,6 +46,7 @@ function readPositiveIntegerEnv(name, fallback) {
 const host = process.env.HOST || "127.0.0.1";
 const port = readPositiveIntegerEnv("PORT", 4142);
 const apiKey = process.env.BRIDGE_API_KEY;
+const allowUnauthenticated = process.env.BRIDGE_ALLOW_UNAUTHENTICATED === "1";
 const instanceId = process.env.BRIDGE_INSTANCE_ID || null;
 const preferredModel = process.env.GHCP_MODEL || "claude-sonnet-5";
 const copilotHome = resolveCopilotHome(process.env.COPILOT_HOME);
@@ -91,7 +92,7 @@ if (
 if (port > 65_535) {
   throw new Error("PORT must be between 1 and 65535.");
 }
-if (!apiKey && process.env.BRIDGE_ALLOW_UNAUTHENTICATED !== "1") {
+if (!apiKey && !allowUnauthenticated) {
   throw new Error("BRIDGE_API_KEY is required.");
 }
 // Verification seam, not a feature. BRIDGE_TEST_FAULTS="rate_limit:1,overloaded:1"
@@ -155,10 +156,23 @@ function writeApiError(res, status, type, message, headers) {
   }, headers);
 }
 
+// Comparing fixed-length digests keeps the time taken independent of where,
+// or whether, a presented credential first differs from the key.
+const apiKeyDigest = apiKey ? createHash("sha256").update(apiKey).digest() : null;
+
+function credentialMatches(value) {
+  return typeof value === "string" &&
+    timingSafeEqual(createHash("sha256").update(value).digest(), apiKeyDigest);
+}
+
 function isAuthenticated(req) {
-  if (!apiKey) return true;
+  // Startup refuses an empty key unless BRIDGE_ALLOW_UNAUTHENTICATED=1.
+  if (!apiKey) return allowUnauthenticated;
   const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "");
-  return bearer === apiKey || req.headers["x-api-key"] === apiKey;
+  // Check both headers every time, so the timing does not say which one held
+  // the key.
+  const matches = [credentialMatches(bearer), credentialMatches(req.headers["x-api-key"])];
+  return matches.includes(true);
 }
 
 // Claude Code retries 429 rate_limit_error and 529 overloaded_error, so those
