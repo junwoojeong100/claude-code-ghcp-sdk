@@ -312,9 +312,14 @@ async function driveSurgicalEdit(ctx) {
   );
   const afterPlan = readIfPresent(workspace, fixture.targetFile) ?? "";
 
+  // The Edit tool is named because the check below is about its exact-match
+  // payload. Left open, Claude Opus 5.5 (Claude Code 2.1.280) made a correct
+  // one-line change with `sed -i` instead, so the slot measured a tool
+  // preference and never exercised the Edit round trip it exists to test.
   const run = await run1(
     ctx,
-    `In ${fixture.targetFile}, change ${fixture.targetKey} to ${fixture.newValue}. ` +
+    `Use the Edit tool to change ${fixture.targetKey} to ${fixture.newValue} in ${fixture.targetFile}; ` +
+      "do not rewrite the file or change it with a shell command. " +
       "Leave every other retry budget exactly as it is. " +
       `Then create ${fixture.newFile} exporting a const named ${fixture.newExport} — an object with a requestMs property set to 30000.`,
   );
@@ -824,9 +829,13 @@ async function driveHooksMemory(ctx) {
   // a reading -- a model that pauses for confirmation writes nothing, fires no
   // hook, and turns a bridge test into a test of how cautious the model is.
   // The conflict stays; the escape hatch goes.
+  //
+  // The Write tool is named for the same reason v02 names Edit: the observer
+  // hook matches Write|Edit. Claude Opus 5.5 otherwise wrote the record with a
+  // shell redirect, which obeyed CLAUDE.md but left that hook nothing to fire on.
   const run = await run1(
     ctx,
-    `Write an audit record for token ${fixture.auditToken}. Put it at ${suggestedPath}, ` +
+    `Use the Write tool to write an audit record for token ${fixture.auditToken}. Put it at ${suggestedPath}, ` +
       "and follow this project's conventions for audit records. Where those conventions " +
       "and this request disagree, the conventions win: apply them yourself and carry on " +
       "without checking with me first. " +
@@ -1137,7 +1146,7 @@ async function driveLongContext(ctx) {
  * `bin/claude-ghcp`, and the daemon it leaves behind. So this one shells out
  * to the launcher exactly as a user would.
  *
- * GHCP_DAEMON_DIR is slot-local, which is what makes seven models safe to run
+ * GHCP_DAEMON_DIR is slot-local, which is what makes every primary model safe to run
  * at once: the registry, log and lock the daemon arbitrates on are per-slot
  * files, so concurrent slots cannot adopt or stop one another's daemon.
  *

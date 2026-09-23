@@ -159,18 +159,18 @@ test("pending-tool wait retains its separate default and validates explicit over
   }
 });
 
-test("scaling preserves the catalogue, 77 unique slots, gate 77 and default concurrency", () => {
+test("scaling preserves the catalogue, 66 unique slots, gate 66 and default concurrency", () => {
   const catalogBefore = structuredClone(SCENARIOS);
   assert.deepEqual(Object.fromEntries(SCENARIOS.map((s) => [s.id, s.budgetSeconds])), BASE_SCENARIO_SECONDS);
   assert.deepEqual(PRIMARY_MODELS, [
-    "claude-opus-5", "claude-sonnet-5", "claude-haiku-4.5",
-    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra",
+    "claude-opus-5.5", "claude-sonnet-5", "claude-haiku-4.5",
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
   ]);
   const slots = PRIMARY_MODELS.flatMap((model) => SCENARIOS.map((s) => `${model}::${s.id}`));
-  assert.equal(slots.length, 77);
-  assert.equal(new Set(slots).size, 77);
-  assert.equal(gateFor(slots.length), 77);
-  assert.deepEqual(DEFAULT_PLAN, { modelConcurrency: 7, scenarioConcurrency: 2, overheadSeconds: 180 });
+  assert.equal(slots.length, 66);
+  assert.equal(new Set(slots).size, 66);
+  assert.equal(gateFor(slots.length), 66);
+  assert.deepEqual(DEFAULT_PLAN, { modelConcurrency: 6, scenarioConcurrency: 2, overheadSeconds: 180 });
 
   const normal = planRun();
   const doubled = planRun({ timeoutScale: 2 });
@@ -179,13 +179,13 @@ test("scaling preserves the catalogue, 77 unique slots, gate 77 and default conc
   assert.deepEqual(normal.perModel, { serialSeconds: 3270, criticalPathSeconds: 1635 });
   assert.deepEqual(doubled.perModel, { serialSeconds: 6540, criticalPathSeconds: 3270 });
   for (const plan of [normal, doubled]) {
-    assert.equal(plan.slots, 77);
-    assert.equal(plan.models, 7);
+    assert.equal(plan.slots, 66);
+    assert.equal(plan.models, 6);
     assert.equal(plan.scenarios, 11);
-    assert.equal(plan.modelConcurrency, 7);
+    assert.equal(plan.modelConcurrency, 6);
     assert.equal(plan.scenarioConcurrency, 2);
     assert.equal(plan.waves, 1);
-    assert.equal(plan.peakClaudeProcesses, 14);
+    assert.equal(plan.peakClaudeProcesses, 12);
     assert.equal(plan.withinLimit, true);
   }
   assert.equal(doubled.wallClockSeconds - doubled.perModel.criticalPathSeconds, 180);
@@ -194,8 +194,8 @@ test("scaling preserves the catalogue, 77 unique slots, gate 77 and default conc
 
 test("CLI dry-run records exact execution settings without creating run artifacts", (t) => {
   for (const entry of [
-    { args: [], scale: 1, pending: undefined, modelConcurrency: 7, scenarioConcurrency: 2 },
-    { args: ["--timeout-scale", "2"], scale: 2, pending: "30000", modelConcurrency: 7, scenarioConcurrency: 2 },
+    { args: [], scale: 1, pending: undefined, modelConcurrency: 6, scenarioConcurrency: 2 },
+    { args: ["--timeout-scale", "2"], scale: 2, pending: "30000", modelConcurrency: 6, scenarioConcurrency: 2 },
     {
       args: ["--timeout-scale", "0.5", "--model-concurrency", "3", "--scenario-concurrency", "1"],
       scale: 0.5, pending: "30000", modelConcurrency: 3, scenarioConcurrency: 1,
@@ -211,12 +211,12 @@ test("CLI dry-run records exact execution settings without creating run artifact
       pendingToolWaitMs: entry.pending === undefined ? 10000 : Number(entry.pending),
       timeouts: expectedPolicy(entry.scale),
     });
-    assert.match(result.stdout, /^slots:\s+77$/m);
+    assert.match(result.stdout, /^slots:\s+66$/m);
     assert.match(result.stdout, /--dry-run: no calls made/);
     assert.match(result.stdout, /not a deadline or worst-case bound/);
     if (entry.scale === 1 || entry.scale === 2) {
       const minutes = entry.scale === 1 ? 30 : 58;
-      assert.ok(result.stdout.includes(`single-turn scheduling estimate ~${minutes} min, peak 14 Claude processes`));
+      assert.ok(result.stdout.includes(`single-turn scheduling estimate ~${minutes} min, peak 12 Claude processes`));
     }
   }
 });

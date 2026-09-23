@@ -19,12 +19,12 @@ writeGatewaySettings(outputPath, {
   model: launchModelFor(frontendModel),
   modelPicker: primaryModelPicker(),
   familyModels: {
-    opus: "claude-opus-5",
+    opus: "claude-opus-5-5",
     sonnet: "claude-sonnet-5",
     haiku: "claude-haiku-4-5",
   },
   displayNames: {
-    opus: "GitHub Copilot Claude Opus 5",
+    opus: "GitHub Copilot Claude Opus 5.5",
     sonnet: "GitHub Copilot Claude Sonnet 5",
     haiku: "GitHub Copilot Claude Haiku 4.5",
     custom: `GitHub Copilot ${frontendModel}`,

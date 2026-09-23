@@ -11,8 +11,8 @@
  *  - Every slot runs the real path: real Claude Code binary -> bridge ->
  *    Copilot SDK -> Copilot model. Nothing is stubbed or replayed.
  *  - Assertions are on observable state (files on disk, git history, hook
- *    logs, stream events), never on the model's prose style. Seven models
- *    write seven different sentences; only behaviour is comparable.
+ *    logs, stream events), never on the model's prose style. Six models
+ *    write six different sentences; only behaviour is comparable.
  *  - Wire-protocol correctness (SSE framing, tool_use/tool_result pairing,
  *    stop_reason, usage) gets no scenario of its own: it is asserted inside
  *    every scenario that would break if it were wrong.
@@ -48,7 +48,7 @@ export const OUTCOMES = Object.freeze({
 });
 
 export const DEFAULT_PLAN = Object.freeze({
-  modelConcurrency: 7,
+  modelConcurrency: 6,
   scenarioConcurrency: 2,
   overheadSeconds: 180,
 });

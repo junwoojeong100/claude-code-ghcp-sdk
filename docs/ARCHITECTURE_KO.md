@@ -88,7 +88,7 @@ Direct 경로의 GitHub Copilot SDK와 bridge는 모델 backend 연결만 담당
 1. Claude Code가 `/v1/messages`에 system prompt, conversation, tool schema를 전송합니다.
 2. Bridge가 Claude Code 모델 ID를 Copilot 모델 ID로 변환합니다.
 3. `output_config.effort`를 모델의 `supportedReasoningEfforts`와 대조합니다.
-4. Copilot SDK session을 `mode: "empty"`와 선택된 `reasoningEffort`로 생성합니다.
+4. Copilot SDK session을 `mode: "empty"`, 선택된 `reasoningEffort`, 그리고 `disabledMcpServers`에 담은 runtime 자체 MCP server 목록으로 생성합니다.
 5. Claude Code system prompt와 tool declaration을 SDK session에 등록합니다.
 6. Copilot 모델의 tool 요청을 Anthropic `tool_use` block으로 반환합니다.
 7. Claude Code가 tool을 실행하고 `tool_result`를 다음 요청에 보냅니다.
@@ -133,51 +133,92 @@ SDK session 생성·재개와 `setModel()`에는 추론 timeout과 별도로
 갱신하지 않습니다. 계속 출력하는 턴에도 전체 시간 상한은 유지하며, 두 값 모두
 daemon 설정 지문에 포함됩니다.
 
+### Copilot runtime MCP server
+
+Claude Code의 MCP server는 영향을 받지 않습니다. Claude Code가 직접 실행하고 bridge는
+그 도구를 다른 선언 도구와 똑같이 전달합니다. 반면 Copilot runtime은 `mode: "empty"`에서도
+SDK session마다 Copilot CLI 설정 — 사용자 `mcp-config.json`, workspace 파일, 설치된
+Copilot plugin, 내장 `github-mcp-server` — 을 따로 불러옵니다. `availableTools`는
+`custom:*` 도구만 노출하므로 이 server들은 모델에 한 번도 도달하지 못합니다.
+
+Bridge는 시작 시 자신의 작업 디렉터리로 `mcp.discover`를 호출해 정확한 등록 이름을
+확인합니다. Plugin server의 이름은 실행 파일이 아니라 설정 key입니다(예: azmcp는
+`azure`). Discovery가 보고하지 않는 `github-mcp-server`를 더해, 모든 SDK session 생성·재개
+시 `disabledMcpServers`로 전달합니다. 빈 `mcpServers` map은 시험해 보았지만 discovery된
+server를 대체하지 못했습니다. Copilot 설정은 수정하지 않습니다. 개수는
+`bridge.mcp_servers_disabled`에 기록하며, discovery가 실패하거나 10초 timeout에 걸리면
+`bridge.mcp_discovery_failed`를 남기고 내장 server만 비활성화합니다. Bridge 실행 중
+Copilot 설정에 추가한 server는 다음 bridge 시작부터 반영됩니다.
+
+개발 장비의 측정에서 bridge와 같은 설정의 SDK session 하나가 열려 있으면 azmcp와
+Playwright MCP node server 2개(~330 MB RSS), 원격 `microsoft-learn`·`github-mcp-server`
+연결이 함께 떠 있었습니다. Runtime은 SDK session이 닫힐 때에만 이를 정리하므로 비용이
+캐시된 state 수만큼 늘었습니다. 이 옵션을 적용하자 두 Claude session을 동시에 처리하는
+실제 bridge의 runtime MCP 자식 프로세스가 6개에서 0개가 되었고, 두 cold 첫 요청의
+완료 시간 중앙값은 Claude Haiku 4.5의 번갈아 실행한 4쌍에서 8.08초에서 3.95초로
+줄었습니다. Warm runtime에서 순차적으로 session을 만드는 시간은 오차 범위 안에서
+같았습니다. Runtime이 `session.create` 응답 후에 MCP server를 연결하기 때문입니다.
+
 ### 모델 ID 변환
 
 Claude Code와 Copilot 모델 ID의 version separator 차이를 변환합니다.
 
 | Claude Code frontend | GitHub Copilot |
 |---|---|
+| `claude-opus-5-5` | `claude-opus-5.5` |
 | `claude-sonnet-5` | `claude-sonnet-5` |
+| `claude-haiku-4-5` | `claude-haiku-4.5` |
 | `claude-sonnet-4-6` | `claude-sonnet-4.6` |
 | `claude-opus-4-8` | `claude-opus-4.8` |
-| `claude-haiku-4-5` | `claude-haiku-4.5` |
-| `gpt-5.6-sol` | `gpt-5.6-sol` |
-| `gpt-5.6-terra` | `gpt-5.6-terra` |
-| `gpt-5.6-luna` | `gpt-5.6-luna` |
-| `gpt-6-astra` | `gpt-6-astra` |
+| `github-copilot/claude-gpt-6-astra[1m]` | `gpt-6-astra` |
+| `github-copilot/claude-gpt-6-sol[1m]` | `gpt-6-sol` |
+| `github-copilot/claude-gpt-6-luna[1m]` | `gpt-6-luna` |
 
 `sonnet`, `opus`, `haiku` alias는 현재 계정에서 허용된 family 모델로 해석합니다.
-GPT-5.6 모델과 GPT-6 Astra는 full ID를 사용합니다.
+`opus`는 Opus 5.5를 우선하고, 없으면 Opus 5와 4.x 순으로 대체합니다. GPT 모델은
+`gpt-6-sol`처럼 Copilot ID 그대로도 받습니다.
 
 ### 모델 discovery와 context
 
-Runtime과 검증 catalog는 같은 `PRIMARY_MODELS`를 사용합니다. Direct 실행 설정의
-`modelPicker.replaceBuiltInOptions`로 주요 7개 모델을 정해진 순서대로 표시하며,
-Claude Code의 `Default` 별칭은 남습니다. Bridge 응답만 보고 추정하지 않고
-설치된 CLI의 native `supportedModels()` control 요청으로 실제 목록을 확인했습니다.
+Runtime과 검증 catalog는 같은 `PRIMARY_MODELS`를 사용합니다. Claude Opus 5.5,
+Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol, GPT-6 Luna입니다.
+Direct 실행 설정의 `modelPicker.replaceBuiltInOptions`로 주요 6개 모델을 정해진
+순서대로 고정하며, Claude Code가 항상 유지하는 `Default` 행만 함께 남습니다.
+실행 설정이 `opus` family를 `claude-opus-5-5`로 지정하므로 Claude Code 2.1.280에서
+`Default`는 `claude-opus-5-5[1m]`로 해석됩니다. Claude Code는 picker에 등록된 행을
+서버 확인 요청 없이 받아들이므로 이 행들 사이의 전환에는 검증 요청이 발생하지
+않습니다. 반면 picker에 없는 ID는 bridge를 거치는 Claude Code의 1토큰 검증 요청을
+발생시킵니다. Bridge 응답만 보고 추정하지 않고 설치된 CLI의 native
+`supportedModels()`, `setModel()`, `getContextUsage()` control 요청으로 확인했습니다.
 
 호환 client를 위한 gateway discovery는 유지하되 `/v1/models`에는 주요 모델 중
-built-in과 중복되지 않는 항목만 backend ID 기준으로 중복 제거해 반환합니다.
+built-in과 중복되지 않는 항목(현재 GPT-6 세 모델)만 backend ID 기준으로 중복 제거해
+반환합니다.
 `/v1/models?all=true`와 `ghcp-models`의 더 넓은 backend catalog는 유지하며,
 명시적인 모델 선택은 해당 모델이 사용 불가능할 때 실패합니다.
 LiteLLM은 독립적으로 설정한 gateway alias를 유지합니다.
 
-네 GPT 모델은 launch와 picker 모두
+GPT-6 세 모델은 launch와 picker 모두
 `github-copilot/claude-<copilot-model-id>[1m]`을 사용하고, bridge가 prefix/suffix를
-제거해 모델을 해석합니다. Claude Code frontend 예산은 1M으로, SDK catalog의
-GPT-5.6 1,050,000·Astra 1,178,000 한도 안에 둡니다. 임시 settings는 시작 모델의
-한도를 전역에 고정하는 대신 상속된 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 비웁니다.
-Claude 모델은 native 한도를 사용하며 Haiku로 바꾸면 200K로 돌아갑니다.
-Native 자동 압축과 사용자가 지정한 더 작은 window도 유지됩니다.
+제거해 모델을 해석합니다. Claude Code frontend 예산은 1M입니다. 현재 catalog는
+Astra에 context·prompt 1,050,000 토큰을, Sol과 Luna에 1,000,000 토큰 window와
+872,000 prompt 토큰을 표시하므로 Sol과 Luna는 Claude Code의 약 967K 자동 압축
+기준보다 먼저 SDK 한도에 도달합니다. 명시적으로 선택한 GPT-5.6 모델도 같은
+모델별 힌트를 유지합니다. 임시 settings는 시작 모델의 한도를 전역에 고정하는
+대신 상속된 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 비웁니다. Claude 모델은 Claude
+Code의 native gateway window인 200K를 사용하며, GPT-6 행에서 Haiku로 바꾸면
+200K로 돌아갑니다. Native 자동 압축과 사용자가 지정한 더 작은 window도 유지됩니다.
 
-주요 GPT 네 모델의 SDK 세션은 생성·재개·effort 변경 시
-`contextTier: "long_context"`를 명시하고, 조회한 catalog의 숫자
+주요 GPT-6 세 모델(과 명시적으로 선택한 GPT-5.6 모델)의 SDK 세션은 생성·재개·
+effort 변경 시 `contextTier: "long_context"`를 명시하고, 조회한 catalog의 숫자
 context/prompt/output 한도만 전달합니다. Catalog에 큰 window가 표시되는 것만으로
-runtime의 tier가 선택되지는 않습니다. 실제 Astra 입력 예산은 기본 272K였고,
-long tier와 catalog 한도를 함께 적용하자 1.05M이었습니다.
-`bridge.context_budget`으로 유효한 SDK 예산을 기록합니다.
+runtime의 tier가 선택되지는 않습니다. 앞선 실측에서 Astra 입력 예산은 기본
+272K였고, long tier와 catalog 한도를 함께 적용하자 1.05M이었습니다. Claude 모델은
+SDK 기본 tier를 유지합니다. `bridge.context_budget`으로 유효한 SDK 예산을
+기록하며, 6개 모델 실행에서는 Astra 1,050,000, Sol·Luna 872,000, Opus 5.5·Sonnet 5
+200,000, Haiku 4.5 136,000을 기록했습니다. 따라서 `Default` 행의
+`claude-opus-5-5[1m]`은 Claude Code에서 1M을 예산으로 잡지만 backend는 200,000
+토큰 기본 tier이므로 아래 overflow 복구에 의존합니다.
 
 SDK는 `infiniteSessions.enabled`가 false여도 자체 압축을 수행할 수 있습니다.
 턴 도중과 요청 사이의 root 압축·잘라내기를 추적해 축소된 backend 문맥을 조용히
@@ -328,12 +369,14 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 - Anthropic Messages text, attachment, tool result와 SSE 변환
 - Claude/Copilot model ID와 family alias 변환
-- 주요 7개 피커, 모델별 context hint와 gateway discovery row
+- 주요 6개 모델 피커 고정, 모델별 context hint와 gateway discovery row
 - `ultracode`에서 `xhigh`로의 변환과 model별 unsupported effort 조정
 - SDK session 생성과 `session.setModel()`을 통한 reasoning effort 변경
 - Claude Code root session과 subagent의 SDK session 분리
-- 7모델의 interleaved root/worker tool-result 격리와
+- 6모델의 interleaved root/worker tool-result 격리와
   취소 후 sibling 생존 검사
+- Runtime MCP discovery와 SDK session 생성·재개 시 `disabledMcpServers` 전달,
+  discovery 실패·timeout 시의 fallback
 - Forked subagent의 inherited history 복구와 `agentId`가 있는 pending tool-call handoff
 - Direct/LiteLLM 임시 settings의 gateway routing 값
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
@@ -345,7 +388,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 `npm run verify`는 실제 모델로 실제 경로를 구동합니다.
 
-- 11개 시나리오 x 7개 모델 = 77개 슬롯. 각 슬롯은 실제 `claude` 바이너리를
+- 11개 시나리오 x 6개 모델 = 66개 슬롯. 각 슬롯은 실제 `claude` 바이너리를
   `-p --output-format stream-json`으로 실행하고, 슬롯 전용 bridge를 거쳐 실제
   Copilot 모델에 연결합니다.
 - 시나리오: 저장소 정찰, 정밀 편집과 파일 생성, 실패 테스트 진단과 수정,
@@ -370,7 +413,7 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
   보존합니다. 백그라운드 작업 스냅샷은 상태·시간 필드만 허용하며 provider 환경과
   소켓 인증 정보는 제외합니다.
 - 새 실행은 `strict-all-pass-v1`을 적용합니다. 전체 실행은 예상한 고유 슬롯
-  77개 모두, 부분 실행은 선택한 모든 슬롯이 통과해야 합니다. 누락·중복·예상 밖
+  66개 모두, 부분 실행은 선택한 모든 슬롯이 통과해야 합니다. 누락·중복·예상 밖
   슬롯, 사용자 설정 변경, 구현 출처 기록 누락·변경이 있으면 기록된 슬롯이 모두
   pass여도 전체 판정은 통과가 아닙니다.
 - `npm run verify:report`는 최신 실행을 출력하고, `npm run verify:doc`은
@@ -382,13 +425,15 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
 
-전체 실행 `2026-09-22T12-29-58-559Z`는 SDK context tier 정합성, native overflow
-복구, 진행 기반 턴 대기 제한을 포함한 commit `d84bd22`를 재검증했습니다.
-코드·사용자 설정을 유지한 채 모델 작업자 3개와 모델별 시나리오 작업자 2개로
-812초 만에 77/77 통과했습니다. 앞선 7 × 2 실행의 네이티브 백그라운드 정지 이후
-랩탑의 기동 부하를 낮춘 설정이며 기본값, timeout 예산, 통과 기준을 낮추지는
-않았습니다. 분리된 실행 이력은 README에, 최종 실행만의 결과는
-[검증 결과](VERIFICATION_KO.md)에 기록합니다.
+전체 실행 `2026-09-23T00-38-10-470Z`는 Claude Code 2.1.280으로 runtime MCP 변경을
+포함한 commit `1df3aa4`의 6개 모델 catalog를 검증했습니다. 코드·사용자 설정을 유지한
+채 모델 작업자 3개와 모델별 시나리오 작업자 2개로 740초 만에 66/66 통과했으며, `ps`
+sampler는 어느 runtime 아래에서도 MCP server 프로세스를 발견하지 못했습니다. 앞선 7 × 2 실행의
+네이티브 백그라운드 정지 이후 랩탑의 기동 부하를 낮춘 설정이며 기본값, timeout
+예산, 통과 기준을 낮추지는 않았습니다. 첫 6개 모델 실행(64/66)에서 Claude Opus
+5.5가 v02 편집과 v08 기록을 셸 명령으로 처리해, 해당 검사가 관찰하는 Edit·Write
+도구를 프롬프트에 명시했습니다. 이전 7개 모델 catalog를 포함한 분리된 실행 이력은
+README에, 최종 실행만의 결과는 [검증 결과](VERIFICATION_KO.md)에 기록합니다.
 
 실행 중인 bridge 턴의 timeout과 클라이언트 취소 시 요청 ID로 연결되는
 `bridge.turn_timeout` / `bridge.turn_aborted` 스냅샷을 남기고,

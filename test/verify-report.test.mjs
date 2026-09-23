@@ -232,13 +232,13 @@ test("all renderers preserve a legacy 74 gate and stored green without claiming 
   assert.equal(fs.readFileSync(path.join(run.dir, "summary.json"), "utf8"), before);
 });
 
-test("all renderers show strict 77 of 77 success and recorded code provenance", async (t) => {
+test("all renderers show strict 66 of 66 success and recorded code provenance", async (t) => {
   const run = await makeStrictRun(t);
   for (const format of FORMATS) {
     const output = render(run, format);
     assert.match(output, /strict-all-pass-v1/);
     assert.match(output, /(?:scope|범위): full/);
-    assert.match(output, /(?:expected|예상): 77.*(?:actual|실제): 77/);
+    assert.match(output, /(?:expected|예상): 66.*(?:actual|실제): 66/);
     assert.match(output, /(?:result|결과): PASS/);
     assert.ok(output.includes("b".repeat(40)));
     assert.ok(output.includes("a".repeat(64)));
@@ -250,8 +250,8 @@ test("all renderers show strict 77 of 77 success and recorded code provenance", 
   for (const format of FORMATS) {
     const output = render(run, format);
     assert.match(output, /(?:result|결과): NOT GREEN/);
-    assert.match(output, /(?:gate: |gate |통과 기준 )77/);
-    assert.match(output, /pass 74/);
+    assert.match(output, /(?:gate: |gate |통과 기준 )66/);
+    assert.match(output, /pass 63/);
   }
 });
 

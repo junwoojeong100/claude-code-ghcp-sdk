@@ -1,11 +1,10 @@
 const PRIMARY_MODEL_NAMES = Object.freeze({
-  "claude-opus-5": "Claude Opus 5",
+  "claude-opus-5.5": "Claude Opus 5.5",
   "claude-sonnet-5": "Claude Sonnet 5",
   "claude-haiku-4.5": "Claude Haiku 4.5",
-  "gpt-5.6-sol": "GPT-5.6 Sol",
-  "gpt-5.6-terra": "GPT-5.6 Terra",
-  "gpt-5.6-luna": "GPT-5.6 Luna",
   "gpt-6-astra": "GPT-6 Astra",
+  "gpt-6-sol": "GPT-6 Sol",
+  "gpt-6-luna": "GPT-6 Luna",
 });
 
 export const PRIMARY_MODELS = Object.freeze(Object.keys(PRIMARY_MODEL_NAMES));
@@ -13,6 +12,7 @@ export const PRIMARY_MODELS = Object.freeze(Object.keys(PRIMARY_MODEL_NAMES));
 const FAMILY_CANDIDATES = {
   fable: ["claude-fable-5"],
   opus: [
+    "claude-opus-5.5",
     "claude-opus-5",
     "claude-opus-4.8",
     "claude-opus-4.7",
@@ -36,6 +36,7 @@ const REASONING_EFFORT_LEVELS = [
   "max",
 ];
 const CLAUDE_CODE_BUILT_IN_MODELS = new Set([
+  "claude-opus-5.5",
   "claude-opus-5",
   "claude-opus-4.8",
   "claude-sonnet-5",
@@ -47,7 +48,9 @@ const MODEL_CONTEXT_WINDOW_TOKENS = new Map([
     `gpt-5.6-${variant}`,
     GPT_56_CONTEXT_WINDOW_TOKENS,
   ]),
-  ["gpt-6-astra", 1_178_000],
+  ["gpt-6-astra", 1_050_000],
+  ["gpt-6-sol", 1_000_000],
+  ["gpt-6-luna", 1_000_000],
 ]);
 
 function isAdapterModelId(modelId) {

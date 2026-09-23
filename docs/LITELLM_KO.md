@@ -26,7 +26,7 @@ request logging과 OpenAI 형식 surface를 얻습니다.
 
 ## 검증 범위
 
-LiteLLM은 이 저장소의 검증 범위 밖입니다. `npm run verify` matrix(7 모델 x 11 시나리오 = 77 슬롯)는 `src/server.mjs`를 직접 실행하며 LiteLLM을 기동하지 않습니다. 이 문서의 구성은 검증된 경로가 아니라 구성 참고 자료입니다.
+LiteLLM은 이 저장소의 검증 범위 밖입니다. `npm run verify` matrix(6 모델 x 11 시나리오 = 66 슬롯)는 `src/server.mjs`를 직접 실행하며 LiteLLM을 기동하지 않습니다. 이 문서의 구성은 검증된 경로가 아니라 구성 참고 자료입니다.
 
 아래에서 LiteLLM 자체의 wire 동작을 다루는 서술은 `npm run litellm:setup`이 **pin**하는
 `v1.97.0`(commit `ef84494`, `scripts/setup-litellm.sh`)을 기준으로 작성한 것으로, 시험
@@ -221,11 +221,9 @@ general_settings:
 | `forward_client_headers_to_llm_api: true` | Client의 `x-*` header를 upstream으로 전달 | Bridge는 Claude session과 subagent마다 Copilot SDK session을 하나씩 유지하기 위해 `x-claude-code-session-id`와 `x-claude-code-agent-id`가 필요합니다. 이 설정이 없으면 모든 요청이 하나의 anonymous session family로 합쳐집니다 |
 
 이 저장소의 예제 파일은 primary matrix의 모델마다 alias를 하나씩 공개합니다.
-`PRIMARY_MODELS`(`scripts/verify/scenarios.mjs`)의 일곱 모델인 `claude-opus-5`,
-`claude-sonnet-5`, `claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-`gpt-6-astra`입니다. 여기에 matrix 모델이 아닌 `claude-sonnet-5-1m` ->
-`anthropic/claude-sonnet-5[1m]`가 하나 더 있는데, 이는 `[1m]` suffix를 LiteLLM 너머로
-전달하기 위한 alias입니다. 여덟 개 모두 같은 bridge를 가리킵니다.
+`PRIMARY_MODELS`(`src/model-map.mjs`, `scripts/verify/scenarios.mjs`에서 재공개)의 여섯
+모델인 `claude-opus-5.5`, `claude-sonnet-5`, `claude-haiku-4.5`, `gpt-6-astra`,
+`gpt-6-sol`, `gpt-6-luna`입니다. 여섯 개 모두 같은 bridge를 가리킵니다.
 
 ### `api_base`는 `/v1`로 끝나면 안 됩니다
 
@@ -243,33 +241,21 @@ LiteLLM은 지정한 `api_base`가 무엇이든 그 뒤에 `/v1/messages`를 덧
 
 ### `[1m]` context suffix
 
-Bridge는 model을 resolve하기 전에 `[1m]`이나 `[NNNk]` suffix를 제거합니다
-(`src/model-map.mjs`의 `stripContextSuffix`). LiteLLM은 제거하지 않으므로 대괄호가 붙은
-alias는 LiteLLM이 찾지 못하고 upstream에서 `400 Invalid model name`으로 거부합니다. 이는
-이 저장소가 검증하지 않는 LiteLLM 자체 동작입니다. 대괄호는 `model_name`이나
-`--litellm-model`에 넣지 않습니다.
+Bridge는 model을 resolve하기 전에 `[1m]`이나 `[NNNk]` suffix를 제거하며, suffix가 더 큰
+backend tier를 선택하지도 않습니다. Claude 모델은 SDK 기본 tier를 유지하고, GPT-6(과
+GPT-5.6) 모델은 suffix와 관계없이 long-context tier를 사용합니다
+(`src/model-map.mjs`의 `stripContextSuffix`). 따라서 `anthropic/<id>[1m]` backend
+문자열은 받아들여지지만 `anthropic/<id>`와 똑같이 동작합니다. LiteLLM은 suffix를
+제거하지 않으므로 대괄호가 붙은 alias는 LiteLLM이 찾지 못하고 upstream에서
+`400 Invalid model name`으로 거부합니다. 이는 이 저장소가 검증하지 않는 LiteLLM 자체
+동작입니다. 대괄호는 `model_name`이나 `--litellm-model`에 넣지 않습니다.
 
-대신 1M context window에는 별도 alias를 부여합니다. `model_name`은 대괄호 없이 쓰고
-대괄호가 붙은 ID는 `anthropic/` 뒤에 두면, 이 값이 request body에 담겨 bridge로
-전달됩니다.
-
-```yaml
-  - model_name: claude-sonnet-5-1m
-    litellm_params:
-      model: anthropic/claude-sonnet-5[1m]
-      api_base: os.environ/GHCP_BRIDGE_URL
-      api_key: os.environ/GHCP_BRIDGE_TOKEN
-```
-
-```bash
-./bin/claude-litellm --litellm-model claude-sonnet-5-1m
-```
-
-`src/write-litellm-settings.mjs`는 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 설정하지 않으며 이
-값은 `src/write-launch-settings.mjs`만 설정합니다. 따라서 alias가 `[1m]` 모델로
-routing되더라도 LiteLLM 경로에서 Claude Code는 기본 context 상한을 유지합니다. 1M
-window를 모두 사용하려면 [README](../README_KO.md#direct-sdk-빠른-시작)의 Direct 경로를
-사용합니다.
+Claude Code는 설정된 모델 이름으로 context window를 정하며, 이 경로에서는 대괄호 없는
+alias이므로 기본 window를 유지합니다. `src/write-litellm-settings.mjs`는 context 재정의를
+설정하지 않고, Direct 쪽 writer도 상속된 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 비울 뿐입니다.
+GPT-6 Astra, Sol, Luna에서 1M window를 쓰려면 [README](../README_KO.md#direct-sdk-빠른-시작)의
+Direct 경로를 사용합니다. 모델별 `github-copilot/claude-<id>[1m]` launch·picker ID가 그
+window를 전달합니다. Claude 행에는 두 경로 모두 1M window를 제공하지 않습니다.
 
 ## 3. LiteLLM 실행
 
@@ -321,7 +307,7 @@ curl --silent --show-error --fail \
 Gateway가 여러 모델을 공개한다면 family alias를 선택적으로 설정합니다.
 
 ```bash
-export LITELLM_OPUS_MODEL="claude-opus-5"
+export LITELLM_OPUS_MODEL="claude-opus-5.5"
 export LITELLM_SONNET_MODEL="claude-sonnet-5"
 export LITELLM_HAIKU_MODEL="claude-haiku-4.5"
 ```

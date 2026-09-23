@@ -72,7 +72,7 @@ test("CLI dry-run accepts positive safe integers and distinguishes full from foc
   const full = cli(t, ["--model-concurrency", "9007199254740991", "--scenario-concurrency", "1"], { dryRun: true });
   assert.equal(full.status, 0, full.stderr);
   assert.match(full.stdout, /scope:\s+full/);
-  assert.match(full.stdout, /slots:\s+77/);
+  assert.match(full.stdout, /slots:\s+66/);
   assert.match(full.stdout, /policy:.*strict-all-pass-v1/);
   const focused = cli(t, ["--models", MODEL, "--scenarios", SCENARIO.id], { dryRun: true });
   assert.equal(focused.status, 0, focused.stderr);
@@ -104,24 +104,24 @@ async function strictFixture(models = PRIMARY_MODELS, scenarios = SCENARIOS) {
   };
 }
 
-test("strict grading requires 77 of 77, not 74 of 77, and never passes blocked slots", async () => {
+test("strict grading requires 66 of 66, not 63 of 66, and never passes blocked slots", async () => {
   const { assessRun } = await import("../scripts/verify/summary.mjs");
   const run = await strictFixture();
   const grade = assessRun(run.summary, run.slots);
-  assert.equal(gateFor(77), 77);
+  assert.equal(gateFor(66), 66);
   assert.equal(grade.green, true);
-  assert.equal(grade.gate, 77);
-  assert.equal(grade.expectedTotal, 77);
-  assert.equal(grade.actualTotal, 77);
+  assert.equal(grade.gate, 66);
+  assert.equal(grade.expectedTotal, 66);
+  assert.equal(grade.actualTotal, 66);
   assert.equal(grade.complete, true);
   assert.equal(grade.scope.kind, "full");
   for (const outcome of ["fail", "blocked"]) {
     const slots = run.slots.map((s, i) => ({ ...s, outcome: i < 3 ? outcome : "pass" }));
     const failed = assessRun(run.summary, slots);
     assert.equal(failed.green, false);
-    assert.equal(failed.counts.pass, 74);
-    assert.equal(failed.expectedTotal, 77);
-    assert.equal(failed.gate, 77);
+    assert.equal(failed.counts.pass, 63);
+    assert.equal(failed.expectedTotal, 66);
+    assert.equal(failed.gate, 66);
   }
 });
 
@@ -141,7 +141,7 @@ test("strict grading fails closed for incomplete, duplicate, unexpected and unkn
   for (const slots of cases) {
     const grade = assessRun({ ...run.summary, actualTotal: slots.length }, slots);
     assert.equal(grade.green, false, JSON.stringify(slots.at(-1)));
-    assert.equal(grade.expectedTotal, 77, "completed rows cannot shrink the denominator");
+    assert.equal(grade.expectedTotal, 66, "completed rows cannot shrink the denominator");
     assert.ok(grade.problems.length > 0);
   }
 });
@@ -157,7 +157,7 @@ test("strict metadata is independent, nonempty and complete; a focused pass is n
   const grade = assessRun(summary, slots);
   assert.equal(grade.green, true);
   assert.equal(grade.scope.kind, "focused");
-  assert.equal(grade.scope.fullMatrixTotal, 77);
+  assert.equal(grade.scope.fullMatrixTotal, 66);
   for (const field of ["policy", "models", "scenarios", "scope", "expectedSlots", "expectedTotal", "actualTotal", "userSettings", "provenance"]) {
     const incomplete = structuredClone(summary);
     delete incomplete[field];
@@ -372,7 +372,7 @@ test("actual runner completion writes a strict full summary and all focused fail
   assert.equal(full.result.status, 0, full.result.stderr);
   assert.equal(full.summary.green, true);
   assert.equal(full.summary.scope.kind, "full");
-  assert.equal(full.summary.counts.pass, 77);
+  assert.equal(full.summary.counts.pass, 66);
   assert.equal(full.summary.provenance.start.fingerprint.value, full.summary.provenance.end.fingerprint.value);
   for (const outcome of ["pass", "fail", "blocked", "unknown"]) {
     const run = completedRun(t, { outcome });

@@ -30,11 +30,11 @@ test("the catalogue validates", () => {
   assert.equal(ok, true);
 });
 
-test("eleven scenarios, seven models", () => {
+test("eleven scenarios, six models", () => {
   assert.equal(SCENARIOS.length, 11);
-  assert.equal(PRIMARY_MODELS.length, 7);
+  assert.equal(PRIMARY_MODELS.length, 6);
   assert.equal(new Set(SCENARIOS.map((s) => s.id)).size, 11);
-  assert.equal(new Set(PRIMARY_MODELS).size, 7);
+  assert.equal(new Set(PRIMARY_MODELS).size, 6);
 });
 
 test("coverage clears the advertised bar", () => {
@@ -114,7 +114,7 @@ test("every feature a scenario covers exists in the inventory", () => {
 
 test("the gate requires every applicable slot to pass", () => {
   assert.equal(gateFor(70), 70);
-  assert.equal(gateFor(77), 77);
+  assert.equal(gateFor(66), 66);
   assert.equal(gateFor(10), 10);
 });
 

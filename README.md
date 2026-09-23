@@ -102,38 +102,54 @@ Confirm that both commands succeed and that the model you intend to use appears 
   -p "Describe the structure of this repository"
 ```
 
-If permitted by your account and organization policy, GPT-6 Astra and the following GPT-5.6 models are also available:
+If permitted by your account and organization policy, the following GPT-6 models are also available:
 
 ```bash
 ./bin/claude-ghcp --ghcp-model gpt-6-astra
-./bin/claude-ghcp --ghcp-model gpt-5.6-sol
-./bin/claude-ghcp --ghcp-model gpt-5.6-terra
-./bin/claude-ghcp --ghcp-model gpt-5.6-luna
+./bin/claude-ghcp --ghcp-model gpt-6-sol
+./bin/claude-ghcp --ghcp-model gpt-6-luna
 ```
 
-The Copilot catalog advertises 1,178,000 tokens for GPT-6 Astra and 1,050,000
-for the GPT-5.6 models. The launcher uses Claude Code's model-scoped **1M**
-context hint for these four models rather than a process-wide context override.
-Changing models therefore does not carry the startup model's window into the
-next model; native smaller windows and automatic compaction remain in effect.
+The Copilot catalog advertises 1,050,000 tokens for GPT-6 Astra and 1,000,000
+for GPT-6 Sol and Luna (872,000 of which are prompt tokens). The launcher uses
+Claude Code's model-scoped **1M** context hint for these three models rather
+than a process-wide context override. Changing models therefore does not carry
+the startup model's window into the next model; native smaller windows and
+automatic compaction remain in effect.
 
-The Direct SDK `/model` picker contains only the **seven primary models below**,
-plus Claude Code's `Default` alias. Temporary `modelPicker` settings replace the
-built-in and discovered lineups, so older models and newly discovered catalog
-entries do not reappear as extra choices. This is picker curation, not an
-authorization allowlist: `ghcp-models` still lists the broader catalog, explicit
-`--ghcp-model` requests retain their existing routing, and account policy still
-controls model access. Restart an existing session to load the new picker.
+The Direct SDK `/model` picker is pinned to the **six primary models below**,
+plus Claude Code's own `Default` row, which it always keeps. Temporary
+`modelPicker` settings replace the built-in and discovered lineups, so older
+models and newly discovered catalog entries do not reappear as extra choices.
+This is picker curation, not an authorization allowlist: `ghcp-models` still
+lists the broader catalog, explicit `--ghcp-model` requests retain their
+existing routing, and account policy still controls model access. Restart an
+existing session to load the new picker.
 
-The current full-feature validation matrix is exactly `claude-opus-5`, `claude-sonnet-5`,
-`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
-`gpt-6-astra`. Historical validation records have been reset; only fresh
-execution evidence establishes compatibility. All seven carry the same eleven
-scenarios — there is no reduced smoke-test tier for any model. See the
-[verification results](docs/VERIFICATION.md).
-`gpt-5.5` and other catalog models are not part of that verification. Catalog
-visibility alone does not guarantee tool, image, reasoning, or other feature
-compatibility for every model.
+| Picker row | Copilot model | Claude Code window |
+|---|---|---|
+| GitHub Copilot · Claude Opus 5.5 | `claude-opus-5.5` | 200K (native gateway window) |
+| GitHub Copilot · Claude Sonnet 5 | `claude-sonnet-5` | 200K (native gateway window) |
+| GitHub Copilot · Claude Haiku 4.5 | `claude-haiku-4.5` | 200K (native gateway window) |
+| GitHub Copilot · GPT-6 Astra | `gpt-6-astra` | 1M (model-scoped hint) |
+| GitHub Copilot · GPT-6 Sol | `gpt-6-sol` | 1M (model-scoped hint) |
+| GitHub Copilot · GPT-6 Luna | `gpt-6-luna` | 1M (model-scoped hint) |
+
+In Claude Code 2.1.280 the `Default` row resolves to Opus 5.5 with the `[1m]`
+suffix. The bridge keeps Claude models on the SDK's default context tier, so
+choose the explicit Opus 5.5 row when you want Claude Code's budget to match the
+backend; see [Long conversations](#long-conversations-and-existing-sessions).
+
+The current full-feature validation matrix is exactly `claude-opus-5.5`,
+`claude-sonnet-5`, `claude-haiku-4.5`, `gpt-6-astra`, `gpt-6-sol`, and
+`gpt-6-luna`. Only fresh execution evidence establishes compatibility. All six
+carry the same eleven scenarios — there is no reduced smoke-test tier for any
+model. See the [verification results](docs/VERIFICATION.md).
+The previous primaries (`claude-opus-5`, `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`), `gpt-5.5` and other catalog models are not part of that
+verification; they remain reachable through `--ghcp-model` where your policy
+allows them. Catalog visibility alone does not guarantee tool, image,
+reasoning, or other feature compatibility for every model.
 
 ### 5. Optional: Add `claude` to PATH
 
@@ -180,11 +196,11 @@ Check the models available to your account and their supported features before s
 ```bash
 ./bin/ghcp-models --json
 
-./bin/claude-ghcp --ghcp-model gpt-5.6-sol --effort high
-./bin/claude-ghcp --ghcp-model gpt-5.6-sol --effort ultracode
+./bin/claude-ghcp --ghcp-model gpt-6-sol --effort high
+./bin/claude-ghcp --ghcp-model gpt-6-sol --effort ultracode
 ```
 
-`/effort` and `--effort` are forwarded to the Copilot SDK. If the selected model does not support the specified value, it is adjusted down to the nearest supported level. No value is forwarded to models that do not support reasoning effort. GPT-5.6 Sol, Terra, and Luna currently support `none`, `low`, `medium`, `high`, `xhigh`, and `max`.
+`/effort` and `--effort` are forwarded to the Copilot SDK. If the selected model does not support the specified value, it is adjusted down to the nearest supported level. No value is forwarded to models that do not support reasoning effort. In the current catalog GPT-6 Sol and Luna support `none`, `low`, `medium`, `high`, `xhigh`, and `max`; GPT-6 Astra, Claude Opus 5.5, and Claude Sonnet 5 support `low` through `max`; Claude Haiku 4.5 takes no reasoning effort.
 
 Ultracode is available only on models that support `xhigh` and may consume more GitHub Copilot AI Credits than a standard call. For details on the `/model` picker and effort translation, see the [Architecture document](docs/ARCHITECTURE.md#model-discovery-and-context).
 
@@ -209,12 +225,23 @@ is no longer cut off merely because five minutes elapsed. Failures emit
 content-free `bridge.session_operation_failed` diagnostics instead of waiting
 indefinitely before the model-turn timer starts.
 
-The primary GPT models explicitly select the SDK's long-context tier and pass
-through their discovered numeric catalogue limits. The SDK's default tier can
-be smaller than the advertised model window: the overnight probe measured
-Astra at 272K input tokens by default, versus 1.05M after applying its long tier
-and catalogue capabilities. `bridge.context_budget` records the actual runtime
-limit. SDK-side compaction/truncation is not accepted as silent history loss:
+The primary GPT-6 models (and explicitly selected GPT-5.6 models) select the
+SDK's long-context tier and pass through their discovered numeric catalogue
+limits. The SDK's default tier can be smaller than the advertised model window:
+an earlier overnight probe measured Astra at 272K input tokens by default,
+versus 1.05M after applying its long tier and catalogue capabilities.
+`bridge.context_budget` records the actual runtime limit; the six-model run
+recorded 1,050,000 for Astra and 872,000 for Sol and Luna. Because Sol and Luna
+accept fewer prompt tokens than Claude Code's 1M budget for them, a conversation
+that outgrows 872K takes the overflow path described next before Claude Code's
+own ~967K auto-compact threshold. Claude rows stay on the SDK default tier
+(Opus 5.5 and Sonnet 5: 200,000; Haiku 4.5: 136,000) under Claude Code's native
+200K gateway window; Haiku's limit sits below Claude Code's 167K auto-compact
+trigger, so it can take the same overflow path. The retained `Default` row
+(`claude-opus-5-5[1m]`) budgets 1M in Claude Code against Opus 5.5's 200,000
+default tier and relies on that path as well.
+
+SDK-side compaction/truncation is not accepted as silent history loss:
 the bridge invalidates that state and returns a recognizable context-limit
 error so Claude Code can compact its canonical transcript. Errors detected
 before model streaming retain HTTP 400 instead of becoming a successful HTTP
@@ -268,7 +295,7 @@ export LITELLM_MODEL="claude-sonnet-5"
 
 The bridge binds to loopback unless `ALLOW_NON_LOOPBACK=1` is set, so LiteLLM runs on the same host as the bridge it fronts. If that host also runs `claude-ghcp`, export the same `GHCP_BRIDGE_PORT` in both shells. The requested port is part of the daemon's configuration fingerprint, so a launcher started without it stops the pinned daemon and starts a new one on a new port with a new token, and LiteLLM gets connection refused.
 
-LiteLLM is outside this repository's verification scope. The `npm run verify` matrix (7 models x 11 scenarios = 77 slots) starts `src/server.mjs` directly and never starts LiteLLM, so the LiteLLM path is a configuration reference, not a validated path.
+LiteLLM is outside this repository's verification scope. The `npm run verify` matrix (6 models x 11 scenarios = 66 slots) starts `src/server.mjs` directly and never starts LiteLLM, so the LiteLLM path is a configuration reference, not a validated path.
 
 For the bridge daemon, its pinned port and token, the example configuration, model mapping, multi-user authentication, and troubleshooting, follow the [LiteLLM Guide](docs/LITELLM.md).
 
@@ -307,6 +334,15 @@ On exit, the Direct path removes the local bridge and the temporary credentials 
 
 Managed settings take precedence over the temporary settings written by the launch scripts. If an organization policy enforces a provider selector, `availableModels`, or MCP tool search, the launch scripts do not override it.
 
+The Copilot runtime behind the bridge would otherwise start the Copilot CLI's
+own MCP servers — `~/.copilot/mcp-config.json`, installed Copilot plugins,
+workspace files and the built-in `github-mcp-server` — for every SDK session,
+although only Claude Code's tools ever reach the model. The bridge discovers
+their registered names at startup, adds the built-in server that discovery does
+not report, and disables them per session with `disabledMcpServers`, without
+changing that configuration. Claude Code's own MCP servers are unaffected. See
+[Copilot Runtime MCP Servers](docs/ARCHITECTURE.md#copilot-runtime-mcp-servers).
+
 ### Support Scope
 
 The table below shows the current status for the Direct SDK path.
@@ -334,75 +370,110 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 
 ## Validation
 
-### Picker and long-conversation follow-up
+### 2026-09-23 six-model revalidation (KST)
 
-The subsequent overnight investigation added SDK context-tier alignment,
-explicit overflow recovery and progress-based turn deadlines. Those corrections
-are now covered by a fresh **77/77 full run** on commit `d84bd22`,
-`2026-09-22T12-29-58-559Z`, documented below.
+**Strict result: PASS — 66/66 (100%) in one complete run.** The primary matrix is
+now Claude Opus 5.5, Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol and
+GPT-6 Luna, each with the same eleven scenarios. The laptop's native Claude Code
+**2.1.280** executed every slot through the bridge and Copilot SDK. The final run,
+on the commit that also stops the Copilot runtime from starting unused MCP
+servers, took **740 seconds (12 min 20 s)** with no failed, blocked, missing,
+duplicate or unexpected slots and unchanged code/user settings. This is the
+selected matrix's pass rate, not a claim of complete feature coverage or
+guaranteed success on future executions.
 
-The installed Claude Code 2.1.278 reported the seven configured picker models
-and its `Default` alias through its native control API. Switching Astra ->
-Haiku -> GPT-5.6 Sol restored the respective 1M -> 200K -> 1M windows with
-automatic compaction enabled.
+- **Pinned picker:** Claude Code's native `supportedModels()` control request
+  returned `Default` plus exactly the six rows above, in order. `setModel()` into
+  each row sent no request to the bridge (its log holds only startup lines),
+  and `getContextUsage()` reported 200K for the three Claude rows, 1M for the
+  three GPT-6 rows, and 200K again after switching back to Haiku. `Default`
+  resolved to `claude-opus-5-5[1m]` (1M). Artifacts:
+  `.verify-runs/picker-six-2026-09-23T00-51-18Z/`.
+- **Runtime MCP servers:** all 72 retained bridge logs of the final run (66
+  per-slot bridges plus six v11 daemons) record `bridge.mcp_servers_disabled` for
+  five servers; the six v11 foreground launches use ephemeral bridges whose logs
+  the launcher deletes on exit. A `ps` sampler took 354 samples over 12 minutes
+  with up to nine concurrent runtimes and never saw an MCP server process under
+  them; the only children were short-lived `git` calls and exiting processes
+  (`<defunct>`, `(copilot-runtime)`).
+  Before the change, one open session started azmcp and two Playwright MCP node
+  servers (~330 MB), and a bridge serving two concurrent sessions ran six such
+  children. Two concurrent cold first requests now finish in a median 3.95 s
+  instead of 8.08 s. Artifacts: `.verify-runs/runtime-sampler-2026-09-23T00-38-10Z/`
+  and `.verify-runs/mcp-check-2026-09-23T00-32-13Z/`.
+- **SDK budgets** recorded by `bridge.context_budget`: Opus 5.5 and Sonnet 5
+  200,000 and Haiku 4.5 136,000 on the default tier; Astra 1,050,000 and Sol and
+  Luna 872,000 on the long-context tier.
+- **Offline:** `npm test` passed **390/390**, with no failures, cancellations or
+  skips.
+- **Independent audit** of the raw artifacts: **1,146 recorded checks** with none
+  failing, **90 headless phase transcripts** carrying 95 result envelopes, all with
+  positive input usage and the expected serving model, no unanswered `tool_use`,
+  and retained command/daemon evidence for all six launcher slots.
+- **Before the final run,** the first six-model full run scored 64/66 and was NOT
+  GREEN. Claude Opus 5.5 completed v02 and v08 correctly but through shell
+  commands (`sed -i`, a redirect) instead of Edit and Write, so the Edit
+  exact-match check and the Write|Edit PreToolUse observer had nothing to observe.
+  Separately, an interactive Claude Code session outside the harness saved a
+  `/model` choice to `~/.claude/settings.json` mid-run, which the settings gate
+  correctly refused. The v02 and v08 prompts now name Edit and Write, as the v08
+  cron turn already names CronCreate; checks and pass criteria are unchanged. A
+  focused Opus 5.5 rerun of both scenarios passed 2/2, and the next full run
+  passed 66/66 in 624 s. The runtime MCP change then required a fresh full run on
+  its own commit; it took longer while another repository's Copilot runtime
+  stability jobs were loading the same laptop (load average ≈ 8.5).
 
-A separate real Astra conversation completed **10 turns and four automatic
-compactions**, then recalled the exact marker planted in its first turn.
-That probe used a test-only 100K compact window (67K trigger), not a reduced
-product default. Artifacts are under
-`.verify-runs/long-conversation-2026-09-22T02-30-14-506Z/`.
-At that earlier stage the offline suite passed **353/353** tests, including hung setup, cancellation,
-late replies, shutdown, and cache-accounting regressions.
+Full-run history remains separate, under each run's recorded implementation and
+model catalogue:
 
-The seven-model resume/fork and long-context scenarios also passed **14/14** in
-a separate focused run:
-`.verify-runs/picker-longturn-regression/2026-09-22T02-40-55-670Z/`.
-Its code fingerprint and user settings matched before and after execution.
+| Full run | Run ID (UTC) | Matrix | Pass / fail / blocked / unknown | Model × scenario workers | Duration | User settings |
+|---|---|---|---|---|---|---|
+| Six-model first run — NOT GREEN | `2026-09-22T23-29-13-171Z` | 6 × 11 | 64 / 2 / 0 / 0 | 3 × 2 | 778 s | Changed by an interactive session outside the harness |
+| Six-model before the runtime MCP change — PASS | `2026-09-22T23-45-15-077Z` | 6 × 11 | 66 / 0 / 0 / 0 | 3 × 2 | 624 s | Intact |
+| Six-model final, runtime MCP servers disabled — PASS | `2026-09-23T00-38-10-470Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **740 s** | **Intact** |
+| Seven-model: previous closeout 1 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 456 s | Changed; writer/cause unknown |
+| Seven-model: previous closeout 2 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 7 × 11 | 74 / 2 / 1 / 0 | 7 × 2 | 863 s | Intact |
+| Seven-model: fresh baseline — NOT GREEN | `2026-09-22T00-01-29-757Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 943 s | Intact |
+| Seven-model: first correction — NOT GREEN | `2026-09-22T00-30-59-086Z` | 7 × 11 | 75 / 2 / 0 / 0 | 7 × 2 | 973 s | Intact |
+| Seven-model: before picker/long-turn follow-up — PASS | `2026-09-22T00-52-51-013Z` | 7 × 11 | 77 / 0 / 0 / 0 | 3 × 2 | 782 s | Intact |
+| Seven-model: picker/long-turn fixes — PASS | `2026-09-22T03-37-17-139Z` | 7 × 11 | 77 / 0 / 0 / 0 | 3 × 2 | 794 s | Intact |
+| Seven-model: context/streaming recovery — PASS | `2026-09-22T12-29-58-559Z` | 7 × 11 | 77 / 0 / 0 / 0 | 3 × 2 | 812 s | Intact |
 
-The earlier picker/long-turn changes passed **77/77** in
-`2026-09-22T03-37-17-139Z`. That snapshot remains in the history; the latest
-result and both generated reports use the new context/streaming-recovery run.
+The final run recorded commit
+`1df3aa4982ce2eb688a7d48f64aeab61e1499e22` (clean checkout) and matching start/end
+41-file `verification-code-v1` SHA-256 fingerprints:
+`5dad75f80408a699feac9f2221d6edcea848a7d9265e0a9e25cd170277c9cd7b`.
+Both generated verification documents use **only that final full run**.
+Its ignored local directory `.verify-runs/2026-09-23T00-38-10-470Z/` contains
+`summary.json`, `slots.jsonl`, `console.log`, `audit.json`, phase transcripts and
+launcher logs. The earlier six-model runs and the focused rerun
+(`2026-09-22T23-44-23-074Z`) remain separate local records; none of their cells
+contribute to the final 66/66.
 
-### 2026-09-22 live revalidation (KST)
+### Previous seven-model record (2026-09-22)
 
-**Strict result: PASS — 77/77 (100%) in one complete run.** The laptop's installed
-native Claude Code **2.1.278** executed every scenario through the bridge and
-Copilot SDK. The final run took **812 seconds (13 min 32 s)**, with no failed,
-blocked, missing, duplicate or unexpected slots and unchanged code/user settings.
-This is the selected matrix's pass rate, not a claim of complete feature coverage
-or guaranteed success on future executions.
+The previous primaries were Claude Opus 5, Claude Sonnet 5, Claude Haiku 4.5,
+GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna and GPT-6 Astra. Their last full run,
+`2026-09-22T12-29-58-559Z` on commit `d84bd22` with Claude Code 2.1.278, passed
+77/77. The same work produced these separate probes, which do not contribute
+cells to any matrix:
 
-- Existing offline evidence for this runtime: **388/388 passed**, with no failures,
-  cancellations or skips; **205/205** targeted tests were rerun during publication
-  cleanup. These are earlier offline records, not additional model calls in this run.
-- Additional recovery probes: **Astra 24/24 turns** with one native compaction
-  and first-marker recall at up to **809,115 input tokens**, and **Haiku 9/9 turns**
-  with two native compactions. These separate probes do not contribute cells to
-  the full matrix.
-- Independent audit: **1,337 recorded checks**, **105 headless phase transcripts**,
-  positive raw result-envelope input usage, and retained command/daemon evidence
-  for the seven launcher slots.
+- A real Astra conversation completed **10 turns and four automatic compactions**
+  with a test-only 100K compact window (67K trigger), then recalled the marker
+  planted in its first turn:
+  `.verify-runs/long-conversation-2026-09-22T02-30-14-506Z/`.
+- Recovery probes: **Astra 24/24 turns** with one native compaction and
+  first-marker recall at up to **809,115 input tokens**, and **Haiku 9/9 turns**
+  with two native compactions.
+- A focused seven-model resume/fork and long-context run passed **14/14**:
+  `.verify-runs/picker-longturn-regression/2026-09-22T02-40-55-670Z/`.
 
-Full-run history remains separate, under each run's recorded implementation:
-
-| Full run | Run ID (UTC) | Pass / fail / blocked / unknown | Model × scenario workers | Duration | User settings |
-|---|---|---|---|---|---|
-| Previous closeout 1 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 76 / 1 / 0 / 0 | 7 × 2 | 456 s | Changed; writer/cause unknown |
-| Previous closeout 2 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 74 / 2 / 1 / 0 | 7 × 2 | 863 s | Intact |
-| Fresh baseline — NOT GREEN | `2026-09-22T00-01-29-757Z` | 76 / 1 / 0 / 0 | 7 × 2 | 943 s | Intact |
-| First correction — NOT GREEN | `2026-09-22T00-30-59-086Z` | 75 / 2 / 0 / 0 | 7 × 2 | 973 s | Intact |
-| Before picker/long-turn follow-up — PASS | `2026-09-22T00-52-51-013Z` | 77 / 0 / 0 / 0 | 3 × 2 | 782 s | Intact |
-| Picker/long-turn fixes — PASS | `2026-09-22T03-37-17-139Z` | 77 / 0 / 0 / 0 | 3 × 2 | 794 s | Intact |
-| Latest context/streaming recovery — PASS | `2026-09-22T12-29-58-559Z` | **77 / 0 / 0 / 0** | **3 × 2** | **812 s** | **Intact** |
-
-The previous closeout's Sonnet fork mismatch, Opus zero-result usage, and Haiku
-timeout are retained as historical failures, not retrospectively reclassified.
-Fresh baseline testing instead caught a Luna native background worker stuck at
-startup. The first correction caught an Opus fork refusal and the same native
-startup symptom on Haiku. Both startup stalls occurred before the first bridge
-model request.
-
-The changes strengthen evidence rather than relax the gate:
+Its failures stay recorded as history rather than being reclassified: the
+Sonnet fork mismatch, Opus zero-result usage and Haiku timeout of the previous
+closeout; a Luna and a Haiku native background worker stuck at startup before the
+first bridge model request; and an Opus refusal to broad earlier-message
+extraction wording, since replaced by clarified factual questions. Those runs
+also hardened the harness rather than relaxing the gate:
 
 - Resume/fork prompts ask for the example deployment's original facts. All three
   phases must use no tools, so persistent-memory writes cannot masquerade as
@@ -414,29 +485,9 @@ The changes strengthen evidence rather than relax the gate:
   snapshots distinguish bridge stalls from native startup stalls. Command
   stdout/stderr and daemon logs survive cleanup.
 
-Broad earlier-message extraction wording produced an Opus refusal in both a
-focused 6/7 run and the first corrected full run. Clarified factual questions
-then passed all seven models without changing safety controls or accepting
-refusals. The latest full run retained the proven six-worker profile, unchanged
-scenario timeout budgets and the all-pass policy. SDK setup uses the new separate
-deadline described above. This profile passed, but the upstream causes of the
-earlier intermittent SDK/native stalls are not established or claimed eliminated.
-
-The final run recorded commit
-`d84bd2210ee6d6bd2911c4341ae756060d42b36f` (clean checkout) and matching start/end
-41-file `verification-code-v1` SHA-256 fingerprints:
-`7a5c1d856bc02110531fd0a013bd894a779f4309cfcd20a9e26bd765f0c8725a`.
-Both generated verification documents use **only that final full run**.
-Its ignored local directory `.verify-runs/2026-09-22T12-29-58-559Z/` contains
-`summary.json`, `slots.jsonl`, `console.log`, `audit.json`, phase transcripts and
-launcher logs. Earlier offline evidence remains in
-`.verify-runs/soak-20260922-1403/overnight/runtime-fix-offline-v2.log`; it was not
-relabelled as part of this new execution.
-Earlier separate focused runs remain under
-`.verify-runs/20260922-resume-regression/2026-09-22T00-48-55-531Z` and
-`.verify-runs/20260922-daemon-regression/2026-09-22T00-48-55-531Z`.
-Earlier focused failures and diagnostic probes remain separate local records;
-none of their successful cells contribute to the final 77/77.
+The upstream causes of those earlier intermittent SDK/native stalls are not
+established or claimed eliminated. Earlier offline evidence remains in
+`.verify-runs/soak-20260922-1403/overnight/runtime-fix-offline-v2.log`.
 
 ```bash
 # Unit and structural tests. No model calls, no credits.
@@ -446,14 +497,14 @@ npm test
 PENDING_TOOL_WAIT_MS=30000 npm run verify -- \
   --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2
 
-# Full verification matrix: 11 scenarios x 7 models = 77 live slots (timeout scale: 1)
+# Full verification matrix: 11 scenarios x 6 models = 66 live slots (timeout scale: 1)
 npm run verify
 
 # Longer verification waits; overrides apply only to this command
 PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2
 
 # One cell, while iterating on a driver
-npm run verify -- --models claude-opus-5 --scenarios v04-shell-ops
+npm run verify -- --models claude-opus-5.5 --scenarios v04-shell-ops
 
 # Plan, coverage and single-turn schedule estimate. Starts nothing.
 npm run verify -- --dry-run
@@ -494,7 +545,7 @@ The command-scoped `PENDING_TOOL_WAIT_MS=30000` override sets a separate 30-seco
 pending-tool wait; it is not multiplied by `--timeout-scale` or saved as a runtime
 default. It is a precaution for verification, **not an established fix for
 no-result exits**. `--model-concurrency` and `--scenario-concurrency` control model
-workers and scenario workers per model (defaults: `7` and `2`). Dry-run single-turn
+workers and scenario workers per model (defaults: `6` and `2`). Dry-run single-turn
 schedule estimates are planning aids, **not deadlines or true worst-case bounds**.
 
 `npm run verify` consumes real GitHub Copilot AI Credits. Every slot runs the
@@ -513,7 +564,7 @@ the slot instead of passing it.
 
 `blocked` is not a pass. A timeout, a dead bridge, or an unpaired
 `tool_use`/`tool_result` stays in the denominator. New runs use the
-`strict-all-pass-v1` policy: **77 of 77** for the full matrix, or every selected
+`strict-all-pass-v1` policy: **66 of 66** for the full matrix, or every selected
 slot for an explicitly **focused** run. The runner fixes the expected unique
 model × scenario set before execution and exits non-zero for any missing,
 duplicate, unexpected, failed, blocked or unknown-outcome slot. Empty matrices,
