@@ -20,6 +20,7 @@ import {
   sdkContextOptionsFor,
 } from "./model-map.mjs";
 import { applyRequestPolicy, BridgeRequestError } from "./request-policy.mjs";
+import { sessionError } from "./upstream-errors.mjs";
 
 const CONTINUATION_PROMPT =
   "Continue from the prior conversation and follow the current system instructions.";
@@ -456,6 +457,13 @@ export class SessionManager {
       availableIds: this.models.map((model) => model.id),
       preferredModel: this.preferredModel,
     });
+  }
+
+  // The error a request in this Claude Code session would get once Copilot
+  // starts reducing history, with the token limit its latest state reported.
+  contextLimitErrorFor(headers) {
+    const key = this.familyHeads.get(claudeSessionFamily(headers, this.anonymousSessionId));
+    return contextLimitError(this.states.get(key)?.contextLimit);
   }
 
   resolveReasoningEffort(modelId, requested) {
@@ -1291,7 +1299,7 @@ export class SessionManager {
         if (!event.agentId) finishTurn();
       };
       const onError = (event) => {
-        finish(new Error(event.data?.message || "GitHub Copilot SDK session error."));
+        finish(sessionError(event.data));
       };
 
       const subscribe = (type, handler = () => {}) => state.session.on(type, (event) => {

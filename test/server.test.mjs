@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { SessionManager } from "../src/session-manager.mjs";
 import { BridgeRequestError } from "../src/request-policy.mjs";
+import { sessionError } from "../src/upstream-errors.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(rootDir, "src", "server.mjs");
@@ -66,6 +67,7 @@ async function offlineServer(t, overrides = {}) {
     MAX_STATES: "", MAX_TOOL_RESULTS: "", CLEANUP_TIMEOUT_MS: "",
     PENDING_TOOL_WAIT_MS: "", STATE_IDLE_TTL_MS: "", SESSION_OPERATION_TIMEOUT_MS: "",
     TURN_IDLE_TIMEOUT_MS: "", TURN_MAX_DURATION_MS: "",
+    BRIDGE_ALLOW_UNAUTHENTICATED: undefined, BRIDGE_TEST_FAULTS: undefined,
     ...overrides,
   };
   const previous = new Map(Object.keys(values).map((name) => [name, process.env[name]]));
@@ -189,6 +191,21 @@ async function messageRequest(
   assert.equal(req.listenerCount("aborted"), 0);
   assert.equal(res.listenerCount("close"), 0);
   return res;
+}
+
+function sseData(response) {
+  return response.chunks.join("").split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)));
+}
+
+// The bridge's diagnostics are the JSON lines it writes to stderr.
+function captureDiagnostics(t) {
+  const events = [];
+  t.mock.method(console, "error", (line) => {
+    if (typeof line === "string" && line.startsWith("{")) events.push(JSON.parse(line));
+  });
+  return events;
 }
 
 test("model requests receive server-generated request and response correlation IDs", async (t) => {
@@ -496,4 +513,131 @@ test("explicit body and replay byte limits override the defaults", async (t) => 
   const rejected = await tokenCountRequest(handler, [payload(19)]);
   assert.equal(rejected.status, 400);
   assert.equal(rejected.body.error.message, "Request body exceeds MAX_BODY_BYTES.");
+});
+
+const PRIVATE_UPSTREAM = "PRIVATE_UPSTREAM_TEXT";
+for (const [label, error, expected] of [
+  ["a rate limit", sessionError({
+    errorType: "rate_limit", errorCode: "user_model_rate_limited", eligibleForAutoSwitch: false,
+    message: `${PRIVATE_UPSTREAM} rate limited`, statusCode: 429, providerCallId: "F00D:1",
+  }), { status: 429, type: "rate_limit_error", retryAfterSeconds: null }],
+  ["a rate limit with a known reset", sessionError({
+    errorType: "rate_limit", message: `${PRIVATE_UPSTREAM} rate limited`, statusCode: 429,
+  }, { retryAfterSeconds: 2.4 }), { status: 429, type: "rate_limit_error", retryAfterSeconds: 3 }],
+  ["an exhausted quota", sessionError({
+    errorType: "quota", errorCode: "quota_exceeded", message: `${PRIVATE_UPSTREAM} out of credits`,
+  }), { status: 429, type: "rate_limit_error", retryAfterSeconds: null }],
+  ["an upstream 502", sessionError({
+    errorType: "query", message: `${PRIVATE_UPSTREAM} Bad Gateway`, statusCode: 502,
+  }), { status: 529, type: "overloaded_error", retryAfterSeconds: null }],
+  ["an unclassified SDK error", sessionError({
+    errorType: "authorization", message: `${PRIVATE_UPSTREAM} denied`, statusCode: 403,
+  }), { status: 500, type: "api_error", retryAfterSeconds: null }],
+  ["an invalid request", new BridgeRequestError(`${PRIVATE_UPSTREAM} bad shape`),
+    { status: 400, type: "invalid_request_error", retryAfterSeconds: null }],
+]) {
+  for (const [stream, started] of [[false, false], [true, false], [true, true]]) {
+    test(`${label} leaves as ${expected.status} ${expected.type} with stream=${stream} and output-started=${started}`, async (t) => {
+      const { handler, manager } = await offlineServer(t);
+      const diagnostics = captureDiagnostics(t);
+      t.mock.method(manager, "execute", async (_body, _headers, options) => {
+        options.onReady({ model: "gpt-5.6-sol" });
+        if (started) options.onEvent({ type: "assistant.message_delta", data: { deltaContent: "partial" } });
+        throw error;
+      });
+      const response = await messageRequest(handler, {
+        stream, model: "gpt-5.6-sol", messages: [{ role: "user", content: "hello" }],
+      });
+      const envelope = started ? sseData(response).at(-1) : response.body;
+      assert.deepEqual(envelope, { type: "error", error: { type: expected.type, message: error.message } });
+      if (!started) {
+        assert.equal(response.status, expected.status);
+        assert.equal(response.chunks.length, 0);
+        assert.equal(
+          response.headers["retry-after"],
+          expected.retryAfterSeconds == null ? undefined : String(expected.retryAfterSeconds),
+        );
+      }
+      const failures = diagnostics.filter((event) => event.event === "bridge.request_failed");
+      assert.equal(failures.length, 1);
+      assert.match(failures[0].requestId, /^[a-f0-9-]{36}$/);
+      assert.deepEqual(failures[0], {
+        event: "bridge.request_failed", requestId: failures[0].requestId, status: expected.status,
+        errorType: expected.type, retryAfterSeconds: expected.retryAfterSeconds, streaming: stream, headersSent: started,
+      });
+      assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(PRIVATE_UPSTREAM));
+    });
+  }
+}
+
+test("malformed BRIDGE_TEST_FAULTS stops startup", () => {
+  for (const value of ["rate_limit", "rate_limit:0", "timeout:1", "rate_limit:1,rate_limit:2"]) {
+    const result = runServerWith({ BRIDGE_TEST_FAULTS: value });
+    assert.equal(result.status, 1, value);
+    assert.match(result.stderr, /BRIDGE_TEST_FAULTS/, value);
+  }
+});
+
+test("BRIDGE_TEST_FAULTS fails agent turns in order through the real error mapping", async (t) => {
+  const { handler, manager } = await offlineServer(t, {
+    BRIDGE_TEST_FAULTS: "rate_limit:2,overloaded:1,context_limit:1",
+  });
+  const diagnostics = captureDiagnostics(t);
+  t.mock.method(manager, "execute", async () => ({
+    model: "gpt-5.6-sol", message: { content: "ok", toolRequests: [] },
+  }));
+  const contextLimit = t.mock.method(manager, "contextLimitErrorFor");
+  const headers = { "x-api-key": "test-only", "x-claude-code-session-id": "fault-session" };
+  const send = (value, url = "/v1/messages") => messageRequest(handler, value, url, undefined, { headers });
+  const sideCall = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "Write a title." }] };
+  const agentTurn = (stream = false) => ({
+    ...sideCall, stream, tools: [{ name: "Read", input_schema: { type: "object" } }],
+  });
+
+  // Title and summary calls declare no tools, and token counting never
+  // reaches the model, so none of them spends a fault.
+  assert.equal((await send(sideCall)).status, 200);
+  assert.equal((await send({ ...sideCall, tools: [] })).status, 200);
+  assert.equal((await send(agentTurn(), "/v1/messages/count_tokens")).status, 200);
+
+  const expected = [
+    [false, 429, "rate_limit_error", "1"],
+    [true, 429, "rate_limit_error", "1"],
+    [false, 529, "overloaded_error", undefined],
+    [true, 400, "invalid_request_error", undefined],
+  ];
+  const failed = [];
+  for (const [stream, status, type, retryAfter] of expected) {
+    const response = await send(agentTurn(stream));
+    assert.equal(response.status, status);
+    assert.equal(response.body.error.type, type);
+    assert.equal(response.headers["retry-after"], retryAfter);
+    assert.equal(response.chunks.length, 0);
+    failed.push(response);
+  }
+  assert.equal(
+    failed[3].body.error.message,
+    "prompt is too long: GitHub Copilot would reduce conversation history. Compact the conversation before retrying.",
+  );
+  assert.equal(contextLimit.mock.callCount(), 1);
+  assert.equal(contextLimit.mock.calls[0].arguments[0], headers);
+  assert.equal((await send(agentTurn())).status, 200);
+  assert.equal(manager.execute.mock.callCount(), 3);
+
+  const lifecycle = diagnostics.filter((event) =>
+    ["bridge.test_fault_injected", "bridge.request_failed"].includes(event.event));
+  assert.deepEqual(lifecycle.map((event) => event.event), Array(4).fill(["bridge.test_fault_injected", "bridge.request_failed"]).flat());
+  const injected = lifecycle.filter((event) => event.event === "bridge.test_fault_injected");
+  assert.deepEqual(injected.map(({ kind, remaining }) => [kind, remaining]), [
+    ["rate_limit", 1], ["rate_limit", 0], ["overloaded", 0], ["context_limit", 0],
+  ]);
+  for (const [index, fault] of injected.entries()) {
+    const failure = lifecycle[index * 2 + 1];
+    assert.deepEqual(Object.keys(fault), ["event", "requestId", "kind", "remaining"]);
+    assert.equal(failure.requestId, fault.requestId);
+    assert.deepEqual(
+      [failure.status, failure.errorType, failure.retryAfterSeconds, failure.streaming, failure.headersSent],
+      [expected[index][1], expected[index][2], expected[index][3] ? 1 : null, expected[index][0], false],
+    );
+  }
 });

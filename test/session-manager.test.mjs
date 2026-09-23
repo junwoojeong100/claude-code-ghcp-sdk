@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AnthropicSseStream, startSse, writeJsonMessage } from "../src/anthropic.mjs";
+import { BridgeRequestError } from "../src/request-policy.mjs";
 import { SessionManager } from "../src/session-manager.mjs";
+import { UpstreamError } from "../src/upstream-errors.mjs";
 import { PRIMARY_MODELS } from "../scripts/verify/scenarios.mjs";
 
 class FakeSession {
@@ -1205,6 +1207,66 @@ for (const [label, usageEvents, inputTokens, outputTokens] of [
     }
   });
 }
+
+// ErrorData payloads shaped like the SDK's session.error events.
+for (const [label, data, expected] of [
+  ["a rate limit", {
+    errorType: "rate_limit", errorCode: "user_model_rate_limited", eligibleForAutoSwitch: false,
+    message: "Sorry, you've hit a rate limit for this model. Please try again later.",
+    statusCode: 429, providerCallId: "F00D:1234", serviceRequestId: "svc-1",
+  }, { status: 429, type: "rate_limit_error" }],
+  ["an exhausted quota", {
+    errorType: "quota", errorCode: "quota_exceeded",
+    message: "You've run out of your included AI credits for the month.",
+  }, { status: 429, type: "rate_limit_error" }],
+  ["an unavailable upstream", {
+    errorType: "query", message: "Service Unavailable", statusCode: 503,
+  }, { status: 529, type: "overloaded_error" }],
+  ["an unclassified failure", {
+    errorType: "authorization", message: "Copilot access is disabled for this model.", statusCode: 403,
+  }, null],
+]) {
+  test(`session.error keeps the upstream classification of ${label}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: ".", client });
+    client.session.sendImplementation = async () => client.session.emit("session.error", data);
+    await manager.start();
+    try {
+      const error = await manager.execute(request(), {}).then(() => assert.fail("The turn must fail."), (reason) => reason);
+      assert.equal(error.message, data.message);
+      assert.equal(error instanceof UpstreamError, Boolean(expected));
+      if (expected) {
+        assert.equal(error.status, expected.status);
+        assert.equal(error.type, expected.type);
+        assert.equal(error.retryAfterSeconds, null);
+      }
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+test("a context-limit error for a Claude Code session names its reported token limit", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client });
+  const headers = { "x-claude-code-session-id": "context-fault" };
+  const unknown = "prompt is too long: GitHub Copilot would reduce conversation history. Compact the conversation before retrying.";
+  await manager.start();
+  try {
+    assert.equal(manager.contextLimitErrorFor(headers).message, unknown);
+    await manager.execute(request(), headers);
+    client.session.emit("session.usage_info", { tokenLimit: 136000, currentTokens: 1200 });
+    const error = manager.contextLimitErrorFor(headers);
+    assert.ok(error instanceof BridgeRequestError);
+    assert.equal(
+      error.message,
+      "prompt is too long: GitHub Copilot would reduce conversation history at 136000 input tokens. Compact the conversation before retrying.",
+    );
+    assert.equal(manager.contextLimitErrorFor({ "x-claude-code-session-id": "other" }).message, unknown);
+  } finally {
+    await manager.stop();
+  }
+});
 
 test("cache-only usage preserves fallback counters and finish metadata", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);

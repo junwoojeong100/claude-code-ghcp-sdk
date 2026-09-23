@@ -20,6 +20,11 @@ import {
   IGNORED_FIELDS,
 } from "./request-policy.mjs";
 import { SessionManager } from "./session-manager.mjs";
+import {
+  parseTestFaults,
+  testFaultError,
+  UpstreamError,
+} from "./upstream-errors.mjs";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MESSAGES_PATH = "/v1/messages";
@@ -88,6 +93,32 @@ if (port > 65_535) {
 if (!apiKey && process.env.BRIDGE_ALLOW_UNAUTHENTICATED !== "1") {
   throw new Error("BRIDGE_API_KEY is required.");
 }
+// Verification seam, not a feature. BRIDGE_TEST_FAULTS="rate_limit:1,overloaded:1"
+// fails that many agent turns of each kind, in the listed order, before they
+// reach Copilot. Only requests that declare tools count: Claude Code's title
+// and summary side calls declare none. Each failure is the error a real
+// upstream failure of that kind raises, so the status mapping below runs as
+// it would in production. Unset or empty, nothing changes.
+const testFaults = parseTestFaults(process.env.BRIDGE_TEST_FAULTS);
+
+// One JSON object per stderr line, whatever LOG_LEVEL says. A verification
+// harness parses these, so event and field names are a contract, and none
+// may carry prompt or output content.
+function emitDiagnostic(event) {
+  console.error(JSON.stringify(event));
+}
+
+function reportRequestFailure(requestId, { status, type, retryAfterSeconds = null }, { streaming = false, headersSent = false } = {}) {
+  emitDiagnostic({
+    event: "bridge.request_failed",
+    requestId,
+    status,
+    errorType: type,
+    retryAfterSeconds,
+    streaming,
+    headersSent,
+  });
+}
 
 const manager = new SessionManager({
   baseDirectory: copilotHome,
@@ -97,9 +128,7 @@ const manager = new SessionManager({
   maxReplayBytes,
   maxStates,
   maxToolResults,
-  onDiagnostic: (event) => {
-    console.error(JSON.stringify(event));
-  },
+  onDiagnostic: emitDiagnostic,
   pendingToolWaitMs,
   sessionOperationTimeoutMs,
   turnTimeoutMs,
@@ -108,26 +137,49 @@ const manager = new SessionManager({
 });
 await manager.start();
 
-function writeJson(res, status, value) {
+function writeJson(res, status, value, headers = {}) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
+    ...headers,
     "content-type": "application/json",
     "content-length": Buffer.byteLength(body),
   });
   res.end(body);
 }
 
-function writeApiError(res, status, type, message) {
+function writeApiError(res, status, type, message, headers) {
   writeJson(res, status, {
     type: "error",
     error: { type, message },
-  });
+  }, headers);
 }
 
 function isAuthenticated(req) {
   if (!apiKey) return true;
   const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "");
   return bearer === apiKey || req.headers["x-api-key"] === apiKey;
+}
+
+// Claude Code retries 429 rate_limit_error and 529 overloaded_error, so those
+// keep the status an UpstreamError carries. Everything else is 400 when the
+// request itself is at fault and 500 otherwise.
+function errorResponse(error) {
+  if (error instanceof UpstreamError) {
+    return {
+      status: error.status,
+      type: error.type,
+      retryAfterSeconds: error.retryAfterSeconds == null
+        ? null
+        : Math.max(0, Math.ceil(error.retryAfterSeconds)),
+    };
+  }
+  const invalidRequest =
+    error instanceof BridgeRequestError ||
+    error instanceof ModelUnavailableError ||
+    error instanceof ReasoningEffortUnavailableError;
+  return invalidRequest
+    ? { status: 400, type: "invalid_request_error", retryAfterSeconds: null }
+    : { status: 500, type: "api_error", retryAfterSeconds: null };
 }
 
 async function readBody(req) {
@@ -213,6 +265,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (!isAuthenticated(req)) {
+    if (requestPath === MESSAGES_PATH) {
+      reportRequestFailure(requestId, { status: 401, type: "authentication_error" });
+    }
     writeApiError(
       res,
       401,
@@ -264,6 +319,9 @@ const server = http.createServer(async (req, res) => {
       body = await readBody(req);
       validateBody(body);
     } catch (error) {
+      if (requestPath === MESSAGES_PATH) {
+        reportRequestFailure(requestId, { status: 400, type: "invalid_request_error" });
+      }
       if (!res.destroyed) writeApiError(res, 400, "invalid_request_error", error.message);
       return;
     }
@@ -295,6 +353,22 @@ const server = http.createServer(async (req, res) => {
       return stream;
     };
 
+    const fault = body.tools?.length
+      ? testFaults.find((candidate) => candidate.remaining > 0)
+      : null;
+    if (fault) {
+      fault.remaining -= 1;
+      emitDiagnostic({
+        event: "bridge.test_fault_injected",
+        requestId,
+        kind: fault.kind,
+        remaining: fault.remaining,
+      });
+      throw fault.kind === "context_limit"
+        ? manager.contextLimitErrorFor(req.headers)
+        : testFaultError(fault.kind);
+    }
+
     const result = await manager.execute(body, req.headers, {
       requestId,
       responseId,
@@ -315,6 +389,15 @@ const server = http.createServer(async (req, res) => {
     if (streaming) ensureStream(result.model).finish(response);
     else writeJsonMessage(res, response);
   } catch (error) {
+    const failure = error.name === "AbortError"
+      ? { status: 499, type: "client_closed_request", retryAfterSeconds: null }
+      : errorResponse(error);
+    if (requestPath === MESSAGES_PATH) {
+      reportRequestFailure(requestId, failure, {
+        streaming,
+        headersSent: Boolean(res.headersSent),
+      });
+    }
     if (error.name === "AbortError") {
       if (!res.destroyed && !res.headersSent) {
         writeApiError(
@@ -328,19 +411,18 @@ const server = http.createServer(async (req, res) => {
     }
     console.error(`[${requestId}] ${error.name}: ${error.message}`);
     if (res.destroyed) return;
-    const invalidRequest =
-      error instanceof BridgeRequestError ||
-      error instanceof ModelUnavailableError ||
-      error instanceof ReasoningEffortUnavailableError;
     if (streaming && res.headersSent) {
-      writeSseError(res, error, invalidRequest ? "invalid_request_error" : "api_error");
+      writeSseError(res, error, failure.type);
       return;
     }
     writeApiError(
       res,
-      invalidRequest ? 400 : 500,
-      invalidRequest ? "invalid_request_error" : "api_error",
+      failure.status,
+      failure.type,
       error.message,
+      failure.retryAfterSeconds == null
+        ? undefined
+        : { "retry-after": String(failure.retryAfterSeconds) },
     );
   } finally {
     clearInterval(keepAlive);
