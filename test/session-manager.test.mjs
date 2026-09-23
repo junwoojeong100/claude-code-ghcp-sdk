@@ -168,6 +168,91 @@ test("SDK context tier and catalogue limits survive creation and effort changes"
   } finally { await manager.stop(); }
 });
 
+test("every discovered runtime MCP server is disabled on SDK session create and resume", async () => {
+  const client = new FakeClient([{ id: "gpt-6-sol" }]);
+  const discoverCalls = [];
+  client.rpc = {
+    mcp: {
+      discover: async (params) => {
+        discoverCalls.push(params);
+        return {
+          servers: [
+            { name: "playwright", source: "user", type: "stdio" },
+            { name: "azure", source: "plugin", sourcePlugin: "azure", type: "stdio" },
+            { name: "playwright", source: "workspace", type: "stdio" },
+            { name: "" },
+            {},
+          ],
+        };
+      },
+    },
+  };
+  const resumed = [];
+  client.resumeSession = async (sessionId, config) => {
+    resumed.push({ sessionId, config });
+    return new FakeSession();
+  };
+  const diagnostics = [];
+  const manager = new SessionManager({
+    baseDirectory: "/tmp", preferredModel: "gpt-6-sol", client, stateIdleTtlMs: 100,
+    onDiagnostic: (event) => diagnostics.push(event),
+  });
+  const headers = { "x-claude-code-session-id": "mcp-disabled" };
+  await manager.start();
+  try {
+    assert.deepEqual(discoverCalls, [{ workingDirectory: process.cwd() }]);
+    assert.deepEqual(
+      diagnostics.filter((event) => event.event.startsWith("bridge.mcp_")),
+      [{ event: "bridge.mcp_servers_disabled", count: 3 }],
+    );
+    await manager.execute(request(undefined, "gpt-6-sol"), headers);
+    assert.deepEqual(client.created[0].disabledMcpServers, ["github-mcp-server", "playwright", "azure"]);
+    assert.deepEqual(client.created[0].availableTools, [], "MCP servers were never reachable by the model");
+    [...manager.states.values()][0].lastUsedAt = 0;
+    await manager.execute(request(undefined, "gpt-6-sol"), headers);
+    assert.equal(resumed.length, 1);
+    assert.equal(resumed[0].sessionId, client.created[0].sessionId);
+    assert.deepEqual(resumed[0].config.disabledMcpServers, ["github-mcp-server", "playwright", "azure"]);
+    assert.equal(discoverCalls.length, 1, "discovery runs once per bridge start, not per session");
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("MCP discovery failures keep startup working and still disable the built-in server", async () => {
+  const cases = [
+    ["rejection", (client) => {
+      client.rpc = { mcp: { discover: async () => {
+        throw Object.assign(new Error("method not found"), { name: "ResponseError" });
+      } } };
+    }, [{ event: "bridge.mcp_discovery_failed", error: "ResponseError", message: "method not found" }]],
+    ["timeout", (client) => {
+      client.rpc = { mcp: { discover: () => new Promise(() => {}) } };
+    }, [{ event: "bridge.mcp_discovery_failed", error: "Error", message: "MCP discovery exceeded 20ms" }]],
+    ["disconnected rpc", (client) => {
+      Object.defineProperty(client, "rpc", { get() { throw new Error("Client is not connected."); } });
+    }, []],
+    ["no rpc surface", () => {}, []],
+  ];
+  for (const [label, arrange, expected] of cases) {
+    const client = new FakeClient([{ id: "gpt-6-sol" }]);
+    arrange(client);
+    const diagnostics = [];
+    const manager = new SessionManager({
+      baseDirectory: "/tmp", preferredModel: "gpt-6-sol", client, mcpDiscoveryTimeoutMs: 20,
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+    await manager.start();
+    try {
+      assert.deepEqual(diagnostics.filter((event) => event.event.startsWith("bridge.mcp_")), expected, label);
+      assert.equal((await manager.execute(request(undefined, "gpt-6-sol"), {})).message.content, "ok", label);
+      assert.deepEqual(client.created[0].disabledMcpServers, ["github-mcp-server"], label);
+    } finally {
+      await manager.stop();
+    }
+  }
+});
+
 for (const [type, data] of [
   ["assistant.message_delta", { deltaContent: "progress" }],
   ["assistant.reasoning_delta", { deltaContent: "reasoning", reasoningId: "r" }],

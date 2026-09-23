@@ -37,6 +37,9 @@ const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
 const DEFAULT_SESSION_OPERATION_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_TURN_DURATION_MS = 30 * 60_000;
+const MCP_DISCOVERY_TIMEOUT_MS = 10_000;
+// Connected by the runtime on the first turn but not reported by mcp.discover.
+const BUILTIN_MCP_SERVERS = Object.freeze(["github-mcp-server"]);
 // Claude can call a tool the client never declared (ExitPlanMode while in plan
 // mode). Such a call is expected never to be registered, so no result can ever
 // arrive -- but that is an expectation, not a guarantee: the runtime that
@@ -321,6 +324,7 @@ export class SessionManager {
     sessionOperationTimeoutMs = DEFAULT_SESSION_OPERATION_TIMEOUT_MS,
     pendingToolWaitMs = DEFAULT_PENDING_TOOL_WAIT_MS,
     stateIdleTtlMs = DEFAULT_STATE_IDLE_TTL_MS,
+    mcpDiscoveryTimeoutMs = MCP_DISCOVERY_TIMEOUT_MS,
     client,
   }) {
     this.client =
@@ -343,7 +347,9 @@ export class SessionManager {
     this.onDiagnostic = onDiagnostic || (() => {});
     this.pendingToolWaitMs = pendingToolWaitMs;
     this.stateIdleTtlMs = stateIdleTtlMs;
+    this.mcpDiscoveryTimeoutMs = mcpDiscoveryTimeoutMs;
     this.models = [];
+    this.disabledMcpServers = [];
     this.anonymousSessionId = randomUUID();
     this.familyQueues = new Map();
     this.familyHeads = new Map();
@@ -358,8 +364,54 @@ export class SessionManager {
     if (this.shutdownController.signal.aborted) this.shutdownController = new AbortController();
     await this.client.start();
     this.models = await this.client.listModels();
+    this.disabledMcpServers = await this.#mcpServersToDisable();
     const sessions = await this.client.listSessions().catch(() => []);
     this.knownSessionIds = new Set(sessions.map((session) => session.sessionId));
+  }
+
+  // The runtime starts every user, workspace and plugin MCP server for each SDK
+  // session, yet availableTools exposes only custom:* tools, so none of them can
+  // ever reach the model. disabledMcpServers needs the exact registered names
+  // (plugin servers are not named after their executable), and an empty
+  // mcpServers map does not replace the discovered ones.
+  async #mcpServersToDisable() {
+    let discover;
+    try {
+      discover = this.client.rpc?.mcp?.discover;
+    } catch {
+      discover = undefined;
+    }
+    let discovered = [];
+    if (typeof discover === "function") {
+      let timer;
+      try {
+        const result = await Promise.race([
+          this.client.rpc.mcp.discover({ workingDirectory: process.cwd() }),
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`MCP discovery exceeded ${this.mcpDiscoveryTimeoutMs}ms`)),
+              this.mcpDiscoveryTimeoutMs,
+            );
+          }),
+        ]);
+        discovered = (result?.servers ?? [])
+          .map((server) => server?.name)
+          .filter((name) => typeof name === "string" && name.length > 0);
+        this.onDiagnostic({
+          event: "bridge.mcp_servers_disabled",
+          count: new Set([...BUILTIN_MCP_SERVERS, ...discovered]).size,
+        });
+      } catch (error) {
+        this.onDiagnostic({
+          event: "bridge.mcp_discovery_failed",
+          error: error?.name || "Error",
+          message: String(error?.message || error).slice(0, 200),
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return [...new Set([...BUILTIN_MCP_SERVERS, ...discovered])];
   }
 
   listModels() {
@@ -624,6 +676,9 @@ export class SessionManager {
         content: systemMessage,
       },
       ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(this.disabledMcpServers.length
+        ? { disabledMcpServers: [...this.disabledMcpServers] }
+        : {}),
     };
 
     let session;
