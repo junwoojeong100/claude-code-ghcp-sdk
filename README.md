@@ -112,10 +112,12 @@ If permitted by your account and organization policy, the following GPT-6 models
 
 The Copilot catalog advertises 1,050,000 tokens for GPT-6 Astra and 1,000,000
 for GPT-6 Sol and Luna (872,000 of which are prompt tokens). The launcher uses
-Claude Code's model-scoped **1M** context hint for these three models rather
-than a process-wide context override. Changing models therefore does not carry
-the startup model's window into the next model; native smaller windows and
-automatic compaction remain in effect.
+Claude Code's model-scoped **1M** context hint for these three models and for
+Claude Opus 5.5 and Claude Sonnet 5, rather than a process-wide context
+override; behind a gateway, Claude Code would otherwise budget a bare
+`claude-opus-5-5` or `claude-sonnet-5` at 200K. Changing models therefore does
+not carry the startup model's window into the next model; native smaller
+windows and automatic compaction remain in effect.
 
 The Direct SDK `/model` picker is pinned to the **six primary models below**,
 plus Claude Code's own `Default` row, which it always keeps. Temporary
@@ -128,17 +130,16 @@ existing session to load the new picker.
 
 | Picker row | Copilot model | Claude Code window |
 |---|---|---|
-| GitHub Copilot · Claude Opus 5.5 | `claude-opus-5.5` | 200K (native gateway window) |
-| GitHub Copilot · Claude Sonnet 5 | `claude-sonnet-5` | 200K (native gateway window) |
+| GitHub Copilot · Claude Opus 5.5 | `claude-opus-5.5` | 1M (model-scoped hint) |
+| GitHub Copilot · Claude Sonnet 5 | `claude-sonnet-5` | 1M (model-scoped hint) |
 | GitHub Copilot · Claude Haiku 4.5 | `claude-haiku-4.5` | 200K (native gateway window) |
 | GitHub Copilot · GPT-6 Astra | `gpt-6-astra` | 1M (model-scoped hint) |
 | GitHub Copilot · GPT-6 Sol | `gpt-6-sol` | 1M (model-scoped hint) |
 | GitHub Copilot · GPT-6 Luna | `gpt-6-luna` | 1M (model-scoped hint) |
 
-In Claude Code 2.1.280 the `Default` row resolves to Opus 5.5 with the `[1m]`
-suffix. The bridge keeps Claude models on the SDK's default context tier, so
-choose the explicit Opus 5.5 row when you want Claude Code's budget to match the
-backend; see [Long conversations](#long-conversations-and-existing-sessions).
+In Claude Code 2.1.280 the `Default` row resolves to `claude-opus-5-5[1m]`, the
+same ID as the Opus 5.5 row, so both get the same 1M budget and the same
+long-context backend; see [Long conversations](#long-conversations-and-existing-sessions).
 
 The current full-feature validation matrix is exactly `claude-opus-5.5`,
 `claude-sonnet-5`, `claude-haiku-4.5`, `gpt-6-astra`, `gpt-6-sol`, and
@@ -225,21 +226,20 @@ is no longer cut off merely because five minutes elapsed. Failures emit
 content-free `bridge.session_operation_failed` diagnostics instead of waiting
 indefinitely before the model-turn timer starts.
 
-The primary GPT-6 models (and explicitly selected GPT-5.6 models) select the
-SDK's long-context tier and pass through their discovered numeric catalogue
-limits. The SDK's default tier can be smaller than the advertised model window:
-an earlier overnight probe measured Astra at 272K input tokens by default,
-versus 1.05M after applying its long tier and catalogue capabilities.
-`bridge.context_budget` records the actual runtime limit; the six-model run
-recorded 1,050,000 for Astra and 872,000 for Sol and Luna. Because Sol and Luna
-accept fewer prompt tokens than Claude Code's 1M budget for them, a conversation
-that outgrows 872K takes the overflow path described next before Claude Code's
-own ~967K auto-compact threshold. Claude rows stay on the SDK default tier
-(Opus 5.5 and Sonnet 5: 200,000; Haiku 4.5: 136,000) under Claude Code's native
-200K gateway window; Haiku's limit sits below Claude Code's 167K auto-compact
-trigger, so it can take the same overflow path. The retained `Default` row
-(`claude-opus-5-5[1m]`) budgets 1M in Claude Code against Opus 5.5's 200,000
-default tier and relies on that path as well.
+The primary GPT-6 models, Claude Opus 5.5 and Claude Sonnet 5 (and explicitly
+selected GPT-5.6 models) select the SDK's long-context tier and pass through
+their discovered numeric catalogue limits. The SDK's default tier can be much
+smaller than the advertised model window: an earlier overnight probe measured
+Astra at 272K input tokens by default, versus 1.05M after applying its long tier
+and catalogue capabilities, and the default tier holds Opus 5.5 and Sonnet 5 to
+200,000. `bridge.context_budget` records the actual runtime limit: 1,050,000 for
+Astra, 936,000 for Sonnet 5, and 872,000 for Opus 5.5, Sol and Luna. All of
+these except Astra accept fewer prompt tokens than Claude Code's 1M budget for
+them, so a conversation that outgrows its limit takes the overflow path
+described next before Claude Code's own ~967K auto-compact threshold. Haiku 4.5
+stays on the SDK default tier (136,000) under Claude Code's native 200K gateway
+window; its limit sits below Claude Code's 167K auto-compact trigger, so it can
+take the same overflow path.
 
 SDK-side compaction/truncation is not accepted as silent history loss:
 the bridge invalidates that state and returns a recognizable context-limit

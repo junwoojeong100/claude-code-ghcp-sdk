@@ -18,10 +18,12 @@ writeGatewaySettings(outputPath, {
   token,
   model: launchModelFor(frontendModel),
   modelPicker: primaryModelPicker(),
+  // Same ids launchModelFor gives these models, `[1m]` included, so a family
+  // launch still matches its row and the alias carries the 1M window.
   familyModels: {
-    opus: "claude-opus-5-5",
-    sonnet: "claude-sonnet-5",
-    haiku: "claude-haiku-4-5",
+    opus: launchModelFor("claude-opus-5.5"),
+    sonnet: launchModelFor("claude-sonnet-5"),
+    haiku: launchModelFor("claude-haiku-4.5"),
   },
   displayNames: {
     opus: "GitHub Copilot Claude Opus 5.5",

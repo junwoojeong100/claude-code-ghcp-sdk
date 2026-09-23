@@ -73,7 +73,7 @@ test("clears inherited context overrides without replacing recognized Claude lim
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
   assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
   assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
-  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5[1m]");
   assert.equal(
     settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME,
     "GitHub Copilot Claude Opus 5.5",
@@ -94,7 +94,7 @@ test("temporary Direct settings pin exactly six picker options without a routing
     assert.equal(settings.modelPicker.replaceBuiltInOptions, true);
     assert.equal(settings.modelPicker.options.length, 6);
     assert.deepEqual(settings.modelPicker.options.map((option) => option.model), [
-      "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5",
+      "claude-opus-5-5[1m]", "claude-sonnet-5[1m]", "claude-haiku-4-5",
       "github-copilot/claude-gpt-6-astra[1m]",
       "github-copilot/claude-gpt-6-sol[1m]",
       "github-copilot/claude-gpt-6-luna[1m]",
@@ -105,8 +105,8 @@ test("temporary Direct settings pin exactly six picker options without a routing
 
 test("launching Claude Opus 5.5 uses the Opus family row instead of a custom option", () => {
   const settings = writeSettings("claude-opus-5.5");
-  assert.equal(settings.env.ANTHROPIC_MODEL, "claude-opus-5-5");
-  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5");
+  assert.equal(settings.env.ANTHROPIC_MODEL, "claude-opus-5-5[1m]");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5[1m]");
   assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
 });

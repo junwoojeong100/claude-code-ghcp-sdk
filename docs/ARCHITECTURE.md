@@ -170,8 +170,10 @@ The `sonnet`, `opus`, and `haiku` aliases resolve to the permitted family model 
 Opus 5.5, Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol and GPT-6
 Luna. The Direct launch settings use `modelPicker.replaceBuiltInOptions` to pin
 its six explicit model rows in order, plus the `Default` row Claude Code always
-keeps. The launch settings map the `opus` family to `claude-opus-5-5`, so in
-Claude Code 2.1.280 `Default` resolves to `claude-opus-5-5[1m]`. Claude Code
+keeps. The launch settings map the `opus`, `sonnet` and `haiku` families to the
+same IDs as their picker rows (`claude-opus-5-5[1m]`, `claude-sonnet-5[1m]`,
+`claude-haiku-4-5`), so in Claude Code 2.1.280 `Default` resolves to the Opus 5.5
+row's own `claude-opus-5-5[1m]`. Claude Code
 accepts listed picker rows without a server probe, so switching between them
 sends no validation request; an ID outside the picker instead triggers Claude
 Code's one-token validation request through the bridge. This was exercised
@@ -192,22 +194,29 @@ current catalog advertises 1,050,000 context and prompt tokens for Astra, and a
 1,000,000-token window with 872,000 prompt tokens for Sol and Luna, so Sol and
 Luna reach the SDK limit before Claude Code's ~967K auto-compact threshold.
 Explicitly selected GPT-5.6 models keep the same model-scoped hint.
+Claude Opus 5.5 and Claude Sonnet 5 keep their native Claude Code IDs with the
+same hint (`claude-opus-5-5[1m]`, `claude-sonnet-5[1m]`); behind a gateway,
+Claude Code budgets the bare IDs at 200K. Explicitly selected Claude Opus 5, 4.8
+and 4.7 get the hint too.
 Temporary settings clear inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` instead of
-pinning a global startup window. Claude models retain Claude Code's native
-200K gateway window; switching from a GPT-6 row back to Haiku restores 200K.
+pinning a global startup window. Claude Haiku 4.5 retains Claude Code's native
+200K gateway window; switching from a 1M row back to Haiku restores 200K.
 Native auto-compaction and explicit smaller windows remain active.
 
-The three primary GPT-6 sessions (and explicitly selected GPT-5.6 models) also
-opt into `contextTier: "long_context"` and forward only discovered numeric
-context/prompt/output capability limits when creating, resuming or changing
-effort. The catalogue's large window alone does not select the runtime tier.
-An earlier live measurement found an Astra default input budget of 272K; the
-explicit long tier plus its catalogue limits yields 1.05M. Claude models stay
-on the SDK default tier. `bridge.context_budget` logs the effective SDK budget:
-the six-model run recorded 1,050,000 for Astra, 872,000 for Sol and Luna,
-200,000 for Opus 5.5 and Sonnet 5, and 136,000 for Haiku 4.5. The `Default`
-row's `claude-opus-5-5[1m]` therefore budgets 1M in Claude Code against a
-200,000-token backend tier and relies on the overflow recovery below.
+The three primary GPT-6 sessions, Claude Opus 5.5 and Claude Sonnet 5 (and the
+explicitly selected models above) also opt into `contextTier: "long_context"`
+and forward only discovered numeric context/prompt/output capability limits
+when creating, resuming or changing effort. The tier is selected only for a
+listed model whose catalogue entry advertises at least a 1,000,000-token
+window; the catalogue's large window alone does not select it. An earlier live
+measurement found an Astra default input budget of 272K; the explicit long tier
+plus its catalogue limits yields 1.05M. The default tier likewise held Opus 5.5
+and Sonnet 5 to 200,000 whatever window Claude Code assumed. Claude Haiku 4.5
+stays on the SDK default tier. `bridge.context_budget` logs the effective SDK
+budget: 1,050,000 for Astra, 936,000 for Sonnet 5, 872,000 for Opus 5.5, Sol and
+Luna, and 136,000 for Haiku 4.5. Every 1M row except Astra therefore reaches its
+SDK limit before Claude Code's ~967K auto-compact threshold and relies on the
+overflow recovery below.
 
 SDK compaction can run even with `infiniteSessions.enabled` false. Root
 compaction/truncation is tracked during and between requests rather than silently

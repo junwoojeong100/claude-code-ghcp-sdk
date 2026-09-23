@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 
 import { DRIVERS, parseWorktreeList, phaseVerdict } from "../scripts/verify/drivers.mjs";
 import { buildFixture, commitAll } from "../scripts/verify/fixtures.mjs";
-import { HeadlessRun } from "../scripts/verify/session.mjs";
+import { HeadlessRun, servedExpectedModel } from "../scripts/verify/session.mjs";
 
 const MODEL = "verification-test-model";
 const SCENARIOS = {
@@ -699,4 +699,26 @@ test("v11 awaits the async helper at every command and cleanup site", () => {
   for (const call of calls) {
     assert.match(source.slice(0, call.index), /\bawait\s*$/, `unawaited command: ${source.slice(call.index, call.index + 50)}`);
   }
+});
+
+test("the served-model check ignores the [1m] window hint but still rejects another model", () => {
+  const served = (...keys) => new HeadlessRun({
+    events: [{ type: "result", modelUsage: Object.fromEntries(keys.map((key) => [key, {}])) }],
+  });
+  // Usage keys exactly as a 1M matrix run reported them.
+  for (const [model, frontendModel, key] of [
+    ["claude-opus-5.5", "claude-opus-5-5[1m]", "claude-opus-5-5[1m]"],
+    ["claude-sonnet-5", "claude-sonnet-5[1m]", "claude-sonnet-5[1m]"],
+    ["claude-haiku-4.5", "claude-haiku-4-5", "claude-haiku-4-5"],
+    ["gpt-6-astra", "github-copilot/claude-gpt-6-astra[1m]", "github-copilot/claude-gpt-6-astra[1m]"],
+    // A launch id with the hint still matches a usage key without it, and back.
+    ["claude-sonnet-5", "claude-sonnet-5[1m]", "claude-sonnet-5"],
+    ["claude-opus-5.5", "claude-opus-5-5", "claude-opus-5-5[1m]"],
+  ]) {
+    const verdict = servedExpectedModel(served(key), { model, frontendModel });
+    assert.ok(verdict.ok, `${frontendModel} vs ${key}: ${verdict.reason}`);
+  }
+  const wrong = servedExpectedModel(served("claude-sonnet-5[1m]"), { model: "claude-opus-5.5", frontendModel: "claude-opus-5-5[1m]" });
+  assert.equal(wrong.ok, false);
+  assert.match(wrong.reason, /claude-sonnet-5\[1m\], expected claude-opus-5\.5/);
 });

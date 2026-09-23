@@ -424,9 +424,12 @@ export function servedModels(run) {
 export function servedExpectedModel(run, { model, frontendModel }) {
   const served = servedModels(run);
   if (served.length === 0) return { ok: false, served, reason: "modelUsage was empty" };
-  const wanted = [model, frontendModel].filter(Boolean).map((m) => m.toLowerCase());
+  // The `[1m]` window hint is not part of the model's identity; compare
+  // without it so a launch id with the hint matches a usage key without it.
+  const bare = (id) => id.toLowerCase().replace(/\[(?:1m|\d+k)\]$/, "");
+  const wanted = [model, frontendModel].filter(Boolean).map(bare);
   const match = served.some((id) => {
-    const lower = id.toLowerCase();
+    const lower = bare(id);
     return wanted.some((w) => lower === w || lower.endsWith(`/${w}`) || lower.includes(w));
   });
   return match

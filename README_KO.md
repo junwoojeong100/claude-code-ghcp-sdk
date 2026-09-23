@@ -125,8 +125,10 @@ SDK 1.0.14는 플랫폼별 Copilot runtime(1.0.85)을 포함하며, 더 이상
 ```
 
 Copilot catalog의 한도는 GPT-6 Astra 1,050,000 토큰, GPT-6 Sol과 Luna
-1,000,000 토큰(그중 prompt 872,000 토큰)입니다. 런처는 이 세 모델에 프로세스 전체
-한도 재정의 대신 Claude Code의 **모델별 1M 컨텍스트 힌트**를 사용합니다. 모델을
+1,000,000 토큰(그중 prompt 872,000 토큰)입니다. 런처는 이 세 모델과 Claude Opus
+5.5, Claude Sonnet 5에 프로세스 전체 한도 재정의 대신 Claude Code의 **모델별 1M
+컨텍스트 힌트**를 사용합니다. Gateway 뒤에서 Claude Code는 힌트가 없는
+`claude-opus-5-5`나 `claude-sonnet-5`를 200K로 잡습니다. 모델을
 바꿔도 시작할 때의 한도가 다른 모델에 남지 않으며, native의 더 작은 한도와 자동
 압축은 유지됩니다.
 
@@ -139,17 +141,16 @@ Direct SDK의 `/model` 피커는 **아래 주요 6개 모델**로 고정되며, 
 
 | 피커 행 | Copilot 모델 | Claude Code window |
 |---|---|---|
-| GitHub Copilot · Claude Opus 5.5 | `claude-opus-5.5` | 200K (native gateway window) |
-| GitHub Copilot · Claude Sonnet 5 | `claude-sonnet-5` | 200K (native gateway window) |
+| GitHub Copilot · Claude Opus 5.5 | `claude-opus-5.5` | 1M (모델별 힌트) |
+| GitHub Copilot · Claude Sonnet 5 | `claude-sonnet-5` | 1M (모델별 힌트) |
 | GitHub Copilot · Claude Haiku 4.5 | `claude-haiku-4.5` | 200K (native gateway window) |
 | GitHub Copilot · GPT-6 Astra | `gpt-6-astra` | 1M (모델별 힌트) |
 | GitHub Copilot · GPT-6 Sol | `gpt-6-sol` | 1M (모델별 힌트) |
 | GitHub Copilot · GPT-6 Luna | `gpt-6-luna` | 1M (모델별 힌트) |
 
-Claude Code 2.1.280에서 `Default` 행은 `[1m]` suffix가 붙은 Opus 5.5로 해석됩니다.
-Bridge는 Claude 모델을 SDK 기본 context tier로 유지하므로, Claude Code의 예산을
-backend와 맞추려면 명시적인 Opus 5.5 행을 선택합니다.
-[긴 대화와 기존 세션](#긴-대화와-기존-세션)을 참고합니다.
+Claude Code 2.1.280에서 `Default` 행은 Opus 5.5 행과 같은 ID인
+`claude-opus-5-5[1m]`로 해석되므로, 두 행은 같은 1M 예산과 같은 long-context
+backend를 씁니다. [긴 대화와 기존 세션](#긴-대화와-기존-세션)을 참고합니다.
 
 현재 전체 기능 검증 대상은 정확히 `claude-opus-5.5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`의 6종입니다. 새
@@ -241,19 +242,18 @@ SDK session 생성·재개·effort 변경에는 `SESSION_OPERATION_TIMEOUT_MS`�
 5분 경과만으로 끊지 않습니다. 준비 단계 무한 대기는 내용을 포함하지 않는
 `bridge.session_operation_failed` 진단으로 실패를 알립니다.
 
-주요 GPT-6 모델(과 명시적으로 선택한 GPT-5.6 모델)은 SDK의 long-context tier를
-명시하고 조회한 catalog의 숫자 한도를 함께 전달합니다. SDK 기본 tier는 표시된 모델
-window보다 작을 수 있습니다. 앞선 야간 실측에서 Astra의 입력 한도는 기본 272K였지만,
-long tier와 catalog capabilities를 적용하자 1.05M이었습니다. 실제 한도는
-`bridge.context_budget`으로 기록하며, 6개 모델 실행에서는 Astra 1,050,000,
-Sol과 Luna 872,000을 기록했습니다. Sol과 Luna는 Claude Code가 잡는 1M 예산보다
-적은 prompt 토큰을 받으므로, 대화가 872K를 넘으면 Claude Code의 약 967K 자동 압축
-기준보다 먼저 아래 overflow 경로를 탑니다. Claude 행은 SDK 기본 tier(Opus 5.5와
-Sonnet 5 200,000, Haiku 4.5 136,000)를 유지하며 Claude Code의 native gateway
-window 200K 안에 있습니다. Haiku의 한도는 Claude Code의 167K 자동 압축 기준보다
-낮아 같은 overflow 경로를 탈 수 있습니다. 유지되는 `Default` 행
-(`claude-opus-5-5[1m]`)은 Claude Code에서 1M을 예산으로 잡지만 Opus 5.5의 기본
-tier는 200,000이므로 역시 이 경로에 의존합니다.
+주요 GPT-6 모델, Claude Opus 5.5, Claude Sonnet 5(와 명시적으로 선택한 GPT-5.6
+모델)는 SDK의 long-context tier를 명시하고 조회한 catalog의 숫자 한도를 함께
+전달합니다. SDK 기본 tier는 표시된 모델 window보다 훨씬 작을 수 있습니다. 앞선
+야간 실측에서 Astra의 입력 한도는 기본 272K였지만 long tier와 catalog
+capabilities를 적용하자 1.05M이었고, 기본 tier는 Opus 5.5와 Sonnet 5를 200,000으로
+제한합니다. 실제 한도는 `bridge.context_budget`으로 기록하며, Astra 1,050,000,
+Sonnet 5 936,000, Opus 5.5·Sol·Luna 872,000입니다. Astra를 제외한 모델은 Claude
+Code가 잡는 1M 예산보다 적은 prompt 토큰을 받으므로, 대화가 그 한도를 넘으면
+Claude Code의 약 967K 자동 압축 기준보다 먼저 아래 overflow 경로를 탑니다. Haiku
+4.5는 SDK 기본 tier(136,000)를 유지하며 Claude Code의 native gateway window 200K
+안에 있습니다. 이 한도는 Claude Code의 167K 자동 압축 기준보다 낮아 같은 overflow
+경로를 탈 수 있습니다.
 
 SDK의 자체 압축·잘라내기로 문맥이 조용히 유실되지 않도록 해당 상태를 무효화하고,
 Claude Code가 원본 transcript를 압축할 수 있는 context-limit 오류를 반환합니다.

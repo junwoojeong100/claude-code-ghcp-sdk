@@ -43,6 +43,10 @@ const CLAUDE_CODE_BUILT_IN_MODELS = new Set([
   "claude-sonnet-4.6",
   "claude-haiku-4.5",
 ]);
+// Models whose 1M Copilot window Claude Code can budget through a `[1m]` hint.
+// The Claude entries are needed as much as the GPT ones: behind a gateway
+// Claude Code gives a bare `claude-opus-5-5` 200K, and the SDK's default tier
+// caps Opus 5.5 and Sonnet 5 at 200K no matter which window Claude Code assumes.
 const MODEL_CONTEXT_WINDOW_TOKENS = new Map([
   ...["sol", "terra", "luna"].map((variant) => [
     `gpt-5.6-${variant}`,
@@ -51,6 +55,8 @@ const MODEL_CONTEXT_WINDOW_TOKENS = new Map([
   ["gpt-6-astra", 1_050_000],
   ["gpt-6-sol", 1_000_000],
   ["gpt-6-luna", 1_000_000],
+  ...["claude-opus-5.5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-sonnet-5"]
+    .map((id) => [id, ONE_MILLION_CONTEXT_TOKENS]),
 ]);
 
 function isAdapterModelId(modelId) {
