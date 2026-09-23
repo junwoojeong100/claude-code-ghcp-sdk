@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +23,7 @@ import {
   daemonPaths,
   writeDaemonRegistry,
 } from "../src/bridge-daemon.mjs";
+import { ClaudeBinaryError, resolveClaudeBin } from "../scripts/verify/bridge.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const bridgeModel = "claude-sonnet-5";
@@ -190,6 +192,52 @@ test("claude-current skips the repository wrapper", () => {
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });
   }
+});
+
+test("both resolvers skip another checkout's launcher", (t) => {
+  // A worktree run with the main checkout's bin/ on PATH: the old check only
+  // knew its own checkout's launchers, resolved to the other one, and every
+  // slot of that matrix was blocked by that launcher's --settings guard. The
+  // symlink is how ~/.local/bin usually exposes a checkout's launcher.
+  const fixtureDir = mkdtempSync(path.join(tmpdir(), "claude-ghcp-launcher-"));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+  const otherBin = path.join(fixtureDir, "other-checkout", "bin");
+  const linkDir = path.join(fixtureDir, "local-bin");
+  const realDir = path.join(fixtureDir, "real");
+  for (const dir of [otherBin, linkDir, realDir]) mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(otherBin, "claude"), "#!/usr/bin/env bash\nprintf 'other-checkout\\n'\n");
+  writeFileSync(path.join(otherBin, "resolve-claude.sh"), "");
+  symlinkSync(path.join(otherBin, "claude"), path.join(linkDir, "claude"));
+  const realClaude = path.join(realDir, "claude");
+  writeFileSync(realClaude, "#!/usr/bin/env bash\nprintf 'upstream:%s\\n' \"$*\"\n");
+  for (const file of [path.join(otherBin, "claude"), realClaude]) chmodSync(file, 0o755);
+
+  const env = {
+    ...process.env,
+    CLAUDE_CODE_BIN: "",
+    PATH: `${otherBin}:${linkDir}:${realDir}:${process.env.PATH}`,
+  };
+  const result = spawnSync(path.join(rootDir, "bin", "claude-current"), ["--version"], {
+    encoding: "utf8",
+    env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "upstream:--version\n");
+  assert.equal(resolveClaudeBin({ env }), realClaude);
+
+  // Naming the other checkout's launcher outright is refused the same way.
+  const explicit = { ...env, CLAUDE_CODE_BIN: path.join(linkDir, "claude") };
+  const refused = spawnSync(path.join(rootDir, "bin", "claude-current"), ["--version"], {
+    encoding: "utf8",
+    env: explicit,
+  });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /must point to the real Claude Code executable/);
+  assert.throws(() => resolveClaudeBin({ env: explicit }), ClaudeBinaryError);
+
+  // A real binary that happens to be named claude is still found: the name
+  // alone does not make a launcher, the resolve-claude.sh beside it does.
+  assert.equal(resolveClaudeBin({ env: { ...env, PATH: realDir } }), realClaude);
 });
 
 // The launcher polls the bridge from curl while spawnSync blocks this
