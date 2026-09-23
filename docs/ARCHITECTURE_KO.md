@@ -433,15 +433,19 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
 
-전체 실행 `2026-09-23T00-38-10-470Z`는 Claude Code 2.1.280으로 runtime MCP 변경을
-포함한 commit `1df3aa4`의 6개 모델 catalog를 검증했습니다. 코드·사용자 설정을 유지한
-채 모델 작업자 3개와 모델별 시나리오 작업자 2개로 740초 만에 66/66 통과했으며, `ps`
-sampler는 어느 runtime 아래에서도 MCP server 프로세스를 발견하지 못했습니다. 앞선 7 × 2 실행의
-네이티브 백그라운드 정지 이후 랩탑의 기동 부하를 낮춘 설정이며 기본값, timeout
-예산, 통과 기준을 낮추지는 않았습니다. 첫 6개 모델 실행(64/66)에서 Claude Opus
-5.5가 v02 편집과 v08 기록을 셸 명령으로 처리해, 해당 검사가 관찰하는 Edit·Write
-도구를 프롬프트에 명시했습니다. 이전 7개 모델 catalog를 포함한 분리된 실행 이력은
-README에, 최종 실행만의 결과는 [검증 결과](VERIFICATION_KO.md)에 기록합니다.
+전체 실행 `2026-09-23T09-11-26-241Z`는 Claude Code 2.1.280으로 commit `bed30ce`의
+6개 모델 catalog를 검증했습니다. 이 commit에는 Opus 5.5·Sonnet 5의 1M Copilot 창과
+runtime MCP 변경이 들어 있습니다. 코드·사용자 설정을 유지한 채 모델 작업자 3개와
+모델별 시나리오 작업자 2개로 479초 만에 66/66 통과했으며, 보존된 bridge 로그 72개가
+모두 runtime MCP server 비활성화를 기록했습니다. 앞선 7 × 2 실행의 네이티브 백그라운드
+정지 이후 랩탑의 기동 부하를 낮춘 설정이며 기본값과 timeout 예산을 낮추지는
+않았습니다. 첫 6개 모델 실행(64/66)에서 Claude Opus 5.5가 v02 편집과 v08 기록을 셸
+명령으로 처리해, 해당 검사가 관찰하는 Edit·Write 도구를 프롬프트에 명시했습니다. 1M
+변경 뒤 두 실행에서 모델이 이미지 토큰 한 글자를 잘못 읽어 슬롯 하나씩 실패했습니다.
+한 글자 오독도 첨부가 도착했다는 증거이므로, v05 첨부 검사는 이제 무작위 16진수 여섯
+글자 중 한 글자 오독을 허용하고 이를 검사 상세에 남깁니다. 이전 7개 모델
+catalog를 포함한 분리된 실행 이력은 README에, 최종 실행만의 결과는
+[검증 결과](VERIFICATION_KO.md)에 기록합니다.
 
 실행 중인 bridge 턴의 timeout과 클라이언트 취소 시 요청 ID로 연결되는
 `bridge.turn_timeout` / `bridge.turn_aborted` 스냅샷을 남기고,

@@ -376,23 +376,28 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 now Claude Opus 5.5, Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol and
 GPT-6 Luna, each with the same eleven scenarios. The laptop's native Claude Code
 **2.1.280** executed every slot through the bridge and Copilot SDK. The final run,
-on the commit that also stops the Copilot runtime from starting unused MCP
-servers, took **740 seconds (12 min 20 s)** with no failed, blocked, missing,
-duplicate or unexpected slots and unchanged code/user settings. This is the
-selected matrix's pass rate, not a claim of complete feature coverage or
+on commit `bed30ce`, which gives Opus 5.5 and Sonnet 5 their 1M Copilot window,
+keeps the Copilot runtime from starting unused MCP servers and carries two
+harness fixes, took **479 seconds (7 min 59 s)** with no failed, blocked,
+missing, duplicate or unexpected slots and unchanged code/user settings. This is
+the selected matrix's pass rate, not a claim of complete feature coverage or
 guaranteed success on future executions.
 
 - **Pinned picker:** Claude Code's native `supportedModels()` control request
   returned `Default` plus exactly the six rows above, in order. `setModel()` into
-  each row sent no request to the bridge (its log holds only startup lines),
-  and `getContextUsage()` reported 200K for the three Claude rows, 1M for the
-  three GPT-6 rows, and 200K again after switching back to Haiku. `Default`
-  resolved to `claude-opus-5-5[1m]` (1M). Artifacts:
-  `.verify-runs/picker-six-2026-09-23T00-51-18Z/`.
+  each row sent no request to the bridge, and `getContextUsage()` reported 1M
+  (auto-compact at 967K) for Opus 5.5, Sonnet 5 and the three GPT-6 rows, and
+  200K (167K) for Haiku 4.5. `Default` and the `opus`/`sonnet` aliases resolved
+  to `claude-opus-5-5[1m]` and `claude-sonnet-5[1m]` (1M). An ID typed outside
+  the picker is confirmed with one request: Opus 4.8 and 4.7 confirmed at 1M,
+  while for Opus 5 Claude Code gave up after 5 seconds, before the model
+  answered, in this measurement (an earlier one confirmed it). Artifacts:
+  `.verify-runs/picker-1m-2026-09-23T09-32-55Z/`.
 - **Runtime MCP servers:** all 72 retained bridge logs of the final run (66
   per-slot bridges plus six v11 daemons) record `bridge.mcp_servers_disabled` for
   five servers; the six v11 foreground launches use ephemeral bridges whose logs
-  the launcher deletes on exit. A `ps` sampler took 354 samples over 12 minutes
+  the launcher deletes on exit. During the earlier full run
+  `2026-09-23T00-38-10-470Z`, a `ps` sampler took 354 samples over 12 minutes
   with up to nine concurrent runtimes and never saw an MCP server process under
   them; the only children were short-lived `git` calls and exiting processes
   (`<defunct>`, `(copilot-runtime)`).
@@ -401,15 +406,20 @@ guaranteed success on future executions.
   children. Two concurrent cold first requests now finish in a median 3.95 s
   instead of 8.08 s. Artifacts: `.verify-runs/runtime-sampler-2026-09-23T00-38-10Z/`
   and `.verify-runs/mcp-check-2026-09-23T00-32-13Z/`.
-- **SDK budgets** recorded by `bridge.context_budget`: Opus 5.5 and Sonnet 5
-  200,000 and Haiku 4.5 136,000 on the default tier; Astra 1,050,000 and Sol and
-  Luna 872,000 on the long-context tier.
-- **Offline:** `npm test` passed **390/390**, with no failures, cancellations or
+- **SDK budgets** recorded by `bridge.context_budget`: on the long-context tier
+  Astra 1,050,000, Sonnet 5 936,000, and Opus 5.5, Sol and Luna 872,000; Haiku
+  4.5 136,000 on the default tier. Separately, a 493,805-token prompt to Opus 5.5
+  was answered correctly through a bridge on this code. Before the change, the
+  default tier held Opus 5.5 and Sonnet 5 to 200,000.
+- **Offline:** `npm test` passed **394/394**, with no failures, cancellations or
   skips.
-- **Independent audit** of the raw artifacts: **1,146 recorded checks** with none
-  failing, **90 headless phase transcripts** carrying 95 result envelopes, all with
-  positive input usage and the expected serving model, no unanswered `tool_use`,
-  and retained command/daemon evidence for all six launcher slots.
+- **Independent audit** of the raw artifacts (`audit.json`): **1,146 recorded
+  checks** with none failing, **90 headless phase transcripts** carrying 95 result
+  envelopes, all with positive input usage and the expected serving model, no
+  unanswered `tool_use`, and retained command/daemon evidence for all six launcher
+  slots. GPT-6 Astra's v01 envelope also lists `claude-opus-5-5[1m]`: Claude
+  Code's built-in Explore subagent runs on the Opus alias, as it did in the
+  earlier green runs. All twelve media-token checks read their token exactly.
 - **Before the final run,** the first six-model full run scored 64/66 and was NOT
   GREEN. Claude Opus 5.5 completed v02 and v08 correctly but through shell
   commands (`sed -i`, a redirect) instead of Edit and Write, so the Edit
@@ -422,6 +432,23 @@ guaranteed success on future executions.
   passed 66/66 in 624 s. The runtime MCP change then required a fresh full run on
   its own commit; it took longer while another repository's Copilot runtime
   stability jobs were loading the same laptop (load average ≈ 8.5).
+- **1M windows:** the first run with the change, still uncommitted and on the
+  heavier 6 × 2 profile at timeout scale 1, scored 64/66: GPT-6 Luna's v02 plan
+  turn blocked at 90 s, and Claude Haiku 4.5 typed the slashed zero of
+  `IMGTAG84370D` as `Ø`. Next, the first attempt from a clean worktree
+  (`2026-09-23T08-22-51-615Z`) was stopped after every slot blocked: both
+  launcher resolvers only recognised their own checkout's wrappers and picked
+  the main checkout's `bin/claude` from PATH. With the repository removed from
+  PATH, the committed change scored 65/66 when GPT-6 Luna read the F of
+  `IMGTAGA3F755` as E; re-rendered in the same font, E and F are clearly
+  distinct. The v05 attachment checks exist to catch a bridge that drops the PDF
+  or image block, and a model that never received it cannot place five of six
+  random hex glyphs (91 of 16^6 suffixes). They now accept one misread glyph,
+  read `Ø` as `0`, and name any tolerated misread in the check detail. Replayed
+  over every recorded v05 answer, all 292 earlier passes still pass, and the 11
+  that flip are all single-glyph misreads. The resolvers now skip every
+  checkout's launchers, and the final run resolved `~/.local/bin/claude` with
+  PATH unchanged.
 
 Full-run history remains separate, under each run's recorded implementation and
 model catalogue:
@@ -430,7 +457,10 @@ model catalogue:
 |---|---|---|---|---|---|---|
 | Six-model first run — NOT GREEN | `2026-09-22T23-29-13-171Z` | 6 × 11 | 64 / 2 / 0 / 0 | 3 × 2 | 778 s | Changed by an interactive session outside the harness |
 | Six-model before the runtime MCP change — PASS | `2026-09-22T23-45-15-077Z` | 6 × 11 | 66 / 0 / 0 / 0 | 3 × 2 | 624 s | Intact |
-| Six-model final, runtime MCP servers disabled — PASS | `2026-09-23T00-38-10-470Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **740 s** | **Intact** |
+| Six-model, runtime MCP servers disabled — PASS | `2026-09-23T00-38-10-470Z` | 6 × 11 | 66 / 0 / 0 / 0 | 3 × 2 | 740 s | Intact |
+| Six-model, uncommitted 1M windows — NOT GREEN | `2026-09-23T07-29-33-556Z` | 6 × 11 | 64 / 1 / 1 / 0 | 6 × 2 | 487 s | Intact |
+| Six-model, 1M windows (`44fb772`) — NOT GREEN | `2026-09-23T08-28-09-543Z` | 6 × 11 | 65 / 1 / 0 / 0 | 3 × 2 | 474 s | Intact |
+| Six-model final, 1M windows and harness fixes — PASS | `2026-09-23T09-11-26-241Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **479 s** | **Intact** |
 | Seven-model: previous closeout 1 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 456 s | Changed; writer/cause unknown |
 | Seven-model: previous closeout 2 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 7 × 11 | 74 / 2 / 1 / 0 | 7 × 2 | 863 s | Intact |
 | Seven-model: fresh baseline — NOT GREEN | `2026-09-22T00-01-29-757Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 943 s | Intact |
@@ -440,15 +470,15 @@ model catalogue:
 | Seven-model: context/streaming recovery — PASS | `2026-09-22T12-29-58-559Z` | 7 × 11 | 77 / 0 / 0 / 0 | 3 × 2 | 812 s | Intact |
 
 The final run recorded commit
-`1df3aa4982ce2eb688a7d48f64aeab61e1499e22` (clean checkout) and matching start/end
+`bed30cebc49b155b09c2795618b7e28ad044aae5` (clean checkout) and matching start/end
 41-file `verification-code-v1` SHA-256 fingerprints:
-`5dad75f80408a699feac9f2221d6edcea848a7d9265e0a9e25cd170277c9cd7b`.
+`1fa37d3abcd284e9d1481fafef02c211d976e63fabeaa8d64d4879a159fb5bc7`.
 Both generated verification documents use **only that final full run**.
-Its ignored local directory `.verify-runs/2026-09-23T00-38-10-470Z/` contains
+Its ignored local directory `.verify-runs/2026-09-23T09-11-26-241Z/` contains
 `summary.json`, `slots.jsonl`, `console.log`, `audit.json`, phase transcripts and
-launcher logs. The earlier six-model runs and the focused rerun
-(`2026-09-22T23-44-23-074Z`) remain separate local records; none of their cells
-contribute to the final 66/66.
+launcher logs. The earlier six-model runs and the focused reruns
+(`2026-09-22T23-44-23-074Z`, `2026-09-23T07-41-07-507Z`) remain separate local
+records; none of their cells contribute to the final 66/66.
 
 ### Previous seven-model record (2026-09-22)
 

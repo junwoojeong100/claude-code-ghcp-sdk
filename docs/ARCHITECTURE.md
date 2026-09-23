@@ -404,15 +404,20 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 `npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
 
-The full run `2026-09-23T00-38-10-470Z` validated the six-model catalogue on
-commit `1df3aa4`, including the runtime MCP change, with Claude Code 2.1.280. It
-passed 66/66 in 740 seconds with three model workers and two scenario workers per
-model, with unchanged code and user settings, and a `ps` sampler found no MCP
-server process under any of its runtimes. This laptop profile reduces startup pressure after native
-background stalls in earlier 7 × 2 runs; defaults, timeout budgets and pass
-criteria are not reduced. The first six-model run (64/66) exposed Claude Opus
+The full run `2026-09-23T09-11-26-241Z` validated the six-model catalogue on
+commit `bed30ce`, which includes the 1M Copilot window for Opus 5.5 and Sonnet 5
+and the runtime MCP change, with Claude Code 2.1.280. It passed 66/66 in 479
+seconds with three model workers and two scenario workers per model, with
+unchanged code and user settings, and all 72 retained bridge logs record the
+runtime MCP servers as disabled. This laptop profile reduces startup pressure
+after native background stalls in earlier 7 × 2 runs; defaults and timeout
+budgets are not reduced. The first six-model run (64/66) exposed Claude Opus
 5.5 completing the v02 edit and v08 record through shell commands, so those
-prompts now name the Edit and Write tools their checks observe. See the README
+prompts now name the Edit and Write tools their checks observe. After the 1M
+change, two runs each lost a slot to a model misreading one glyph of the image
+token. One misread glyph still proves the attachment arrived, so the v05
+attachment checks now accept one misread among a token's six random hex
+characters and name it in the check detail. See the README
 for the separate run history, including the previous seven-model catalogue, and
 [Verification Results](VERIFICATION.md) for the final run alone.
 
