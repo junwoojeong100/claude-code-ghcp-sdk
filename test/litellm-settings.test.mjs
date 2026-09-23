@@ -61,6 +61,8 @@ test("writes isolated LiteLLM settings with family aliases", () => {
       assert.equal(settings.env[name], "");
     }
     assert.equal(settings.env.ENABLE_TOOL_SEARCH, "");
+    // corp-default is not a family alias, so model-less subagents follow it.
+    assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, "corp-default");
     assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });

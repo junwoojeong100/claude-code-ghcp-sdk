@@ -44,6 +44,15 @@ export function createGatewaySettings({
       ? ""
       : description,
   };
+  const subagentModelEnv = {
+    // Model-less subagents (general-purpose, custom agents) follow this; a
+    // blank value also keeps an inherited shell value from leaking in.
+    CLAUDE_CODE_SUBAGENT_MODEL: usesFamilyModel ? "" : model,
+    // Claude Code caps Explore's "inherit" at the opus alias whenever the main
+    // model name is not haiku/sonnet/opus, which sent a GPT session's Explore
+    // to the Opus family model. Claude main models never hit the cap.
+    CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP: "1",
+  };
 
   return {
     ...(modelPicker ? { modelPicker } : {}),
@@ -63,6 +72,7 @@ export function createGatewaySettings({
       ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: description,
       ANTHROPIC_SMALL_FAST_MODEL: familyModels.haiku,
       ...customModelEnv,
+      ...subagentModelEnv,
       ...CLAUDE_GATEWAY_ENV_OVERRIDES,
       ...extraEnv,
     },

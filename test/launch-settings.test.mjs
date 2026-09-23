@@ -133,3 +133,23 @@ test("blanks inherited model options from user settings", () => {
     "",
   );
 });
+
+test("runs model-less subagents and Explore on a non-Claude launch model", () => {
+  for (const model of ["gpt-6-astra", "github-copilot/claude-gpt-6-astra[1m]", "gpt-5.6-sol"]) {
+    const settings = writeSettings(model);
+    assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, settings.env.ANTHROPIC_MODEL);
+    assert.match(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, /^github-copilot\/claude-gpt-/);
+    // Without this, Explore's "inherit" is capped at the opus alias for a GPT
+    // main model and lands on the Opus family model.
+    assert.equal(settings.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP, "1");
+  }
+});
+
+test("blanks the subagent model for Claude family launches", () => {
+  for (const model of ["claude-opus-5.5", "claude-sonnet-5", "claude-haiku-4.5"]) {
+    // The writer's own environment must not decide what Claude Code inherits.
+    const settings = writeSettings(model, { CLAUDE_CODE_SUBAGENT_MODEL: "gpt-6-luna" });
+    assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, "");
+    assert.equal(settings.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP, "1");
+  }
+});
