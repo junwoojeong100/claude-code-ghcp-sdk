@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+
+import { isEntryPoint } from "./entry-point.mjs";
 
 function hostFromUrl(value) {
   try {
@@ -62,7 +63,7 @@ export function detectProvider(
   };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
+if (isEntryPoint(import.meta.url)) {
   const detected = detectProvider(process.argv[2]);
   console.log(JSON.stringify(detected, null, 2));
 }

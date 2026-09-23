@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isEntryPoint } from "./entry-point.mjs";
 
 export function settingsFileState(settingsPath) {
   try {
@@ -16,10 +15,7 @@ export function settingsFileState(settingsPath) {
   }
 }
 
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+if (isEntryPoint(import.meta.url)) {
   if (!process.argv[2]) {
     console.error("Usage: settings-file-state.mjs PATH");
     process.exitCode = 2;

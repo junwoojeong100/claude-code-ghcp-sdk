@@ -33,6 +33,7 @@
 
 import { COVERAGE_TARGET, coverage } from "./features.mjs";
 import { scaleTimeoutMs } from "./timeouts.mjs";
+import { isEntryPoint } from "../../src/entry-point.mjs";
 import { PRIMARY_MODELS } from "../../src/model-map.mjs";
 
 export { PRIMARY_MODELS };
@@ -372,7 +373,7 @@ export function gateFor(applicableCount) {
   return applicableCount;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryPoint(import.meta.url)) {
   const { ok, problems, coverage: cov, run } = validateCatalog();
   if (process.argv.includes("--json")) {
     console.log(JSON.stringify({ ok, problems, coverage: cov, run }, null, 2));

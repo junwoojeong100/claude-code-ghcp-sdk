@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 
+import { isEntryPoint } from "./entry-point.mjs";
+
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(rootDir, "src", "server.mjs");
 const implementationFiles = [
@@ -404,7 +406,7 @@ async function main() {
   throw new Error("Usage: bridge-daemon.mjs <ensure MODEL|status|stop>");
 }
 
-if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] || "")) {
+if (isEntryPoint(import.meta.url)) {
   main().catch((error) => {
     console.error(error.message);
     process.exit(1);
