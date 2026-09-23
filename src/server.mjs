@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   AnthropicSseStream,
+  anthropicStopReason,
   estimateTokens,
   startSse,
   writeJsonMessage,
@@ -388,6 +389,21 @@ const server = http.createServer(async (req, res) => {
 
     if (streaming) ensureStream(result.model).finish(response);
     else writeJsonMessage(res, response);
+    emitDiagnostic({
+      event: "bridge.turn_completed",
+      requestId,
+      responseId,
+      requestedModel: body.model ?? null,
+      model: result.model,
+      servedModels: result.servedModels ?? [],
+      claudeAgent: req.headers["x-claude-code-agent-id"] ? "subagent" : "root",
+      inputTokens: response.inputTokens,
+      outputTokens: result.usage?.outputTokens ?? result.message.outputTokens ?? 0,
+      usageReported: result.usage?.inputTokens != null,
+      stopReason: anthropicStopReason(result.message, result.usage),
+      // anthropicContent writes one tool_use block per surviving request.
+      toolUses: result.message.toolRequests?.length ?? 0,
+    });
   } catch (error) {
     const failure = error.name === "AbortError"
       ? { status: 499, type: "client_closed_request", retryAfterSeconds: null }

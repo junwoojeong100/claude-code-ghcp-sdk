@@ -1185,6 +1185,9 @@ export class SessionManager {
             model: state.model,
             message,
             usage: aggregateUsage(usageEvents),
+            // The model that served each root call, which can differ from the
+            // requested one.
+            servedModels: [...new Set(usageEvents.map((usage) => usage.model).filter(Boolean))],
           });
         }
       };

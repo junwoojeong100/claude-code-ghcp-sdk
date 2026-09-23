@@ -641,3 +641,80 @@ test("BRIDGE_TEST_FAULTS fails agent turns in order through the real error mappi
     );
   }
 });
+
+for (const stream of [false, true]) {
+  test(`completed turns report served models and outcome without content with stream=${stream}`, async (t) => {
+    const { handler, manager } = await offlineServer(t);
+    const diagnostics = captureDiagnostics(t);
+    let result;
+    t.mock.method(manager, "execute", async (_body, _headers, options) => {
+      options.onReady({ model: result.model });
+      return result;
+    });
+    const turn = async (value, headers = {}) => {
+      const response = await messageRequest(handler, {
+        stream, model: "claude-sonnet-5[1m]", messages: [{ role: "user", content: "PRIVATE_PROMPT" }], ...value,
+      }, "/v1/messages", undefined, { headers: { "x-api-key": "test-only", ...headers } });
+      const events = stream ? sseData(response) : [];
+      const completed = diagnostics.filter((event) => event.event === "bridge.turn_completed").at(-1);
+      return {
+        completed,
+        model: stream ? events.find((event) => event.type === "message_start").message.model : response.body.model,
+        stopReason: stream
+          ? events.find((event) => event.type === "message_delta").delta.stop_reason
+          : response.body.stop_reason,
+      };
+    };
+
+    result = {
+      model: "claude-sonnet-5",
+      message: { content: "PRIVATE_OUTPUT", toolRequests: [
+        { toolCallId: "call-1", name: "Read", arguments: { path: "PRIVATE_PATH" } },
+        { toolCallId: "call-2", name: "Grep", arguments: "{}" },
+      ] },
+      usage: { inputTokens: 1200, cacheReadTokens: 1000, outputTokens: 40 },
+      servedModels: ["claude-sonnet-5", "claude-haiku-4.5"],
+    };
+    const agent = await turn({}, { "x-claude-code-agent-id": "agent-7" });
+    assert.equal(agent.model, "claude-sonnet-5");
+    assert.deepEqual(agent.completed, {
+      event: "bridge.turn_completed",
+      requestId: agent.completed.requestId,
+      responseId: `msg_${agent.completed.requestId.replaceAll("-", "")}`,
+      requestedModel: "claude-sonnet-5[1m]",
+      model: "claude-sonnet-5",
+      servedModels: ["claude-sonnet-5", "claude-haiku-4.5"],
+      claudeAgent: "subagent",
+      inputTokens: 1200,
+      outputTokens: 40,
+      usageReported: true,
+      stopReason: "tool_use",
+      toolUses: 2,
+    });
+    assert.equal(agent.stopReason, "tool_use");
+
+    result = { model: "gpt-5.6-sol", message: { content: "PRIVATE_OUTPUT", toolRequests: [], outputTokens: 7 } };
+    const root = await turn({ model: "gpt-5.6-sol" });
+    assert.equal(root.model, "gpt-5.6-sol");
+    assert.equal(root.completed.claudeAgent, "root");
+    assert.deepEqual(root.completed.servedModels, []);
+    assert.equal(root.completed.usageReported, false);
+    assert.ok(root.completed.inputTokens > 0);
+    assert.equal(root.completed.outputTokens, 7);
+    assert.equal(root.completed.toolUses, 0);
+    assert.equal(root.completed.stopReason, root.stopReason);
+
+    for (const [usage, stopReason] of [
+      [{ inputTokens: 5, outputTokens: 1, finishReason: "length" }, "max_tokens"],
+      [{ inputTokens: 5, outputTokens: 1, contentFilterTriggered: true }, "refusal"],
+      [{ outputTokens: 1, finishReason: "stop" }, "end_turn"],
+    ]) {
+      result = { model: "gpt-5.6-sol", message: { content: "done", toolRequests: [] }, usage, servedModels: ["gpt-5.6-sol"] };
+      const outcome = await turn({});
+      assert.equal(outcome.stopReason, stopReason);
+      assert.equal(outcome.completed.stopReason, stopReason);
+      assert.equal(outcome.completed.usageReported, usage.inputTokens != null);
+    }
+    assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_/);
+  });
+}

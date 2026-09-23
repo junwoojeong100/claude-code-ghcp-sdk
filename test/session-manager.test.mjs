@@ -1208,6 +1208,34 @@ for (const [label, usageEvents, inputTokens, outputTokens] of [
   });
 }
 
+test("turn results name the distinct models that served root calls, in order", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client });
+  let usage = [];
+  client.session.sendImplementation = async () => {
+    for (const [data, envelope] of usage) client.session.emit("assistant.usage", data, envelope);
+    client.session.emit("assistant.message", { content: "done", toolRequests: [] });
+    client.session.emit("session.idle");
+  };
+  await manager.start();
+  try {
+    usage = [
+      [{ model: "claude-sonnet-5", inputTokens: 10, outputTokens: 2 }],
+      [{ model: "gpt-5.6-sol", inputTokens: 5, outputTokens: 1 }, { agentId: "worker-1" }],
+      [{ model: "claude-haiku-4.5", inputTokens: 3, outputTokens: 1 }],
+      [{ model: "claude-sonnet-5", inputTokens: 4, outputTokens: 1 }],
+      [{ inputTokens: 1, outputTokens: 1 }],
+    ];
+    const served = await manager.execute(request(), {});
+    assert.deepEqual(served.servedModels, ["claude-sonnet-5", "claude-haiku-4.5"]);
+    assert.equal(served.usage.inputTokens, 18);
+    usage = [];
+    assert.deepEqual((await manager.execute(request(), {})).servedModels, []);
+  } finally {
+    await manager.stop();
+  }
+});
+
 // ErrorData payloads shaped like the SDK's session.error events.
 for (const [label, data, expected] of [
   ["a rate limit", {

@@ -249,7 +249,7 @@ export function estimateTokens(value) {
   return Math.max(1, Math.ceil(JSON.stringify(value || {}).length / 4));
 }
 
-function anthropicStopReason(message, usage) {
+export function anthropicStopReason(message, usage) {
   if (message.toolRequests?.length) return "tool_use";
   if (usage?.contentFilterTriggered || usage?.finishReason === "content_filter") {
     return "refusal";
