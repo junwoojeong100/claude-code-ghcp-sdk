@@ -58,3 +58,53 @@ test("reports provider controls that the Copilot SDK cannot represent", () => {
   });
 });
 
+
+test("reports accepted request fields the bridge ignores beside the degraded controls", () => {
+  const diagnostics = [];
+  const body = {
+    max_tokens: 1024,
+    thinking: { type: "adaptive" },
+    top_k: 5,
+    metadata: { user_id: "user" },
+    service_tier: "auto",
+    speed: "fast",
+    container: "container-1",
+    mcp_servers: [],
+    context_management: { edits: [] },
+    output_config: { effort: "high", format: { type: "json_schema" }, task_budget: { type: "tokens", total: 64000 } },
+    tool_choice: { type: "auto", disable_parallel_tool_use: true },
+  };
+  assert.equal(applyRequestPolicy(body, (event) => diagnostics.push(event)), body);
+
+  assert.deepEqual(diagnostics, [{
+    event: "bridge.degraded_controls",
+    controls: ["max_tokens"],
+    ignoredFields: [
+      "thinking", "top_k", "metadata", "service_tier", "speed", "container",
+      "mcp_servers", "context_management", "output_config.format",
+      "output_config.task_budget", "tool_choice.disable_parallel_tool_use",
+    ],
+    semantics: "not_exposed_by_copilot_sdk",
+  }]);
+});
+
+test("reports ignored fields alone and stays silent for fields the bridge uses", () => {
+  const diagnostics = [];
+  applyRequestPolicy({ metadata: { user_id: "user" } }, (event) => diagnostics.push(event));
+  applyRequestPolicy({
+    model: "gpt-6-astra",
+    system: "system",
+    messages: [],
+    tools,
+    stream: true,
+    output_config: { effort: "high" },
+    tool_choice: { type: "auto" },
+  }, (event) => diagnostics.push(event));
+
+  assert.deepEqual(diagnostics, [{
+    event: "bridge.degraded_controls",
+    controls: [],
+    ignoredFields: ["metadata"],
+    semantics: "not_exposed_by_copilot_sdk",
+  }]);
+});

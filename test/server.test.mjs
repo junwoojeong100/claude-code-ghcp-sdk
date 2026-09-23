@@ -157,9 +157,15 @@ for (const value of [undefined, ""]) {
   });
 }
 
-async function messageRequest(handler, value, url = "/v1/messages", onRequest) {
+async function messageRequest(
+  handler,
+  value,
+  url = "/v1/messages",
+  onRequest,
+  { method = "POST", headers = { "x-api-key": "test-only" } } = {},
+) {
   const req = Object.assign(new EventEmitter(), {
-    method: "POST", url, headers: { "x-api-key": "test-only" },
+    method, url, headers,
     async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); },
   });
   const res = Object.assign(new EventEmitter(), {
@@ -464,6 +470,21 @@ test("invalid request shapes return 400 before SSE and leave the bridge usable",
   });
   assert.equal(normal.status, 200);
   assert.equal(normal.body.content[0].text, "still alive");
+});
+
+test("/health advertises the same controls and ignored fields the bridge logs", async (t) => {
+  const { handler } = await offlineServer(t);
+  const health = await messageRequest(handler, {}, "/health", undefined, { method: "GET", headers: {} });
+  assert.equal(health.status, 200);
+  // The lists test/request-policy.test.mjs sees in bridge.degraded_controls.
+  assert.deepEqual(health.body.capabilities.unsupportedNativeControls, [
+    "temperature", "top_p", "max_tokens", "stop_sequences",
+  ]);
+  assert.deepEqual(health.body.capabilities.ignoredRequestFields, [
+    "thinking", "top_k", "metadata", "service_tier", "speed", "container",
+    "mcp_servers", "context_management", "output_config.format",
+    "output_config.task_budget", "tool_choice.disable_parallel_tool_use",
+  ]);
 });
 
 test("explicit body and replay byte limits override the defaults", async (t) => {

@@ -347,7 +347,9 @@ Families without an alias fall back to `LITELLM_MODEL`.
 - **Sampling controls are ignored.** `temperature`, `top_p`, `max_tokens` and
   `stop_sequences` are not exposed by the Copilot SDK. `GET /health` reports them under
   `unsupportedNativeControls`; the bridge logs them as degraded controls and ignores them,
-  whichever front end sends them. LiteLLM will happily accept and forward them.
+  whichever front end sends them. LiteLLM will happily accept and forward them. Other
+  accepted fields the bridge does not act on (`thinking`, `top_k`, `metadata` and the rest)
+  are listed under `ignoredRequestFields` and logged as `ignoredFields` beside the controls.
 - **Do not set `forward_llm_provider_auth_headers`.** That setting — a different one from
   `forward_client_headers_to_llm_api` — forwards a client's own `x-api-key` and overrides
   the configured bridge key.

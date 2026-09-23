@@ -14,7 +14,11 @@ import {
   ModelUnavailableError,
   ReasoningEffortUnavailableError,
 } from "./model-map.mjs";
-import { BridgeRequestError } from "./request-policy.mjs";
+import {
+  BridgeRequestError,
+  DEGRADED_CONTROLS,
+  IGNORED_FIELDS,
+} from "./request-policy.mjs";
 import { SessionManager } from "./session-manager.mjs";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -197,12 +201,9 @@ const server = http.createServer(async (req, res) => {
         mcpToolSearch: "full-schema-fallback",
         structuredOutput: "claude-code-validator",
         tokenCounting: "estimated-preflight",
-        unsupportedNativeControls: [
-          "temperature",
-          "top_p",
-          "max_tokens",
-          "stop_sequences",
-        ],
+        unsupportedNativeControls: DEGRADED_CONTROLS,
+        // Accepted and ignored; logged as ignoredFields beside the controls.
+        ignoredRequestFields: IGNORED_FIELDS,
       },
       ok: true,
       instanceId,

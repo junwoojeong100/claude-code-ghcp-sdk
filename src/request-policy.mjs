@@ -61,23 +61,48 @@ function applyToolChoice(body) {
   throw new BridgeRequestError("Unsupported tool_choice mode.");
 }
 
-function degradedControls(body) {
-  return [
-    ["temperature", body.temperature],
-    ["top_p", body.top_p],
-    ["max_tokens", body.max_tokens],
-    ["stop_sequences", body.stop_sequences],
-  ]
-    .filter(([, value]) => value !== undefined)
-    .map(([name]) => name);
+// Sampling controls the Copilot SDK does not expose. GET /health reports these
+// lists as they are here, so what it advertises and what the bridge logs
+// cannot drift apart.
+export const DEGRADED_CONTROLS = Object.freeze([
+  "temperature",
+  "top_p",
+  "max_tokens",
+  "stop_sequences",
+]);
+
+// Accepted request fields that nothing downstream reads. They get their own
+// diagnostic field so `controls` keeps its original meaning for consumers.
+// A dotted name is a field nested inside the named object.
+export const IGNORED_FIELDS = Object.freeze([
+  "thinking",
+  "top_k",
+  "metadata",
+  "service_tier",
+  "speed",
+  "container",
+  "mcp_servers",
+  "context_management",
+  "output_config.format",
+  "output_config.task_budget",
+  "tool_choice.disable_parallel_tool_use",
+]);
+
+function presentFields(body, names) {
+  return names.filter(
+    (name) =>
+      name.split(".").reduce((value, key) => value?.[key], body) !== undefined,
+  );
 }
 
 export function applyRequestPolicy(body, onDiagnostic = () => {}) {
-  const controls = degradedControls(body);
-  if (controls.length) {
+  const controls = presentFields(body, DEGRADED_CONTROLS);
+  const ignored = presentFields(body, IGNORED_FIELDS);
+  if (controls.length || ignored.length) {
     onDiagnostic({
       event: "bridge.degraded_controls",
       controls,
+      ...(ignored.length ? { ignoredFields: ignored } : {}),
       semantics: "not_exposed_by_copilot_sdk",
     });
   }
