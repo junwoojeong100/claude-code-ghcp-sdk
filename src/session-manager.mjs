@@ -256,6 +256,27 @@ function aggregateUsage(events) {
   );
 }
 
+// Claude Code puts user text beside tool results (Skill reminders, messages
+// queued in the TUI). It rides inside a result so the model reads it in the
+// same turn that consumes the results.
+function withSiblingInput(value, { prompt, attachments = [] }) {
+  const binary = [
+    ...(value.binaryResultsForLlm || []),
+    ...attachments.map((attachment) => ({
+      data: attachment.data,
+      mimeType: attachment.mimeType,
+      type: attachment.mimeType.startsWith("image/") ? "image" : "resource",
+      description: attachment.displayName,
+    })),
+  ];
+  return {
+    ...value,
+    textResultForLlm: [value.textResultForLlm, prompt].filter(Boolean).join("\n\n"),
+    ...(binary.length ? { binaryResultsForLlm: binary } : {}),
+    ...(value.error ? { error: [value.error, prompt].filter(Boolean).join("\n\n") } : {}),
+  };
+}
+
 function historyContentBlock(block) {
   if (!block || typeof block !== "object" || Array.isArray(block)) return block;
   const { cache_control, ...content } = block;
@@ -885,6 +906,12 @@ export class SessionManager {
 
       if (!pendingResults.length) {
         if (deliverPrompt) {
+          // Claude Code resends accepted results with new text only when it never
+          // recorded the earlier answer: that request failed or was aborted, and
+          // either way its SDK turn is over (an unacknowledged abort evicts the
+          // state). A turn that stopped on newer tool calls is answered with those
+          // results instead. state.queue lets that request settle first, so no
+          // turn is in flight for this default (enqueue) send to queue behind.
           const turn = await this.#waitForTurn(state, async () => {
             await send({
               prompt: input.prompt || CONTINUATION_PROMPT,
@@ -915,19 +942,16 @@ export class SessionManager {
 
       const handledTools = [];
       const turn = await this.#waitForTurn(state, async () => {
-        if (deliverPrompt) {
-          // Queue the user's instruction before any tool result can resume the
-          // model. Keep it separate from tool output and remember the accepted
-          // send even if one of the result submissions must later be retried.
-          await send({
-            prompt: input.prompt || CONTINUATION_PROMPT,
-            attachments: input.attachments,
-            mode: "enqueue",
-          });
-          state.deliveredToolPrompts.add(promptKey);
-        }
+        // A separate send, even an enqueued one, runs as a turn of its own once
+        // the tool-result turn ends, and the next request would then read that
+        // turn's answer. "immediate" instead preempts the results. So the last
+        // pending result carries the user's text, and the text counts as
+        // delivered only once that result is accepted: a retry after it was
+        // rejected carries the text again, a retry of any other result does not.
+        const promptCarrier = deliverPrompt ? pendingResults.at(-1).toolUseId : null;
         const submissions = await Promise.allSettled(
           pendingResults.map(async ({ toolUseId, value }) => {
+            const result = toolUseId === promptCarrier ? withSiblingInput(value, input) : value;
             const pending = await this.#waitForPendingRequest(
               state,
               toolUseId,
@@ -937,13 +961,16 @@ export class SessionManager {
               state.session,
               {
                 requestId: pending.requestId,
-                result: value,
+                result,
               },
               { toolCallId: toolUseId },
             ));
             state.pendingByToolCallId.delete(toolUseId);
+            if (toolUseId === promptCarrier) state.deliveredToolPrompts.add(promptKey);
             const completed = {
               lastTurn: null,
+              // Hash what the client sent, so a retry with the same message
+              // still matches after the text was folded in.
               resultHash: toolResultHash(
                 value,
                 input.prompt,
