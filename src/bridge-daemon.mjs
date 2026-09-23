@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 
 import { isEntryPoint } from "./entry-point.mjs";
+import { leaseFileName } from "./retirement.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(rootDir, "src", "server.mjs");
@@ -34,7 +35,9 @@ export function daemonPaths(env = process.env) {
     base,
     lock: path.join(base, "bridge.lock"),
     log: path.join(base, "bridge.log"),
+    leases: path.join(base, "leases"),
     registry: path.join(base, "bridge.json"),
+    retired: path.join(base, "retired"),
     settings: path.join(base, "settings"),
   };
 }
@@ -86,7 +89,7 @@ export function daemonConfigFingerprint(env, requestedPort) {
   const configuration = Object.fromEntries(
     Object.keys(env)
       .filter((name) =>
-        /^(COPILOT_|CLEANUP_TIMEOUT_MS$|GH_CONFIG_DIR$|GH_TOKEN$|GITHUB_TOKEN$|HOME$|HTTPS?_PROXY$|NO_PROXY$|LOG_LEVEL$|MAX_|PENDING_TOOL_WAIT_MS$|SESSION_OPERATION_TIMEOUT_MS$|STATE_IDLE_TTL_MS$|TURN_IDLE_TIMEOUT_MS$|TURN_MAX_DURATION_MS$)/.test(
+        /^(COPILOT_|CLEANUP_TIMEOUT_MS$|GH_CONFIG_DIR$|GH_TOKEN$|GITHUB_TOKEN$|HOME$|HTTPS?_PROXY$|NO_PROXY$|LOG_LEVEL$|MAX_|PENDING_TOOL_WAIT_MS$|RETIRED_IDLE_MS$|SESSION_OPERATION_TIMEOUT_MS$|STATE_IDLE_TTL_MS$|TURN_IDLE_TIMEOUT_MS$|TURN_MAX_DURATION_MS$)/.test(
           name,
         ),
       )
@@ -236,6 +239,109 @@ async function stopRegistry(paths, registry, { ownedPid } = {}) {
   return true;
 }
 
+function recordsIn(directory) {
+  try {
+    return fs
+      .readdirSync(directory)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => path.join(directory, name));
+  } catch {
+    return [];
+  }
+}
+
+function liveRetired(paths) {
+  return recordsIn(paths.retired)
+    .map((file) => ({ file, record: readDaemonRegistry({ registry: file }) }))
+    .filter(({ record }) => record && pidAlive(record.pid));
+}
+
+function pruneRetired(paths) {
+  const live = new Set(liveRetired(paths).map(({ file }) => file));
+  for (const file of recordsIn(paths.retired)) {
+    if (!live.has(file)) fs.rmSync(file, { force: true });
+  }
+}
+
+// A lease names the launcher holding it, so one whose PID is gone counts for
+// nothing. An unparseable one is only removed once it is old enough that it
+// cannot be a launcher still writing it.
+function pruneLeases(paths, now) {
+  let entries;
+  try {
+    entries = fs.readdirSync(paths.leases);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const file = path.join(paths.leases, entry);
+    try {
+      const pid = Number(fs.readFileSync(file, "utf8").trim());
+      const dead = Number.isSafeInteger(pid) && pid > 0
+        ? !pidAlive(pid)
+        : now - fs.statSync(file).mtimeMs > 60_000;
+      if (dead) fs.rmSync(file, { force: true });
+    } catch {}
+  }
+}
+
+// Every interactive launch shares this bridge, so replacing it must not cut
+// off the sessions still pointed at it: see src/retirement.mjs. Only a verified
+// bridge that advertises retirement gets SIGUSR2 -- an older one would take the
+// signal's default action and die mid-request -- and never when the new bridge
+// needs its port. The record is what lets claude-ghcp-stop end it later.
+function retireRegistry(paths, registry, currentHealth, requestedPort) {
+  if (
+    !registry ||
+    !pidAlive(registry.pid) ||
+    !currentHealth?.instanceId ||
+    currentHealth.instanceId !== registry.instanceId ||
+    currentHealth.capabilities?.retirement !== true ||
+    (requestedPort && requestedPort === registry.port)
+  ) {
+    return false;
+  }
+  fs.mkdirSync(paths.retired, { mode: 0o700, recursive: true });
+  fs.chmodSync(paths.retired, 0o700);
+  const record = path.join(paths.retired, `${registry.instanceId}.json`);
+  writeDaemonRegistry(
+    { registry: record },
+    { ...registry, retiredAt: new Date().toISOString() },
+  );
+  try {
+    process.kill(registry.pid, "SIGUSR2");
+  } catch {
+    fs.rmSync(record, { force: true });
+    return false;
+  }
+  removeRegistry(paths);
+  return true;
+}
+
+// A retired bridge keeps its port while it drains, so a replacement pinned to
+// that port has to end it first.
+async function stopRetiredOnPort(paths, port) {
+  for (const { file, record } of liveRetired(paths)) {
+    if (record.port === port) await stopRegistry({ registry: file }, record);
+  }
+}
+
+// What one launch needs: the bridge itself, a settings file of its own, and a
+// lease that keeps this bridge serving it should the bridge later be retired.
+function launchGrant(paths, env, registry) {
+  fs.mkdirSync(paths.leases, { mode: 0o700, recursive: true });
+  fs.chmodSync(paths.leases, 0o700);
+  return {
+    ...registry,
+    leasePath: path.join(
+      paths.leases,
+      leaseFileName(registry.instanceId, randomBytes(8).toString("hex")),
+    ),
+    logPath: paths.log,
+    settingsPath: allocateSettingsPath(env),
+  };
+}
+
 async function acquireLock(paths) {
   return lockfile.lock(paths.base, {
     lockfilePath: paths.lock,
@@ -271,25 +377,35 @@ export async function ensureDaemon(
       if (!(await modelAvailable(registry, model))) {
         throw new Error(`GitHub Copilot model is unavailable: ${model}`);
       }
-      return {
-        ...registry,
-        logPath: paths.log,
-        settingsPath: allocateSettingsPath(env),
-      };
+      return launchGrant(paths, env, registry);
     }
-    await stopRegistry(paths, registry);
-    clearSettings(paths);
+    pruneRetired(paths);
+    pruneLeases(paths, Date.now());
+    // A retired bridge's sessions still hold settings files naming it, so they
+    // stay until the TTL reaper. Only a bridge that is really gone takes them.
+    if (!retireRegistry(paths, registry, currentHealth, requestedPort)) {
+      await stopRegistry(paths, registry);
+      clearSettings(paths);
+    }
+    if (requestedPort) await stopRetiredOnPort(paths, requestedPort);
 
     const port = requestedPort || (await freePort());
     const token = randomBytes(24).toString("hex");
     const instanceId = randomBytes(16).toString("hex");
     const logFd = fs.openSync(paths.log, "a", 0o600);
     const child = spawn(process.execPath, [serverPath], {
+      // Every interactive launch now shares this bridge, so it must not keep
+      // whichever project happened to start it: that directory can be deleted
+      // under it, and the runtime starts that project's MCP servers for every
+      // other project's session. The system prompt is replaced wholesale, so
+      // nothing else reads the working directory.
+      cwd: paths.base,
       detached: true,
       env: {
         ...env,
         BRIDGE_API_KEY: token,
         BRIDGE_INSTANCE_ID: instanceId,
+        BRIDGE_LEASE_DIR: paths.leases,
         GHCP_MODEL: model,
         HOST: "127.0.0.1",
         PORT: String(port),
@@ -317,9 +433,9 @@ export async function ensureDaemon(
     // bound here: health() spends up to 1s per attempt (AbortSignal.timeout)
     // on top of the 250ms sleep, so the old `attempt < 120` was 30s against a
     // refused port and up to 150s against a bridge that binds the port but
-    // never answers. This is the loop the harness actually exercises --
-    // --background sets PERSISTENT_BRIDGE=1, so the launcher call that starts a
-    // daemon comes through here rather than through the launcher's own wait.
+    // never answers. This is the loop the harness actually exercises -- every
+    // launch but -p sets PERSISTENT_BRIDGE=1, so the launcher call that starts
+    // a daemon comes through here rather than through the launcher's own wait.
     //
     // That caller caps the whole launcher at 120s (spawnSync timeout 120_000,
     // scripts/verify/drivers.mjs). 60s plus at most one overshooting attempt
@@ -337,11 +453,7 @@ export async function ensureDaemon(
           await stopRegistry(paths, registry, { ownedPid: child.pid });
           throw new Error(`GitHub Copilot model is unavailable: ${model}`);
         }
-        return {
-          ...registry,
-          logPath: paths.log,
-          settingsPath: allocateSettingsPath(env),
-        };
+        return launchGrant(paths, env, registry);
       }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
@@ -360,6 +472,13 @@ export async function stopDaemon(env = process.env) {
   try {
     const registry = readDaemonRegistry(paths);
     const stopped = await stopRegistry(paths, registry);
+    // A retired bridge that stays busy never exits by itself, so it ends here
+    // with the rest. One whose PID is live but unverified keeps its record.
+    for (const file of recordsIn(paths.retired)) {
+      const record = readDaemonRegistry({ registry: file });
+      await stopRegistry({ registry: file }, record).catch(() => {});
+    }
+    fs.rmSync(paths.leases, { force: true, recursive: true });
     fs.rmSync(paths.log, { force: true });
     clearSettings(paths);
     return stopped;
@@ -398,6 +517,8 @@ async function main() {
         model: running ? registry.model : null,
         pid: running ? registry.pid : null,
         port: running ? registry.port : null,
+        // Replaced bridges still serving the sessions that started on them.
+        retired: liveRetired(paths).length,
         running,
       }),
     );

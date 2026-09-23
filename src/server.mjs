@@ -20,6 +20,7 @@ import {
   DEGRADED_CONTROLS,
   IGNORED_FIELDS,
 } from "./request-policy.mjs";
+import { DEFAULT_RETIRED_IDLE_MS, Retirement } from "./retirement.mjs";
 import { SessionManager } from "./session-manager.mjs";
 import {
   parseTestFaults,
@@ -79,7 +80,8 @@ const sessionOperationTimeoutMs = readPositiveIntegerEnv(
 );
 const turnTimeoutMs = readPositiveIntegerEnv("TURN_IDLE_TIMEOUT_MS", 300_000);
 const maxTurnDurationMs = readPositiveIntegerEnv("TURN_MAX_DURATION_MS", 30 * 60_000);
-for (const [name, value] of [["TURN_IDLE_TIMEOUT_MS", turnTimeoutMs], ["TURN_MAX_DURATION_MS", maxTurnDurationMs]]) {
+const retiredIdleMs = readPositiveIntegerEnv("RETIRED_IDLE_MS", DEFAULT_RETIRED_IDLE_MS);
+for (const [name, value] of [["TURN_IDLE_TIMEOUT_MS", turnTimeoutMs], ["TURN_MAX_DURATION_MS", maxTurnDurationMs], ["RETIRED_IDLE_MS", retiredIdleMs]]) {
   if (value > 2_147_483_647) throw new Error(`${name} exceeds the supported timer range.`);
 }
 
@@ -138,6 +140,14 @@ const manager = new SessionManager({
   stateIdleTtlMs,
 });
 await manager.start();
+
+// src/bridge-daemon.mjs names the lease directory for the bridges it spawns;
+// an ephemeral bridge has none and is never retired.
+const retirement = new Retirement({
+  instanceId,
+  leaseDir: process.env.BRIDGE_LEASE_DIR || null,
+  idleMs: retiredIdleMs,
+});
 
 function writeJson(res, status, value, headers = {}) {
   const body = JSON.stringify(value);
@@ -265,6 +275,9 @@ const server = http.createServer(async (req, res) => {
       capabilities: {
         actualUsageAfterCall: true,
         backgroundBridge: true,
+        // src/bridge-daemon.mjs only retires a bridge that says it can drain;
+        // an older one would take SIGUSR2's default action and die mid-request.
+        retirement: true,
         mcpToolSearch: "full-schema-fallback",
         structuredOutput: "claude-code-validator",
         tokenCounting: "estimated-preflight",
@@ -324,6 +337,7 @@ const server = http.createServer(async (req, res) => {
   res.once("close", abortRequest);
   let keepAlive;
   let streaming = false;
+  retirement.begin();
 
   try {
     if (req.aborted || res.destroyed) abortRequest();
@@ -455,6 +469,7 @@ const server = http.createServer(async (req, res) => {
         : { "retry-after": String(failure.retryAfterSeconds) },
     );
   } finally {
+    retirement.end();
     clearInterval(keepAlive);
     req.removeListener("aborted", abortRequest);
     res.removeListener("close", abortRequest);
@@ -480,3 +495,22 @@ async function shutdown() {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Sent by src/bridge-daemon.mjs when a newer persistent bridge replaces this
+// one. The sessions already holding this bridge's port and token keep being
+// served; see src/retirement.mjs for when it finally exits.
+const RETIREMENT_POLL_MS = 30_000;
+process.on("SIGUSR2", () => {
+  if (!retirement.retire()) return;
+  console.log(
+    JSON.stringify({ event: "bridge.retired", ...retirement.status() }),
+  );
+  const timer = setInterval(() => {
+    if (!retirement.readyToExit()) return;
+    clearInterval(timer);
+    console.log(
+      JSON.stringify({ event: "bridge.retired_exit", ...retirement.status() }),
+    );
+    shutdown();
+  }, RETIREMENT_POLL_MS);
+});

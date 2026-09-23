@@ -294,6 +294,8 @@ function launcherFixture(t) {
       "  fi",
       "  shift",
       "done",
+      // Whatever lease the launcher took is only on disk while this runs.
+      'cat "$GHCP_DAEMON_DIR"/leases/*.pid > "$CAPTURE_LEASE_PATH" 2>/dev/null || true',
       "",
     ].join("\n"),
   );
@@ -305,6 +307,7 @@ function launcherFixture(t) {
   chmodSync(fakeCopilot, 0o755);
   return {
     ...process.env,
+    CAPTURE_LEASE_PATH: path.join(fixtureDir, "leases.txt"),
     CAPTURE_SETTINGS_PATH: path.join(fixtureDir, "settings-path.txt"),
     CLAUDE_CODE_BIN: "",
     GHCP_DAEMON_DIR: daemonDir,
@@ -337,7 +340,7 @@ function launcherFixture(t) {
 // reuse path this test exists to cover genuinely cannot be reached.
 const BACKGROUND_LAUNCH_ATTEMPTS = 3;
 
-async function runBackgroundLauncher(t) {
+async function runBackgroundLauncher(t, launchArgs = ["--background"]) {
   for (let attempt = 1; ; attempt += 1) {
     const instanceId = "instance-background";
     const { pid, port } = await fakeBridge(t, instanceId);
@@ -359,7 +362,7 @@ async function runBackgroundLauncher(t) {
 
     const result = spawnSync(
       path.join(rootDir, "bin", "claude-ghcp"),
-      ["--background", "--bridge-port", String(port)],
+      [...launchArgs, "--bridge-port", String(port)],
       { encoding: "utf8", env },
     );
 
@@ -381,6 +384,8 @@ async function runBackgroundLauncher(t) {
     }
     assert.equal(result.status, 0, result.stderr);
     return {
+      launcherPid: result.pid,
+      leasesDuringRun: readFileSync(env.CAPTURE_LEASE_PATH, "utf8"),
       paths,
       port,
       settingsPath: readFileSync(env.CAPTURE_SETTINGS_PATH, "utf8"),
@@ -407,21 +412,48 @@ test("claude-ghcp keeps surviving settings private to the user", async (t) => {
   assert.equal(statSync(paths.settings).mode & 0o777, 0o700);
 });
 
-test("claude-ghcp removes the settings file of a foreground bridge", async (t) => {
+// An interactive session can be handed to Claude Code's daemon with
+// /background at any point, so the launcher cannot know at startup that it
+// will not be. The job that leaves behind still calls the bridge and is
+// respawned from --settings after the launcher exits; on the ephemeral bridge
+// it failed with "API Error: 499 The client closed the request." once cleanup
+// stopped the bridge under it.
+test("claude-ghcp gives an interactive session the persistent bridge", async (t) => {
+  const { paths, port, settingsPath } = await runBackgroundLauncher(t, []);
+
+  assert.equal(existsSync(settingsPath), true, settingsPath);
+  assert.equal(path.dirname(settingsPath), paths.settings);
+  const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  assert.equal(settings.env.ANTHROPIC_BASE_URL, `http://127.0.0.1:${port}`);
+});
+
+// Sharing one bridge means a later launch can replace it under a session that
+// is still open. The lease is what keeps a replaced bridge serving that
+// session (src/retirement.mjs), so it has to name a PID that lives exactly as
+// long as the session does -- the launcher's own -- and go away with it.
+test("claude-ghcp holds a lease on the shared bridge only while it runs", async (t) => {
+  const { launcherPid, leasesDuringRun, paths } = await runBackgroundLauncher(t, []);
+
+  assert.equal(leasesDuringRun, `${launcherPid}\n`);
+  assert.deepEqual(readdirSync(paths.leases), []);
+});
+
+test("claude-ghcp removes the settings file of a print-mode bridge", async (t) => {
   const { port } = await fakeBridge(t, "instance-foreground");
   const env = launcherFixture(t);
 
   const result = spawnSync(
     path.join(rootDir, "bin", "claude-ghcp"),
-    ["--bridge-port", String(port)],
+    ["-p", "--bridge-port", String(port), "hello"],
     { encoding: "utf8", env },
   );
 
   assert.equal(result.status, 0, result.stderr);
   const settingsPath = readFileSync(env.CAPTURE_SETTINGS_PATH, "utf8");
-  // Nothing respawns a foreground session, so its token must not linger.
+  // A print-mode run ends with this process and nothing respawns it, so its
+  // token must not linger.
   assert.equal(existsSync(settingsPath), false);
-  // A foreground launch must never reach bridge-daemon.mjs at all. Asserting
+  // A print-mode launch must never reach bridge-daemon.mjs at all. Asserting
   // its settings subdirectory is absent proves nothing -- this path never
   // creates one either way -- but ensureDaemon cannot run without leaving
   // bridge.log behind in the daemon directory, so an empty directory does.
