@@ -27,7 +27,7 @@ one loopback caller, with one credential.
 
 ## Verification Scope
 
-LiteLLM is outside this repository's verification scope. The `npm run verify` matrix (7 models x 11 scenarios = 77 slots) starts `src/server.mjs` directly and never starts LiteLLM, so nothing on this page is covered by it — treat this as a configuration reference, not a validated path.
+LiteLLM is outside this repository's verification scope. The `npm run verify` matrix (6 models x 11 scenarios = 66 slots) starts `src/server.mjs` directly and never starts LiteLLM, so nothing on this page is covered by it — treat this as a configuration reference, not a validated path.
 
 Everything below about LiteLLM's own wire behaviour is written against the `v1.97.0` that
 `npm run litellm:setup` **pins** (commit `ef84494`, `scripts/setup-litellm.sh`) — a pin, not
@@ -222,12 +222,10 @@ general_settings:
 | `api_key` | Upstream credential | Sent as the `x-api-key` header, which the bridge accepts |
 | `forward_client_headers_to_llm_api: true` | Passes client `x-*` headers upstream | The bridge needs `x-claude-code-session-id` and `x-claude-code-agent-id` to keep one Copilot SDK session per Claude session and per subagent. Without it every request collapses into one anonymous session family |
 
-The repository's example file exposes an alias per model in the primary matrix — the seven
-in `PRIMARY_MODELS` (`scripts/verify/scenarios.mjs`): `claude-opus-5`, `claude-sonnet-5`,
-`claude-haiku-4.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-astra`. It adds
-one more, `claude-sonnet-5-1m` -> `anthropic/claude-sonnet-5[1m]`, which is not a matrix
-model and exists only to carry the `[1m]` suffix past LiteLLM. All eight point at the same
-bridge.
+The repository's example file exposes an alias per model in the primary matrix — the six
+in `PRIMARY_MODELS` (`src/model-map.mjs`, re-exported by `scripts/verify/scenarios.mjs`):
+`claude-opus-5.5`, `claude-sonnet-5`, `claude-haiku-4.5`, `gpt-6-astra`, `gpt-6-sol`,
+`gpt-6-luna`. All six point at the same bridge.
 
 ### `api_base` must not end in `/v1`
 
@@ -246,31 +244,21 @@ starts, so the mistake surfaces as a startup error rather than a runtime `404`.
 ### The `[1m]` context suffix
 
 The bridge strips a `[1m]` or `[NNNk]` suffix before resolving a model
-(`stripContextSuffix` in `src/model-map.mjs`). LiteLLM does no such stripping, so a
-bracketed alias is one it cannot match and it rejects the request upstream with a
-`400 Invalid model name` — LiteLLM behaviour this repository does not verify. Keep the
-brackets out of `model_name` and out of `--litellm-model`.
+(`stripContextSuffix` in `src/model-map.mjs`), and the suffix never selects a larger
+backend tier: Claude models stay on the SDK default tier, while GPT-6 (and GPT-5.6) models
+use the long-context tier with or without it. An `anthropic/<id>[1m]` backend string is
+therefore accepted but behaves exactly like `anthropic/<id>`. LiteLLM does no such
+stripping, so a bracketed alias is one it cannot match and it rejects the request upstream
+with a `400 Invalid model name` — LiteLLM behaviour this repository does not verify. Keep
+the brackets out of `model_name` and out of `--litellm-model`.
 
-Give the 1M context window its own alias instead, with a bracket-free `model_name` and the
-bracketed ID after `anthropic/`, where it travels to the bridge inside the request body:
-
-```yaml
-  - model_name: claude-sonnet-5-1m
-    litellm_params:
-      model: anthropic/claude-sonnet-5[1m]
-      api_base: os.environ/GHCP_BRIDGE_URL
-      api_key: os.environ/GHCP_BRIDGE_TOKEN
-```
-
-```bash
-./bin/claude-litellm --litellm-model claude-sonnet-5-1m
-```
-
-Note that `src/write-litellm-settings.mjs` does not set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`,
-which only `src/write-launch-settings.mjs` does. Claude Code therefore keeps its default
-context ceiling on the LiteLLM path even when the alias routes to a `[1m]` model. For the
-full 1M window, use the Direct path in the
-[README](../README.md#direct-sdk-quick-start).
+Claude Code sizes its context window from the model name it is configured with, which on
+this path is the bracket-free alias, so it keeps its default window.
+`src/write-litellm-settings.mjs` sets no context override, and the Direct writer only
+clears an inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. For a 1M window with GPT-6 Astra,
+Sol or Luna, use the Direct path in the [README](../README.md#direct-sdk-quick-start):
+its model-scoped `github-copilot/claude-<id>[1m]` launch and picker IDs carry the window.
+Neither path offers a 1M window for the Claude rows.
 
 ## 3. Start LiteLLM
 
@@ -323,7 +311,7 @@ curl --silent --show-error --fail \
 Optional family aliases, if the gateway exposes more than one model:
 
 ```bash
-export LITELLM_OPUS_MODEL="claude-opus-5"
+export LITELLM_OPUS_MODEL="claude-opus-5.5"
 export LITELLM_SONNET_MODEL="claude-sonnet-5"
 export LITELLM_HAIKU_MODEL="claude-haiku-4.5"
 ```

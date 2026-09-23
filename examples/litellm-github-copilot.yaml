@@ -7,6 +7,9 @@
 #
 # api_base must be the bridge root: LiteLLM appends /v1/messages itself.
 # The string after anthropic/ is sent as the request body's model.
+# Keep model_name free of [1m]-style suffixes: LiteLLM does not strip them and
+# rejects such an alias upstream with 400 "Invalid model name" (LiteLLM's own
+# behaviour, which this repository does not verify).
 
 model_list:
   - model_name: claude-opus-5.5
@@ -18,16 +21,6 @@ model_list:
   - model_name: claude-sonnet-5
     litellm_params:
       model: anthropic/claude-sonnet-5
-      api_base: os.environ/GHCP_BRIDGE_URL
-      api_key: os.environ/GHCP_BRIDGE_TOKEN
-
-  # LiteLLM does no suffix stripping, so an alias carrying [1m] is rejected
-  # upstream with 400 "Invalid model name" -- LiteLLM's own behaviour, which this
-  # repository does not verify. Keep the alias plain and put the suffix after
-  # anthropic/, where the bridge strips it (stripContextSuffix in src/model-map.mjs).
-  - model_name: claude-sonnet-5-1m
-    litellm_params:
-      model: anthropic/claude-sonnet-5[1m]
       api_base: os.environ/GHCP_BRIDGE_URL
       api_key: os.environ/GHCP_BRIDGE_TOKEN
 

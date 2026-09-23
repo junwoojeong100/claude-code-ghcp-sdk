@@ -1,4 +1,4 @@
-# 검증 결과 — 7개 모델 × 11개 시나리오
+# 검증 결과 — 6개 모델 × 11개 시나리오
 
 이 문서는 `scripts/verify/report.mjs`가 실행 기록(`slots.jsonl`)에서 생성합니다. 손으로 고치지 마세요 — 다시 생성하면 덮어쓰입니다.
 
@@ -6,20 +6,20 @@
 
 모든 슬롯은 실제 경로를 그대로 지납니다: 진짜 Claude Code 바이너리 → 브리지 → Copilot SDK → Copilot 모델. 목이나 스텁은 없습니다. 판정은 모델이 무엇을 말했는지가 아니라 **디스크 상태, git 이력, 훅 로그, stream-json 이벤트**로 합니다.
 
-- Claude Code: `2.1.278`
-- 실행 시각: 2026-09-22T12:29:58.559Z → 2026-09-22T12:43:30.313Z
-- 소요: 812초
+- Claude Code: `2.1.280`
+- 실행 시각: 2026-09-22T23:45:15.077Z → 2026-09-22T23:55:38.981Z
+- 소요: 624초
 - 호스트: darwin arm64 / node v22.16.0
 
 ## 정책, 완전성 및 코드 출처
 
 - 정책: strict-all-pass-v1
-- 범위: full (77 전체 매트릭스 카탈로그 슬롯)
-- 예상: 77 / 실제: 77
+- 범위: full (66 전체 매트릭스 카탈로그 슬롯)
+- 예상: 66 / 실제: 66
 - 결과: PASS
 - 엄격한 통과는 비어 있지 않은 예상 매트릭스의 정확하고 중복 없는 완료, 모든 슬롯의 pass, 사용자 설정 보존 및 시작/종료 코드 출처 일치를 요구합니다.
-- 코드 출처 start: commit: d84bd2210ee6d6bd2911c4341ae756060d42b36f; dirty: false; fingerprint: sha256 verification-code-v1 7a5c1d856bc02110531fd0a013bd894a779f4309cfcd20a9e26bd765f0c8725a; files: 41
-- 코드 출처 end: commit: d84bd2210ee6d6bd2911c4341ae756060d42b36f; dirty: false; fingerprint: sha256 verification-code-v1 7a5c1d856bc02110531fd0a013bd894a779f4309cfcd20a9e26bd765f0c8725a; files: 41
+- 코드 출처 start: commit: 6a6691cb52da84e5232ba4eebfacff9450b5b174; dirty: false; fingerprint: sha256 verification-code-v1 4e7986206619e28c6bbe5f1f50fdf957009d6f0db1468abcd1d417a8342cc453; files: 41
+- 코드 출처 end: commit: 6a6691cb52da84e5232ba4eebfacff9450b5b174; dirty: false; fingerprint: sha256 verification-code-v1 4e7986206619e28c6bbe5f1f50fdf957009d6f0db1468abcd1d417a8342cc453; files: 41
 
 ## 기록된 실행 설정
 
@@ -55,21 +55,21 @@ Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한, SIG
 
 ## 결과 매트릭스
 
-| 시나리오 | claude-opus-5 | claude-sonnet-5 | claude-haiku-4.5 | gpt-5.6-sol | gpt-5.6-terra | gpt-5.6-luna | gpt-6-astra |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `v01-repo-recon` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v02-surgical-edit` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v03-test-fix-loop` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v04-shell-ops` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v05-multi-step` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v06-subagent` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v07-mcp-playwright` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v08-hooks-memory` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v09-session-resume` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v10-long-context` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v11-daemon-background` | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| 시나리오 | claude-opus-5.5 | claude-sonnet-5 | claude-haiku-4.5 | gpt-6-astra | gpt-6-sol | gpt-6-luna |
+| --- | --- | --- | --- | --- | --- | --- |
+| `v01-repo-recon` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v02-surgical-edit` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v03-test-fix-loop` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v04-shell-ops` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v05-multi-step` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v06-subagent` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v07-mcp-playwright` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v08-hooks-memory` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v09-session-resume` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v10-long-context` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `v11-daemon-background` | PASS | PASS | PASS | PASS | PASS | PASS |
 
-**pass 77 / fail 0 / blocked 0** — 전체 77슬롯, 통과 기준 77.
+**pass 66 / fail 0 / blocked 0** — 전체 66슬롯, 통과 기준 66.
 
 BLOCK(blocked)는 통과가 아닙니다. 실행하지 못한 슬롯이며 분모에 그대로 남습니다. DUP는 중복 기록, UNKNOWN은 알 수 없는 결과입니다.
 
@@ -230,7 +230,7 @@ MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp
 
 ### 이 빌드에 없는 도구 (분모에서 제외)
 
-Claude Code 2.1.278는 다음 도구를 제공하지 않습니다: `TodoWrite`, `BashOutput`, `KillShell`, `Glob`, `Grep`. `scripts/verify/probe.mjs`가 측정합니다. 각 도구를 이름으로 지목해 호출시키고 스트림을 읽습니다 — 빌드가 제공하지 않는 도구는 아무리 강하게 요구해도 tool_use 블록을 만들 수 없기 때문입니다. 같은 턴에서 Read를 양성 대조군으로 함께 호출시키므로, 모델이 통째로 거부한 경우와 도구가 실제로 없는 경우를 구분할 수 있습니다. 브리지의 결함이 아니라 CLI가 애초에 제공하지 않는 기능이므로, 커버한 것으로도 못 한 것으로도 세지 않고 분모에서 제외합니다.
+Claude Code 2.1.280는 다음 도구를 제공하지 않습니다: `TodoWrite`, `BashOutput`, `KillShell`, `Glob`, `Grep`. `scripts/verify/probe.mjs`가 측정합니다. 각 도구를 이름으로 지목해 호출시키고 스트림을 읽습니다 — 빌드가 제공하지 않는 도구는 아무리 강하게 요구해도 tool_use 블록을 만들 수 없기 때문입니다. 같은 턴에서 Read를 양성 대조군으로 함께 호출시키므로, 모델이 통째로 거부한 경우와 도구가 실제로 없는 경우를 구분할 수 있습니다. 브리지의 결함이 아니라 CLI가 애초에 제공하지 않는 기능이므로, 커버한 것으로도 못 한 것으로도 세지 않고 분모에서 제외합니다.
 
 - `glob` (가중치 3, `Glob` 필요) — Glob 경로 검색
 - `grep` (가중치 3, `Grep` 필요) — Grep 내용 검색
@@ -242,7 +242,7 @@ Claude Code 2.1.278는 다음 도구를 제공하지 않습니다: `TodoWrite`, 
 아래 명령은 기록된 설정을 다시 사용합니다. 기록되지 않은 설정에는 과거 값을 추정하지 않고 현재 기본값을 적용합니다.
 
 ```bash
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 # 7개 모델 × 11개 시나리오
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 # 6개 모델 × 11개 시나리오
 PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 --dry-run # 실행 없이 계획만
 npm run verify:probe        # 없는 도구 목록의 근거가 되는 능력 프로브
 npm run verify:report       # 최근 실행 결과 요약

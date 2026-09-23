@@ -123,46 +123,61 @@ Translates the version-separator difference between Claude Code and Copilot mode
 
 | Claude Code frontend | GitHub Copilot |
 |---|---|
+| `claude-opus-5-5` | `claude-opus-5.5` |
 | `claude-sonnet-5` | `claude-sonnet-5` |
+| `claude-haiku-4-5` | `claude-haiku-4.5` |
 | `claude-sonnet-4-6` | `claude-sonnet-4.6` |
 | `claude-opus-4-8` | `claude-opus-4.8` |
-| `claude-haiku-4-5` | `claude-haiku-4.5` |
-| `gpt-5.6-sol` | `gpt-5.6-sol` |
-| `gpt-5.6-terra` | `gpt-5.6-terra` |
-| `gpt-5.6-luna` | `gpt-5.6-luna` |
-| `gpt-6-astra` | `gpt-6-astra` |
+| `github-copilot/claude-gpt-6-astra[1m]` | `gpt-6-astra` |
+| `github-copilot/claude-gpt-6-sol[1m]` | `gpt-6-sol` |
+| `github-copilot/claude-gpt-6-luna[1m]` | `gpt-6-luna` |
 
-The `sonnet`, `opus`, and `haiku` aliases resolve to the permitted family model for the current account. GPT-5.6 models and GPT-6 Astra use their full ID.
+The `sonnet`, `opus`, and `haiku` aliases resolve to the permitted family model for the current account; `opus` prefers Opus 5.5 and falls back to Opus 5 and then 4.x. GPT models are also accepted by their plain Copilot ID, for example `gpt-6-sol`.
 
 ### Model Discovery and Context
 
-`PRIMARY_MODELS` is shared by the runtime and verification catalog. The Direct
-launch settings use `modelPicker.replaceBuiltInOptions` to show its seven
-explicit model rows in order, plus Claude Code's retained `Default` alias.
-This was exercised with the installed CLI's native `supportedModels()` control
-request, not inferred from a bridge response alone.
+`PRIMARY_MODELS` is shared by the runtime and verification catalog: Claude
+Opus 5.5, Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol and GPT-6
+Luna. The Direct launch settings use `modelPicker.replaceBuiltInOptions` to pin
+its six explicit model rows in order, plus the `Default` row Claude Code always
+keeps. The launch settings map the `opus` family to `claude-opus-5-5`, so in
+Claude Code 2.1.280 `Default` resolves to `claude-opus-5-5[1m]`. Claude Code
+accepts listed picker rows without a server probe, so switching between them
+sends no validation request; an ID outside the picker instead triggers Claude
+Code's one-token validation request through the bridge. This was exercised
+with the installed CLI's native `supportedModels()`, `setModel()` and
+`getContextUsage()` control requests, not inferred from a bridge response alone.
 
 Gateway discovery remains enabled for compatible clients, but `/v1/models`
-returns only primary non-built-in entries, deduplicated by backend ID.
+returns only primary non-built-in entries (currently the three GPT-6 models),
+deduplicated by backend ID.
 `/v1/models?all=true` and `ghcp-models` preserve the wider backend catalog;
 explicit selection still fails closed only when the requested model is unavailable.
 LiteLLM keeps its independently configured gateway aliases.
 
-The four GPT launch/picker IDs use
+The three GPT-6 launch/picker IDs use
 `github-copilot/claude-<copilot-model-id>[1m]`. The bridge removes the prefix and
-suffix before model resolution. Their Claude Code frontend budget is 1M, within
-the larger SDK catalog limits (GPT-5.6: 1,050,000; Astra: 1,178,000). Temporary
-settings clear inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` instead of pinning a
-global startup window. Claude models retain their native limits; switching to
-Haiku restores 200K. Native auto-compaction and explicit smaller windows remain
-active.
+suffix before model resolution. Their Claude Code frontend budget is 1M. The
+current catalog advertises 1,050,000 context and prompt tokens for Astra, and a
+1,000,000-token window with 872,000 prompt tokens for Sol and Luna, so Sol and
+Luna reach the SDK limit before Claude Code's ~967K auto-compact threshold.
+Explicitly selected GPT-5.6 models keep the same model-scoped hint.
+Temporary settings clear inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` instead of
+pinning a global startup window. Claude models retain Claude Code's native
+200K gateway window; switching from a GPT-6 row back to Haiku restores 200K.
+Native auto-compaction and explicit smaller windows remain active.
 
-The four primary GPT sessions also opt into `contextTier: "long_context"` and
-forward only discovered numeric context/prompt/output capability limits when
-creating, resuming or changing effort. The catalogue's large window alone does
-not select the runtime tier. Live measurements found an Astra default input
-budget of 272K; the explicit long tier plus its catalogue limits yields 1.05M.
-`bridge.context_budget` logs the effective SDK budget.
+The three primary GPT-6 sessions (and explicitly selected GPT-5.6 models) also
+opt into `contextTier: "long_context"` and forward only discovered numeric
+context/prompt/output capability limits when creating, resuming or changing
+effort. The catalogue's large window alone does not select the runtime tier.
+An earlier live measurement found an Astra default input budget of 272K; the
+explicit long tier plus its catalogue limits yields 1.05M. Claude models stay
+on the SDK default tier. `bridge.context_budget` logs the effective SDK budget:
+the six-model run recorded 1,050,000 for Astra, 872,000 for Sol and Luna,
+200,000 for Opus 5.5 and Sonnet 5, and 136,000 for Haiku 4.5. The `Default`
+row's `claude-opus-5-5[1m]` therefore budgets 1M in Claude Code against a
+200,000-token backend tier and relies on the overflow recovery below.
 
 SDK compaction can run even with `infiniteSessions.enabled` false. Root
 compaction/truncation is tracked during and between requests rather than silently
@@ -294,11 +309,11 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 - Anthropic Messages text, attachment, and tool-result translation and SSE conversion
 - Claude/Copilot model ID and family alias translation
-- Seven-model picker curation, per-model context hints, and gateway discovery rows
+- Six-model picker pinning, per-model context hints, and gateway discovery rows
 - `ultracode` → `xhigh` normalization and per-model unsupported-effort adjustment
 - SDK session creation and reasoning-effort changes via `session.setModel()`
 - Claude Code root session and subagent SDK session isolation
-- Seven-model interleaved root/worker tool-result isolation and sibling survival
+- Six-model interleaved root/worker tool-result isolation and sibling survival
   after cancellation
 - Inherited history recovery for forked subagents and pending tool-call handoff with `agentId`
 - Gateway routing values in the Direct/LiteLLM temporary settings
@@ -311,7 +326,7 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 `npm run verify` drives the real path with real models:
 
-- 11 scenarios x 7 models = 77 slots. Every slot launches the real `claude`
+- 11 scenarios x 6 models = 66 slots. Every slot launches the real `claude`
   binary with `-p --output-format stream-json`, routed through a bridge of its
   own, against a real Copilot model.
 - The scenarios: repository reconnaissance, surgical edit and file creation,
@@ -336,7 +351,7 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 - Launcher verification retains command stdout/stderr and copies bridge/native
   daemon logs before shutdown removes them. Its background-job snapshot allowlists
   state/timing fields, excluding provider environment and socket credentials.
-- New runs use `strict-all-pass-v1`: all 77 unique expected slots must pass for
+- New runs use `strict-all-pass-v1`: all 66 unique expected slots must pass for
   a full run, and every selected slot must pass for a focused run. Missing,
   duplicate or unexpected slots, changed user settings, or missing/changed
   implementation provenance prevent green even if the recorded slots all pass.
@@ -348,14 +363,16 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 `npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
 
-The full run `2026-09-22T12-29-58-559Z` revalidated commit `d84bd22`, including
-SDK context-tier alignment, native overflow recovery and progress-based turn
-deadlines. It passed 77/77 in 812 seconds with three model workers and two
-scenario workers per model, with unchanged code and user settings.
-This laptop profile reduces startup pressure
-after native background stalls in earlier 7 × 2 runs; defaults, timeout budgets
-and pass criteria are not reduced. See the README for the separate run history
-and [Verification Results](VERIFICATION.md) for the final run alone.
+The full run `2026-09-22T23-45-15-077Z` validated the six-model catalogue on
+commit `6a6691c` with Claude Code 2.1.280. It passed 66/66 in 624 seconds with
+three model workers and two scenario workers per model, with unchanged code and
+user settings. This laptop profile reduces startup pressure after native
+background stalls in earlier 7 × 2 runs; defaults, timeout budgets and pass
+criteria are not reduced. The first six-model run (64/66) exposed Claude Opus
+5.5 completing the v02 edit and v08 record through shell commands, so those
+prompts now name the Edit and Write tools their checks observe. See the README
+for the separate run history, including the previous seven-model catalogue, and
+[Verification Results](VERIFICATION.md) for the final run alone.
 
 Active bridge turn timeouts and client cancellations emit request-correlated
 `bridge.turn_timeout` / `bridge.turn_aborted` snapshots, followed by
