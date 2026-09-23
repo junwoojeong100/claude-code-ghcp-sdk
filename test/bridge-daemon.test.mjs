@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -159,17 +160,23 @@ test("stopping the daemon removes the settings directory", async () => {
 // separate process on two counts: ensureDaemon probes /health with fetch while
 // this process is inside the call, and its restart path SIGTERMs the registry
 // PID -- naming our own PID there would kill the test runner.
-async function verifiedDaemonStub(t, instanceId, model) {
+//
+// With `retirement`, it also advertises the capability src/server.mjs does and
+// reports each SIGUSR2 on stdout instead of dying from it, the way a real
+// bridge that knows how to drain would.
+async function verifiedDaemonStub(t, instanceId, model, { retirement = false } = {}) {
   const child = spawn(
     process.execPath,
     [
       "-e",
       [
         'const http = require("node:http");',
-        "const [instanceId, model] = process.argv.slice(1);",
+        "const [instanceId, model, retirement] = process.argv.slice(1);",
+        'const capabilities = retirement === "1" ? { retirement: true } : {};',
+        'if (retirement === "1") process.on("SIGUSR2", () => console.log("SIGUSR2"));',
         "const server = http.createServer((request, response) => {",
         '  const body = request.url.startsWith("/health")',
-        "    ? { instanceId, ok: true }",
+        "    ? { capabilities, instanceId, ok: true }",
         "    : { data: [{ backend_id: model, id: model }] };",
         '  response.writeHead(200, { "content-type": "application/json" });',
         "  response.end(JSON.stringify(body));",
@@ -180,14 +187,28 @@ async function verifiedDaemonStub(t, instanceId, model) {
       ].join("\n"),
       instanceId,
       model,
+      retirement ? "1" : "0",
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   t.after(() => child.kill("SIGKILL"));
+  let exited = false;
+  child.once("exit", () => {
+    exited = true;
+  });
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.stdout.once("data", (chunk) => {
-      resolve({ pid: child.pid, port: Number(chunk.toString()) });
+      const signals = [];
+      child.stdout.on("data", (more) => {
+        signals.push(...more.toString().split("\n").filter(Boolean));
+      });
+      resolve({
+        pid: child.pid,
+        port: Number(chunk.toString()),
+        signals,
+        exited: () => exited,
+      });
     });
   });
 }
@@ -200,7 +221,7 @@ test("daemon reuse includes the SDK session-operation timeout in its fingerprint
 });
 
 test("daemon reuse includes both turn deadline settings", () => {
-  for (const name of ["TURN_IDLE_TIMEOUT_MS", "TURN_MAX_DURATION_MS"]) {
+  for (const name of ["TURN_IDLE_TIMEOUT_MS", "TURN_MAX_DURATION_MS", "RETIRED_IDLE_MS"]) {
     assert.notEqual(
       daemonConfigFingerprint({ [name]: "300000" }),
       daemonConfigFingerprint({ [name]: "600000" }),
@@ -246,6 +267,102 @@ test("restarting on a changed config fingerprint clears settings files", async (
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
+});
+
+// Every interactive launch shares the persistent bridge, so the one being
+// replaced may still be serving open sessions whose settings files name its
+// port and token. It is retired rather than stopped: see src/retirement.mjs.
+test("replacing a bridge that can drain retires it instead of stopping it", async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "ghcp-daemon-"));
+  t.after(() => rmSync(directory, { force: true, recursive: true }));
+  // As above, the replacement dies reading MAX_STATES, before any Copilot call.
+  const env = { GHCP_DAEMON_DIR: directory, MAX_STATES: "not-a-number" };
+  const paths = daemonPaths(env);
+  const instanceId = "instance-retiring";
+  const model = "claude-sonnet-5";
+  const stub = await verifiedDaemonStub(t, instanceId, model, { retirement: true });
+  const openSession = allocateSettingsPath(env);
+  writeFileSync(openSession, "{}\n", { mode: 0o600 });
+  writeDaemonRegistry(paths, {
+    configFingerprint: daemonConfigFingerprint({ ...env, MAX_STATES: "8" }),
+    instanceId,
+    model,
+    pid: stub.pid,
+    port: stub.port,
+    token: "test-only",
+  });
+
+  await assert.rejects(ensureDaemon(model, { env }), /Persistent bridge exited/);
+
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(stub.signals, ["SIGUSR2"]);
+  assert.equal(stub.exited(), false);
+  // The session still pointed at the retired bridge keeps its settings.
+  assert.equal(existsSync(openSession), true);
+  const record = readDaemonRegistry({
+    registry: path.join(paths.retired, `${instanceId}.json`),
+  });
+  assert.equal(record?.pid, stub.pid);
+  assert.equal(readDaemonRegistry(paths), null);
+
+  // A retired bridge that stays busy never exits by itself, so stop ends it.
+  await stopDaemon(env);
+  assert.equal(stub.exited(), true);
+  assert.equal(existsSync(paths.retired) && readdirSync(paths.retired).length, 0);
+});
+
+// A retired bridge keeps its port while it drains, so a replacement pinned to
+// that same port can only bind it once the old bridge is gone.
+test("a replacement pinned to the old bridge's port stops it instead", async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "ghcp-daemon-"));
+  t.after(() => rmSync(directory, { force: true, recursive: true }));
+  const env = { GHCP_DAEMON_DIR: directory, MAX_STATES: "not-a-number" };
+  const paths = daemonPaths(env);
+  const instanceId = "instance-pinned";
+  const model = "claude-sonnet-5";
+  const stub = await verifiedDaemonStub(t, instanceId, model, { retirement: true });
+  writeDaemonRegistry(paths, {
+    configFingerprint: daemonConfigFingerprint({ ...env, MAX_STATES: "8" }, stub.port),
+    instanceId,
+    model,
+    pid: stub.pid,
+    port: stub.port,
+    token: "test-only",
+  });
+
+  await assert.rejects(
+    ensureDaemon(model, { env, port: stub.port }),
+    /Persistent bridge exited/,
+  );
+
+  assert.deepEqual(stub.signals, []);
+  assert.equal(stub.exited(), true);
+  assert.equal(existsSync(path.join(paths.retired, `${instanceId}.json`)), false);
+});
+
+// SIGUSR2's default action terminates a Node process, so sending it to a
+// bridge from before retirement existed would kill it mid-request.
+test("a bridge that does not advertise retirement is stopped as before", async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "ghcp-daemon-"));
+  t.after(() => rmSync(directory, { force: true, recursive: true }));
+  const env = { GHCP_DAEMON_DIR: directory, MAX_STATES: "not-a-number" };
+  const paths = daemonPaths(env);
+  const instanceId = "instance-legacy";
+  const model = "claude-sonnet-5";
+  const stub = await verifiedDaemonStub(t, instanceId, model);
+  writeDaemonRegistry(paths, {
+    configFingerprint: daemonConfigFingerprint({ ...env, MAX_STATES: "8" }),
+    instanceId,
+    model,
+    pid: stub.pid,
+    port: stub.port,
+    token: "test-only",
+  });
+
+  await assert.rejects(ensureDaemon(model, { env }), /Persistent bridge exited/);
+
+  assert.equal(stub.exited(), true);
+  assert.equal(existsSync(path.join(paths.retired, `${instanceId}.json`)), false);
 });
 
 test("reaps only settings files older than the launch TTL", () => {

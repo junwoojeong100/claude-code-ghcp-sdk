@@ -33,6 +33,7 @@
 
 import { COVERAGE_TARGET, coverage } from "./features.mjs";
 import { scaleTimeoutMs } from "./timeouts.mjs";
+import { isEntryPoint } from "../../src/entry-point.mjs";
 import { PRIMARY_MODELS } from "../../src/model-map.mjs";
 
 export { PRIMARY_MODELS };
@@ -166,7 +167,7 @@ export const SCENARIOS = Object.freeze([
       "All four changes are present on disk.",
       "The notebook still parses as a valid nbformat 4 document.",
       "No step was reported done without the file backing it.",
-      "The tokens inside the attached PDF and PNG both came back.",
+      "The tokens inside the attached PDF and PNG both came back, each with at most one of its six random glyphs misread.",
     ],
     budgetSeconds: 300,
   }),
@@ -372,7 +373,7 @@ export function gateFor(applicableCount) {
   return applicableCount;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryPoint(import.meta.url)) {
   const { ok, problems, coverage: cov, run } = validateCatalog();
   if (process.argv.includes("--json")) {
     console.log(JSON.stringify({ ok, problems, coverage: cov, run }, null, 2));

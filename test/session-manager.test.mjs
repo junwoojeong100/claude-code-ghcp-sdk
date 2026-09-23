@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AnthropicSseStream, startSse, writeJsonMessage } from "../src/anthropic.mjs";
+import { BridgeRequestError } from "../src/request-policy.mjs";
 import { SessionManager } from "../src/session-manager.mjs";
+import { UpstreamError } from "../src/upstream-errors.mjs";
 import { PRIMARY_MODELS } from "../scripts/verify/scenarios.mjs";
 
 class FakeSession {
@@ -1206,6 +1208,94 @@ for (const [label, usageEvents, inputTokens, outputTokens] of [
   });
 }
 
+test("turn results name the distinct models that served root calls, in order", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client });
+  let usage = [];
+  client.session.sendImplementation = async () => {
+    for (const [data, envelope] of usage) client.session.emit("assistant.usage", data, envelope);
+    client.session.emit("assistant.message", { content: "done", toolRequests: [] });
+    client.session.emit("session.idle");
+  };
+  await manager.start();
+  try {
+    usage = [
+      [{ model: "claude-sonnet-5", inputTokens: 10, outputTokens: 2 }],
+      [{ model: "gpt-5.6-sol", inputTokens: 5, outputTokens: 1 }, { agentId: "worker-1" }],
+      [{ model: "claude-haiku-4.5", inputTokens: 3, outputTokens: 1 }],
+      [{ model: "claude-sonnet-5", inputTokens: 4, outputTokens: 1 }],
+      [{ inputTokens: 1, outputTokens: 1 }],
+    ];
+    const served = await manager.execute(request(), {});
+    assert.deepEqual(served.servedModels, ["claude-sonnet-5", "claude-haiku-4.5"]);
+    assert.equal(served.usage.inputTokens, 18);
+    usage = [];
+    assert.deepEqual((await manager.execute(request(), {})).servedModels, []);
+  } finally {
+    await manager.stop();
+  }
+});
+
+// ErrorData payloads shaped like the SDK's session.error events.
+for (const [label, data, expected] of [
+  ["a rate limit", {
+    errorType: "rate_limit", errorCode: "user_model_rate_limited", eligibleForAutoSwitch: false,
+    message: "Sorry, you've hit a rate limit for this model. Please try again later.",
+    statusCode: 429, providerCallId: "F00D:1234", serviceRequestId: "svc-1",
+  }, { status: 429, type: "rate_limit_error" }],
+  ["an exhausted quota", {
+    errorType: "quota", errorCode: "quota_exceeded",
+    message: "You've run out of your included AI credits for the month.",
+  }, { status: 429, type: "rate_limit_error" }],
+  ["an unavailable upstream", {
+    errorType: "query", message: "Service Unavailable", statusCode: 503,
+  }, { status: 529, type: "overloaded_error" }],
+  ["an unclassified failure", {
+    errorType: "authorization", message: "Copilot access is disabled for this model.", statusCode: 403,
+  }, null],
+]) {
+  test(`session.error keeps the upstream classification of ${label}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: ".", client });
+    client.session.sendImplementation = async () => client.session.emit("session.error", data);
+    await manager.start();
+    try {
+      const error = await manager.execute(request(), {}).then(() => assert.fail("The turn must fail."), (reason) => reason);
+      assert.equal(error.message, data.message);
+      assert.equal(error instanceof UpstreamError, Boolean(expected));
+      if (expected) {
+        assert.equal(error.status, expected.status);
+        assert.equal(error.type, expected.type);
+        assert.equal(error.retryAfterSeconds, null);
+      }
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+test("a context-limit error for a Claude Code session names its reported token limit", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client });
+  const headers = { "x-claude-code-session-id": "context-fault" };
+  const unknown = "prompt is too long: GitHub Copilot would reduce conversation history. Compact the conversation before retrying.";
+  await manager.start();
+  try {
+    assert.equal(manager.contextLimitErrorFor(headers).message, unknown);
+    await manager.execute(request(), headers);
+    client.session.emit("session.usage_info", { tokenLimit: 136000, currentTokens: 1200 });
+    const error = manager.contextLimitErrorFor(headers);
+    assert.ok(error instanceof BridgeRequestError);
+    assert.equal(
+      error.message,
+      "prompt is too long: GitHub Copilot would reduce conversation history at 136000 input tokens. Compact the conversation before retrying.",
+    );
+    assert.equal(manager.contextLimitErrorFor({ "x-claude-code-session-id": "other" }).message, unknown);
+  } finally {
+    await manager.stop();
+  }
+});
+
 test("cache-only usage preserves fallback counters and finish metadata", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
   const manager = new SessionManager({ baseDirectory: ".", client });
@@ -2104,12 +2194,7 @@ test("sibling user instructions steer pending tool results exactly once", async 
   const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", turnTimeoutMs: 500, client });
   const headers = { "x-claude-code-session-id": "tool-steering" };
   const body = { ...request(), tools: [{ name: "Read", input_schema: { type: "object", properties: {} } }] };
-  const order = [];
-  client.session.sendImplementation = async ({ prompt, mode }) => {
-    if (mode === "enqueue") {
-      order.push(`user:${prompt}`);
-      return;
-    }
+  client.session.sendImplementation = async () => {
     client.session.emit("assistant.message", { content: "", toolRequests: [
       { toolCallId: "read-1", name: "Read", arguments: {} },
       { toolCallId: "read-2", name: "Read", arguments: {} },
@@ -2118,10 +2203,9 @@ test("sibling user instructions steer pending tool results exactly once", async 
       client.session.emit("external_tool.requested", { requestId: id, toolCallId: id, toolName: "Read" });
     }
   };
-  client.session.handlePendingToolCallImplementation = async ({ requestId }) => {
-    order.push(`tool:${requestId}`);
+  client.session.handlePendingToolCallImplementation = async ({ requestId, result }) => {
     if (requestId === "read-2") {
-      client.session.emit("assistant.message", { content: order.some((item) => item.startsWith("user:")) ? "destination B" : "destination A", toolRequests: [] });
+      client.session.emit("assistant.message", { content: /destination to B/.test(result.textResultForLlm) ? "destination B" : "destination A", toolRequests: [] });
       client.session.emit("session.idle");
     }
   };
@@ -2135,12 +2219,85 @@ test("sibling user instructions steer pending tool results exactly once", async 
     await manager.execute(body, headers);
     const result = await manager.execute(results, headers);
     assert.equal(result.message.content, "destination B");
-    assert.deepEqual(order, ["user:Use this result but change the destination to B.", "tool:read-1", "tool:read-2"]);
     const retry = await manager.execute(results, headers);
     assert.equal(retry.message.content, "destination B");
-    assert.equal(client.session.sendCalls.length, 2);
+    // The instruction rides inside the last result; a send of its own would
+    // run as a separate turn after this one.
+    assert.equal(client.session.sendCalls.length, 1);
     assert.equal(client.session.handledToolCalls.length, 2);
-    assert.deepEqual(client.session.handledToolCalls.map((call) => call.result.textResultForLlm), ["one", "two"]);
+    assert.deepEqual(client.session.handledToolCalls.map((call) => call.result.textResultForLlm), [
+      "one", "two\n\nUse this result but change the destination to B.",
+    ]);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test("sibling text rides in the tool result so the next prompt gets its own answer", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", turnTimeoutMs: 500, client });
+  const headers = { "x-claude-code-session-id": "sibling-fold" };
+  const reminder = "Skill /audit-status is already loaded above; instructions unchanged.";
+  const messages = [{ role: "user", content: "Run /audit-status." }];
+  const body = () => ({
+    ...request(),
+    messages: [...messages],
+    tools: [{ name: "Skill", input_schema: { type: "object", properties: {} } }],
+  });
+  // Like the SDK, a send made while a tool call is pending becomes a turn of
+  // its own. It runs after the current turn, and its answer reaches whichever
+  // request is listening then.
+  let toolPending = false;
+  const queued = [];
+  client.session.sendImplementation = async ({ prompt }) => {
+    if (toolPending) {
+      queued.push(prompt);
+      return;
+    }
+    for (const stale of queued.splice(0)) {
+      client.session.emit("assistant.message", { content: `answered: ${stale}`, toolRequests: [] });
+      client.session.emit("session.idle");
+    }
+    if (prompt === "Run /audit-status.") {
+      toolPending = true;
+      client.session.emit("assistant.message", { content: "", toolRequests: [
+        { toolCallId: "skill-1", name: "Skill", arguments: {} },
+      ] });
+      client.session.emit("external_tool.requested", { requestId: "request-1", toolCallId: "skill-1", toolName: "Skill" });
+      return;
+    }
+    client.session.emit("assistant.message", { content: `answered: ${prompt}`, toolRequests: [] });
+    client.session.emit("session.idle");
+  };
+  client.session.handlePendingToolCallImplementation = async () => {
+    toolPending = false;
+    client.session.emit("assistant.message", { content: "records/audit.md", toolRequests: [] });
+    client.session.emit("session.idle");
+  };
+  await manager.start();
+  try {
+    const first = await manager.execute(body(), headers);
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "skill-1", name: "Skill", input: {} }] });
+    assert.equal(first.message.toolRequests.length, 1);
+    messages.push({ role: "user", content: [
+      { type: "tool_result", tool_use_id: "skill-1", content: "Audit skill instructions." },
+      { type: "text", text: reminder },
+    ] });
+    const second = await manager.execute(body(), headers);
+    assert.equal(second.message.content, "records/audit.md");
+    assert.equal(client.session.sendCalls.length, 1);
+    assert.equal(client.session.handledToolCalls[0].result.textResultForLlm, `Audit skill instructions.\n\n${reminder}`);
+
+    let answer = second.message.content;
+    for (const prompt of ["Reply with SECOND-PROMPT.", "Reply with THIRD-PROMPT."]) {
+      messages.push({ role: "assistant", content: [{ type: "text", text: answer }] });
+      messages.push({ role: "user", content: prompt });
+      answer = (await manager.execute(body(), headers)).message.content;
+      assert.equal(answer, `answered: ${prompt}`);
+    }
+    assert.deepEqual(client.session.sendCalls.map((call) => call.prompt), [
+      "Run /audit-status.", "Reply with SECOND-PROMPT.", "Reply with THIRD-PROMPT.",
+    ]);
   } finally {
     await manager.stop();
   }
@@ -2664,8 +2821,7 @@ for (const siblingKind of ["text", "image", "text and image"]) {
         ...(siblingKind.includes("image") ? [attachment] : []),
       ] }],
     });
-    client.session.sendImplementation = async ({ mode }) => {
-      if (mode === "enqueue") return;
+    client.session.sendImplementation = async () => {
       if (client.session.sendCalls.length === 1) {
         client.session.emit("assistant.message", { content: "", toolRequests: [
           { toolCallId: "agent-1", name: "Agent", arguments: {} },
@@ -2684,26 +2840,30 @@ for (const siblingKind of ["text", "image", "text and image"]) {
     try {
       await manager.execute(body, headers);
       await manager.execute(results("Agent started."), headers);
-      assert.equal(client.session.sendCalls[1].mode, "enqueue");
-      if (siblingKind.includes("text")) assert.equal(client.session.sendCalls[1].prompt, "Change the destination to B.");
-      if (siblingKind.includes("image")) assert.equal(client.session.sendCalls[1].attachments[0].data, image.source.data);
+      assert.equal(client.session.sendCalls.length, 1);
+      const started = client.session.handledToolCalls[0].result;
+      assert.equal(started.textResultForLlm, siblingKind.includes("text")
+        ? "Agent started.\n\nChange the destination to B."
+        : "Agent started.");
+      assert.deepEqual(started.binaryResultsForLlm?.map(({ data, type }) => ({ data, type })),
+        siblingKind.includes("image") ? [{ data: image.source.data, type: "image" }] : undefined);
 
       const finished = results("Agent finished.");
       await manager.execute(finished, headers);
-      assert.match(client.session.sendCalls[2].prompt, /Agent finished\./);
-      assert.doesNotMatch(client.session.sendCalls[2].prompt, /Change the destination to B\./);
-      assert.deepEqual(client.session.sendCalls[2].attachments, []);
+      assert.match(client.session.sendCalls[1].prompt, /Agent finished\./);
+      assert.doesNotMatch(client.session.sendCalls[1].prompt, /Change the destination to B\./);
+      assert.deepEqual(client.session.sendCalls[1].attachments, []);
       await manager.execute(finished, headers);
-      assert.equal(client.session.sendCalls.length, 3);
+      assert.equal(client.session.sendCalls.length, 2);
 
       const nextImage = { ...image, source: { ...image.source, data: "BQYHCAk=" } };
       const changed = results("Agent published more detail.", "Now use destination C.", nextImage);
       await manager.execute(changed, headers);
-      assert.match(client.session.sendCalls[3].prompt, /Agent published more detail\./);
-      if (siblingKind.includes("text")) assert.match(client.session.sendCalls[3].prompt, /Now use destination C\./);
-      if (siblingKind.includes("image")) assert.equal(client.session.sendCalls[3].attachments[0].data, nextImage.source.data);
+      assert.match(client.session.sendCalls[2].prompt, /Agent published more detail\./);
+      if (siblingKind.includes("text")) assert.match(client.session.sendCalls[2].prompt, /Now use destination C\./);
+      if (siblingKind.includes("image")) assert.equal(client.session.sendCalls[2].attachments[0].data, nextImage.source.data);
       await manager.execute(changed, headers);
-      assert.equal(client.session.sendCalls.length, 4);
+      assert.equal(client.session.sendCalls.length, 3);
       assert.equal(client.session.handledToolCalls.length, 1);
     } finally {
       await manager.stop();
@@ -2733,11 +2893,7 @@ for (const withInstruction of [false, true]) {
     };
     const attempts = new Map();
 
-    client.session.sendImplementation = async ({ prompt, mode }) => {
-      if (mode === "enqueue") {
-        assert.equal(prompt, "Change the destination to B.");
-        return;
-      }
+    client.session.sendImplementation = async () => {
       client.session.emit("assistant.message", {
         content: "",
         toolRequests: [
@@ -2800,7 +2956,16 @@ for (const withInstruction of [false, true]) {
       assert.equal(retry.message.content, "done");
       assert.equal(attempts.get("request-1"), 1);
       assert.equal(attempts.get("request-2"), 2);
-      assert.equal(client.session.sendCalls.filter((call) => call.mode === "enqueue").length, withInstruction ? 1 : 0);
+      assert.equal(client.session.sendCalls.length, 1);
+      // The last result carries the instruction, so its rejected first
+      // submission leaves the instruction undelivered and the retry resends it.
+      const submitted = (requestId) => client.session.handledToolCalls
+        .filter((call) => call.requestId === requestId)
+        .map((call) => call.result.textResultForLlm);
+      assert.deepEqual(submitted("request-1"), ["one"]);
+      assert.deepEqual(submitted("request-2"), Array(2).fill(
+        withInstruction ? "two\n\nChange the destination to B." : "two",
+      ));
     } finally {
       await manager.stop();
     }

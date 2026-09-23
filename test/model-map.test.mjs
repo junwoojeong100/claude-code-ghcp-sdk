@@ -38,9 +38,10 @@ const availableIds = [
 
 const PRIMARY_GPT_MODELS = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
 const RETAINED_GPT_56_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const MILLION_CLAUDE_MODELS = ["claude-opus-5.5", "claude-sonnet-5"];
 
-test("GPT-6 primaries and retained GPT-5.6 models opt into SDK long context using only advertised numeric limits", () => {
-  for (const id of [...PRIMARY_GPT_MODELS, ...RETAINED_GPT_56_MODELS]) {
+test("1M primaries and retained GPT-5.6 models opt into SDK long context using only advertised numeric limits", () => {
+  for (const id of [...PRIMARY_GPT_MODELS, ...RETAINED_GPT_56_MODELS, ...MILLION_CLAUDE_MODELS]) {
     const limits = { max_context_window_tokens: 1178000, max_prompt_tokens: 1050000, max_output_tokens: 128000 };
     assert.deepEqual(sdkContextOptionsFor({ id, capabilities: { limits: { ...limits, unrelated: "not-forwarded" } } }), {
       contextTier: "long_context", modelCapabilities: { limits },
@@ -50,9 +51,8 @@ test("GPT-6 primaries and retained GPT-5.6 models opt into SDK long context usin
     { id: "gpt-6-astra" },
     { id: "gpt-6-astra", capabilities: { limits: { max_context_window_tokens: 200000 } } },
     { id: "claude-haiku-4.5", capabilities: { limits: { max_context_window_tokens: 200000 } } },
-    // Claude models keep the SDK default tier that matches Claude Code's native window.
-    { id: "claude-opus-5.5", capabilities: { limits: { max_context_window_tokens: 1000000 } } },
-    { id: "claude-sonnet-5", capabilities: { limits: { max_context_window_tokens: 1000000 } } },
+    // A 1M Claude model stays on the default tier when its catalogue entry reports less.
+    { id: "claude-opus-5.5", capabilities: { limits: { max_context_window_tokens: 200000 } } },
     { id: "unverified-model", capabilities: { limits: { max_context_window_tokens: 1000000 } } },
   ]) assert.deepEqual(sdkContextOptionsFor(model), {});
   assert.deepEqual(sdkContextOptionsFor({ id: "gpt-6-astra", capabilities: { limits: {
@@ -121,8 +121,8 @@ test("maps Claude Opus 5.5 between Claude Code and Copilot version syntax", () =
     assert.equal(copilotModelForFrontend(requested), "claude-opus-5.5");
     assert.equal(resolveCopilotModel({ requested, availableIds }), "claude-opus-5.5");
   }
-  assert.equal(contextWindowTokensFor("claude-opus-5.5"), null);
-  assert.equal(launchModelFor("claude-opus-5.5"), "claude-opus-5-5");
+  assert.equal(contextWindowTokensFor("claude-opus-5.5"), 1_000_000);
+  assert.equal(launchModelFor("claude-opus-5.5"), "claude-opus-5-5[1m]");
 });
 
 test("resolves Claude family aliases", () => {
@@ -220,7 +220,8 @@ test("lists every visible Copilot model once", () => {
   );
   assert.equal(contextWindowTokensFor("gpt-6-sol"), 1_000_000);
   assert.equal(contextWindowTokensFor("github-copilot/claude-gpt-6-luna"), 1_000_000);
-  assert.equal(contextWindowTokensFor("claude-sonnet-5"), null);
+  assert.equal(contextWindowTokensFor("claude-sonnet-5"), 1_000_000);
+  assert.equal(contextWindowTokensFor("claude-haiku-4.5"), null);
 });
 
 test("gateway discovery includes only primary models without duplicating native rows", () => {
@@ -352,7 +353,7 @@ test("the native picker replaces all other lineups with the six verified models"
     "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
   ]);
   assert.deepEqual(picker.options.map((option) => option.model), [
-    "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5",
+    "claude-opus-5-5[1m]", "claude-sonnet-5[1m]", "claude-haiku-4-5",
     "github-copilot/claude-gpt-6-astra[1m]",
     "github-copilot/claude-gpt-6-sol[1m]",
     "github-copilot/claude-gpt-6-luna[1m]",
@@ -373,9 +374,9 @@ test("launch context hints stay with their models rather than a global window ov
     assert.equal(launchModelFor(value), value);
     assert.equal(copilotModelForFrontend(value), model);
   }
-  assert.equal(launchModelFor("claude-opus-5.5"), "claude-opus-5-5");
+  assert.equal(launchModelFor("claude-opus-5.5"), "claude-opus-5-5[1m]");
   assert.equal(launchModelFor("claude-haiku-4.5"), "claude-haiku-4-5");
-  assert.equal(launchModelFor("claude-sonnet-5"), "claude-sonnet-5");
+  assert.equal(launchModelFor("claude-sonnet-5"), "claude-sonnet-5[1m]");
   assert.equal(launchModelFor("gpt-5-mini"), "gpt-5-mini");
 });
 

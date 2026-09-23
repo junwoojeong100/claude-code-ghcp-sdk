@@ -125,8 +125,10 @@ SDK 1.0.14는 플랫폼별 Copilot runtime(1.0.85)을 포함하며, 더 이상
 ```
 
 Copilot catalog의 한도는 GPT-6 Astra 1,050,000 토큰, GPT-6 Sol과 Luna
-1,000,000 토큰(그중 prompt 872,000 토큰)입니다. 런처는 이 세 모델에 프로세스 전체
-한도 재정의 대신 Claude Code의 **모델별 1M 컨텍스트 힌트**를 사용합니다. 모델을
+1,000,000 토큰(그중 prompt 872,000 토큰)입니다. 런처는 이 세 모델과 Claude Opus
+5.5, Claude Sonnet 5에 프로세스 전체 한도 재정의 대신 Claude Code의 **모델별 1M
+컨텍스트 힌트**를 사용합니다. Gateway 뒤에서 Claude Code는 힌트가 없는
+`claude-opus-5-5`나 `claude-sonnet-5`를 200K로 잡습니다. 모델을
 바꿔도 시작할 때의 한도가 다른 모델에 남지 않으며, native의 더 작은 한도와 자동
 압축은 유지됩니다.
 
@@ -139,17 +141,16 @@ Direct SDK의 `/model` 피커는 **아래 주요 6개 모델**로 고정되며, 
 
 | 피커 행 | Copilot 모델 | Claude Code window |
 |---|---|---|
-| GitHub Copilot · Claude Opus 5.5 | `claude-opus-5.5` | 200K (native gateway window) |
-| GitHub Copilot · Claude Sonnet 5 | `claude-sonnet-5` | 200K (native gateway window) |
+| GitHub Copilot · Claude Opus 5.5 | `claude-opus-5.5` | 1M (모델별 힌트) |
+| GitHub Copilot · Claude Sonnet 5 | `claude-sonnet-5` | 1M (모델별 힌트) |
 | GitHub Copilot · Claude Haiku 4.5 | `claude-haiku-4.5` | 200K (native gateway window) |
 | GitHub Copilot · GPT-6 Astra | `gpt-6-astra` | 1M (모델별 힌트) |
 | GitHub Copilot · GPT-6 Sol | `gpt-6-sol` | 1M (모델별 힌트) |
 | GitHub Copilot · GPT-6 Luna | `gpt-6-luna` | 1M (모델별 힌트) |
 
-Claude Code 2.1.280에서 `Default` 행은 `[1m]` suffix가 붙은 Opus 5.5로 해석됩니다.
-Bridge는 Claude 모델을 SDK 기본 context tier로 유지하므로, Claude Code의 예산을
-backend와 맞추려면 명시적인 Opus 5.5 행을 선택합니다.
-[긴 대화와 기존 세션](#긴-대화와-기존-세션)을 참고합니다.
+Claude Code 2.1.280에서 `Default` 행은 Opus 5.5 행과 같은 ID인
+`claude-opus-5-5[1m]`로 해석되므로, 두 행은 같은 1M 예산과 같은 long-context
+backend를 씁니다. [긴 대화와 기존 세션](#긴-대화와-기존-세션)을 참고합니다.
 
 현재 전체 기능 검증 대상은 정확히 `claude-opus-5.5`, `claude-sonnet-5`,
 `claude-haiku-4.5`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`의 6종입니다. 새
@@ -241,19 +242,18 @@ SDK session 생성·재개·effort 변경에는 `SESSION_OPERATION_TIMEOUT_MS`�
 5분 경과만으로 끊지 않습니다. 준비 단계 무한 대기는 내용을 포함하지 않는
 `bridge.session_operation_failed` 진단으로 실패를 알립니다.
 
-주요 GPT-6 모델(과 명시적으로 선택한 GPT-5.6 모델)은 SDK의 long-context tier를
-명시하고 조회한 catalog의 숫자 한도를 함께 전달합니다. SDK 기본 tier는 표시된 모델
-window보다 작을 수 있습니다. 앞선 야간 실측에서 Astra의 입력 한도는 기본 272K였지만,
-long tier와 catalog capabilities를 적용하자 1.05M이었습니다. 실제 한도는
-`bridge.context_budget`으로 기록하며, 6개 모델 실행에서는 Astra 1,050,000,
-Sol과 Luna 872,000을 기록했습니다. Sol과 Luna는 Claude Code가 잡는 1M 예산보다
-적은 prompt 토큰을 받으므로, 대화가 872K를 넘으면 Claude Code의 약 967K 자동 압축
-기준보다 먼저 아래 overflow 경로를 탑니다. Claude 행은 SDK 기본 tier(Opus 5.5와
-Sonnet 5 200,000, Haiku 4.5 136,000)를 유지하며 Claude Code의 native gateway
-window 200K 안에 있습니다. Haiku의 한도는 Claude Code의 167K 자동 압축 기준보다
-낮아 같은 overflow 경로를 탈 수 있습니다. 유지되는 `Default` 행
-(`claude-opus-5-5[1m]`)은 Claude Code에서 1M을 예산으로 잡지만 Opus 5.5의 기본
-tier는 200,000이므로 역시 이 경로에 의존합니다.
+주요 GPT-6 모델, Claude Opus 5.5, Claude Sonnet 5(와 명시적으로 선택한 GPT-5.6
+모델)는 SDK의 long-context tier를 명시하고 조회한 catalog의 숫자 한도를 함께
+전달합니다. SDK 기본 tier는 표시된 모델 window보다 훨씬 작을 수 있습니다. 앞선
+야간 실측에서 Astra의 입력 한도는 기본 272K였지만 long tier와 catalog
+capabilities를 적용하자 1.05M이었고, 기본 tier는 Opus 5.5와 Sonnet 5를 200,000으로
+제한합니다. 실제 한도는 `bridge.context_budget`으로 기록하며, Astra 1,050,000,
+Sonnet 5 936,000, Opus 5.5·Sol·Luna 872,000입니다. Astra를 제외한 모델은 Claude
+Code가 잡는 1M 예산보다 적은 prompt 토큰을 받으므로, 대화가 그 한도를 넘으면
+Claude Code의 약 967K 자동 압축 기준보다 먼저 아래 overflow 경로를 탑니다. Haiku
+4.5는 SDK 기본 tier(136,000)를 유지하며 Claude Code의 native gateway window 200K
+안에 있습니다. 이 한도는 Claude Code의 167K 자동 압축 기준보다 낮아 같은 overflow
+경로를 탈 수 있습니다.
 
 SDK의 자체 압축·잘라내기로 문맥이 조용히 유실되지 않도록 해당 상태를 무효화하고,
 Claude Code가 원본 transcript를 압축할 수 있는 context-limit 오류를 반환합니다.
@@ -421,36 +421,47 @@ VS Code나 JetBrains의 통합 터미널에서 실행 스크립트를 직접 실
 **엄격한 판정: PASS — 단일 전체 실행에서 66/66(100%) 통과.** 주요 매트릭스는 이제
 Claude Opus 5.5, Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol,
 GPT-6 Luna이며, 모두 같은 11개 시나리오를 받습니다. 랩탑에 설치된 실제 Claude Code
-**2.1.280**으로 모든 슬롯을 bridge와 Copilot SDK를 거쳐 실행했습니다. 사용하지 않는
-MCP server를 Copilot runtime이 띄우지 않게 한 commit에서 수행한 최종 실행은
-**740초(12분 20초)**가 걸렸으며 실패·blocked·누락·중복·예상 밖 슬롯이 없고 코드와
-사용자 설정도 보존되었습니다. 이는 선택한 매트릭스의 통과율이며, 모든 기능의 완전한
-커버리지나 이후 실행의 성공을 보장하는 수치가 아닙니다.
+**2.1.280**으로 모든 슬롯을 bridge와 Copilot SDK를 거쳐 실행했습니다. 최종 실행은
+commit `bed30ce`에서 수행했습니다. 이 commit은 Opus 5.5와 Sonnet 5에 1M Copilot 창을
+주고, 사용하지 않는 MCP server를 Copilot runtime이 띄우지 않게 하며, 하네스 수정 두
+개를 담고 있습니다. 실행은 **479초(7분 59초)**가 걸렸으며 실패·blocked·누락·중복·예상
+밖 슬롯이 없고 코드와 사용자 설정도 보존되었습니다. 이는 선택한 매트릭스의
+통과율이며, 모든 기능의 완전한 커버리지나 이후 실행의 성공을 보장하는 수치가
+아닙니다.
 
 - **고정된 피커:** Claude Code의 native `supportedModels()` control 요청은 `Default`와
   위 6개 행만 순서대로 반환했습니다. 각 행으로의 `setModel()`은 bridge에 요청을
-  보내지 않았고(bridge 로그에는 시작 관련 기록만 있음), `getContextUsage()`는 Claude 세
-  행에서 200K, GPT-6 세 행에서 1M, Haiku로 되돌아오면 다시 200K를 보고했습니다.
-  `Default`는 `claude-opus-5-5[1m]`(1M)으로 해석되었습니다. 기록:
-  `.verify-runs/picker-six-2026-09-23T00-51-18Z/`.
+  보내지 않았고, `getContextUsage()`는 Opus 5.5, Sonnet 5, GPT-6 세 행에서 1M(자동
+  압축 967K), Haiku 4.5에서 200K(167K)를 보고했습니다. `Default`와 `opus`·`sonnet`
+  별칭은 각각 `claude-opus-5-5[1m]`, `claude-sonnet-5[1m]`(1M)으로 해석되었습니다.
+  피커 밖 ID를 직접 입력하면 요청 한 번으로 확인합니다. Opus 4.8·4.7은 1M으로
+  확인되었고, Opus 5는 이번 측정에서 모델이 답하기 전에 Claude Code가 5초 만에 확인을
+  포기했습니다(앞선 측정에서는 확인됨). 기록:
+  `.verify-runs/picker-1m-2026-09-23T09-32-55Z/`.
 - **Runtime MCP server:** 최종 실행에서 보존된 bridge 로그 72개(슬롯별 bridge 66개와
   v11 daemon 6개)가 모두 server 5개에 대한 `bridge.mcp_servers_disabled`를 기록합니다.
   v11의 foreground 실행 6회는 임시 bridge를 쓰며, 런처가 종료 시 그 로그를 지웁니다.
-  `ps` sampler는 최대 9개 runtime이 동시에 도는 12분 동안 354회 표본을 수집했으며, 그
-  아래에서 MCP server 프로세스를 한 번도 보지 못했습니다. 자식 프로세스는 잠깐 뜬 `git`
+  앞선 전체 실행 `2026-09-23T00-38-10-470Z`에서는 `ps` sampler가 최대 9개 runtime이
+  동시에 도는 12분 동안 354회 표본을 수집했으며, 그 아래에서 MCP server 프로세스를
+  한 번도 보지 못했습니다. 자식 프로세스는 잠깐 뜬 `git`
   호출과 종료 중인 프로세스(`<defunct>`, `(copilot-runtime)`)뿐이었습니다. 변경
   전에는 열린 session 하나가 azmcp와 Playwright MCP node server 2개(~330 MB)를 띄웠고,
   두 session을 동시에 처리하는 bridge에는 이런 자식 프로세스가 6개 있었습니다. 두 cold
   첫 요청의 동시 처리 시간 중앙값은 8.08초에서 3.95초로 줄었습니다. 기록:
   `.verify-runs/runtime-sampler-2026-09-23T00-38-10Z/`,
   `.verify-runs/mcp-check-2026-09-23T00-32-13Z/`.
-- **SDK 예산**(`bridge.context_budget`): 기본 tier에서 Opus 5.5·Sonnet 5 200,000,
-  Haiku 4.5 136,000; long-context tier에서 Astra 1,050,000, Sol·Luna 872,000.
-- **오프라인:** `npm test` **390/390 통과**, 실패·취소·건너뜀 없음.
-- **원시 산출물 별도 대조:** 기록된 검사 **1,146개** 중 실패 0개, headless 단계
-  transcript **90개**에 담긴 result envelope 95개가 모두 양수 입력 usage와 예상한
-  응답 모델을 기록했습니다. 응답 없는 `tool_use`가 없고, 6개 런처 슬롯의
-  명령·daemon 근거도 모두 남아 있습니다.
+- **SDK 예산**(`bridge.context_budget`): long-context tier에서 Astra 1,050,000,
+  Sonnet 5 936,000, Opus 5.5·Sol·Luna 872,000; 기본 tier에서 Haiku 4.5 136,000.
+  별도로 이 코드의 bridge를 거쳐 Opus 5.5에 보낸 493,805 토큰 프롬프트도 정답을
+  받았습니다. 변경 전에는 기본 tier가 Opus 5.5와 Sonnet 5를 200,000으로 제한했습니다.
+- **오프라인:** `npm test` **394/394 통과**, 실패·취소·건너뜀 없음.
+- **원시 산출물 별도 대조**(`audit.json`): 기록된 검사 **1,146개** 중 실패 0개,
+  headless 단계 transcript **90개**에 담긴 result envelope 95개가 모두 양수 입력
+  usage와 예상한 응답 모델을 기록했습니다. 응답 없는 `tool_use`가 없고, 6개 런처
+  슬롯의 명령·daemon 근거도 모두 남아 있습니다. GPT-6 Astra의 v01 envelope에는
+  `claude-opus-5-5[1m]`도 함께 나옵니다. Claude Code 내장 Explore 서브에이전트가
+  Opus 별칭으로 돌기 때문이며, 앞선 통과 실행들에서도 같았습니다. 미디어 토큰 검사
+  12개는 모두 토큰을 정확히 읽었습니다.
 - **최종 실행 이전:** 첫 6개 모델 전체 실행은 64/66으로 NOT GREEN이었습니다.
   Claude Opus 5.5가 v02와 v08을 올바르게 처리했지만 Edit·Write 대신 셸
   명령(`sed -i`, redirect)을 사용해, Edit 정확 일치 검사와 Write|Edit PreToolUse
@@ -462,6 +473,21 @@ MCP server를 Copilot runtime이 띄우지 않게 한 commit에서 수행한 최
   624초에 66/66 통과했습니다. 이후 runtime MCP 변경은 해당 commit에서 새 전체 실행이
   필요했고, 다른 저장소의 Copilot runtime 안정성 작업이 같은 랩탑에 부하를 주는
   동안(load average ≈ 8.5) 실행되어 더 오래 걸렸습니다.
+- **1M 창:** 변경을 커밋하기 전에 더 무거운 6 × 2 설정과 timeout 배율 1로 돌린 첫
+  실행은 64/66이었습니다. GPT-6 Luna의 v02 plan 턴이 90초에 blocked되었고, Claude
+  Haiku 4.5가 `IMGTAG84370D`의 빗금 친 0을 `Ø`로 적었습니다. 이어서 깨끗한
+  worktree에서 시작한 첫 시도(`2026-09-23T08-22-51-615Z`)는 모든 슬롯이 blocked되어
+  중단했습니다. 두 런처 resolver가 자기 체크아웃의 wrapper만 알아봐서, PATH에 있는
+  메인 체크아웃의 `bin/claude`를 골랐기 때문입니다. PATH에서 저장소를 빼고 커밋한
+  변경을 돌린 실행은 GPT-6 Luna가 `IMGTAGA3F755`의 F를 E로 읽어 65/66이었습니다.
+  같은 글꼴로 다시 그려 보면 E와 F는 뚜렷하게 구분됩니다. v05 첨부 검사는 bridge가
+  PDF나 이미지 블록을 떨어뜨리는 경우를 잡기 위한 것이고, 첨부를 받지 못한 모델이
+  무작위 16진수 여섯 글자 중 다섯을 제자리에 맞힐 수는 없습니다(16^6개 중 91개).
+  그래서 이제 한 글자 오독을 허용하고 `Ø`를 `0`으로 읽으며, 허용한 오독은 검사
+  상세에 남깁니다. 기록된 v05 답변 전체에 다시 적용하면 이전에 통과한 292건은 그대로
+  통과하고, 새로 통과하는 11건은 모두 한 글자 오독입니다. resolver는 이제 어느
+  체크아웃의 런처든 건너뛰며, 최종 실행은 PATH를 그대로 둔 채
+  `~/.local/bin/claude`를 골랐습니다.
 
 전체 실행 이력은 각 실행 당시의 구현과 모델 catalog를 기준으로 구분해 보존합니다.
 
@@ -469,7 +495,10 @@ MCP server를 Copilot runtime이 띄우지 않게 한 commit에서 수행한 최
 |---|---|---|---|---|---|---|
 | 6개 모델 첫 실행 — NOT GREEN | `2026-09-22T23-29-13-171Z` | 6 × 11 | 64 / 2 / 0 / 0 | 3 × 2 | 778초 | 하네스 밖 대화형 세션이 변경 |
 | 6개 모델, runtime MCP 변경 전 — PASS | `2026-09-22T23-45-15-077Z` | 6 × 11 | 66 / 0 / 0 / 0 | 3 × 2 | 624초 | 보존 |
-| 6개 모델 최종, runtime MCP server 비활성화 — PASS | `2026-09-23T00-38-10-470Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **740초** | **보존** |
+| 6개 모델, runtime MCP server 비활성화 — PASS | `2026-09-23T00-38-10-470Z` | 6 × 11 | 66 / 0 / 0 / 0 | 3 × 2 | 740초 | 보존 |
+| 6개 모델, 커밋 전 1M 창 — NOT GREEN | `2026-09-23T07-29-33-556Z` | 6 × 11 | 64 / 1 / 1 / 0 | 6 × 2 | 487초 | 보존 |
+| 6개 모델, 1M 창(`44fb772`) — NOT GREEN | `2026-09-23T08-28-09-543Z` | 6 × 11 | 65 / 1 / 0 / 0 | 3 × 2 | 474초 | 보존 |
+| 6개 모델 최종, 1M 창과 하네스 수정 — PASS | `2026-09-23T09-11-26-241Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **479초** | **보존** |
 | 7개 모델: 이전 마무리 1차 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 456초 | 변경됨; 변경 주체·원인 미확인 |
 | 7개 모델: 이전 마무리 2차 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 7 × 11 | 74 / 2 / 1 / 0 | 7 × 2 | 863초 | 보존 |
 | 7개 모델: 새 기준 실행 — NOT GREEN | `2026-09-22T00-01-29-757Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 943초 | 보존 |
@@ -479,14 +508,15 @@ MCP server를 Copilot runtime이 띄우지 않게 한 commit에서 수행한 최
 | 7개 모델: 컨텍스트·스트리밍 복구 — PASS | `2026-09-22T12-29-58-559Z` | 7 × 11 | 77 / 0 / 0 / 0 | 3 × 2 | 812초 | 보존 |
 
 최종 실행은 commit
-`1df3aa4982ce2eb688a7d48f64aeab61e1499e22`(clean 작업 트리)에서 시작·종료했고,
+`bed30cebc49b155b09c2795618b7e28ad044aae5`(clean 작업 트리)에서 시작·종료했고,
 41개 파일의 `verification-code-v1` SHA-256 지문도 일치합니다.
-`5dad75f80408a699feac9f2221d6edcea848a7d9265e0a9e25cd170277c9cd7b`.
+`1fa37d3abcd284e9d1481fafef02c211d976e63fabeaa8d64d4879a159fb5bc7`.
 생성된 영문·한글 검증 문서는 모두 **이 최종 전체 실행만** 사용합니다.
-git 무시 대상 `.verify-runs/2026-09-23T00-38-10-470Z/`에 `summary.json`,
+git 무시 대상 `.verify-runs/2026-09-23T09-11-26-241Z/`에 `summary.json`,
 `slots.jsonl`, `console.log`, `audit.json`, 단계별 transcript와 런처 로그를
-보존했습니다. 앞선 6개 모델 실행들과 부분 재실행(`2026-09-22T23-44-23-074Z`)은 별도
-기록으로 남기며, 그 셀을 최종 66/66에 보태지 않았습니다.
+보존했습니다. 앞선 6개 모델 실행들과 부분 재실행(`2026-09-22T23-44-23-074Z`,
+`2026-09-23T07-41-07-507Z`)은 별도 기록으로 남기며, 그 셀을 최종 66/66에 보태지
+않았습니다.
 
 ### 이전 7개 모델 기록 (2026-09-22)
 

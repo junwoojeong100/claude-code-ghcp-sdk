@@ -1,8 +1,9 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
   AnthropicSseStream,
+  anthropicStopReason,
   estimateTokens,
   startSse,
   writeJsonMessage,
@@ -14,8 +15,18 @@ import {
   ModelUnavailableError,
   ReasoningEffortUnavailableError,
 } from "./model-map.mjs";
-import { BridgeRequestError } from "./request-policy.mjs";
+import {
+  BridgeRequestError,
+  DEGRADED_CONTROLS,
+  IGNORED_FIELDS,
+} from "./request-policy.mjs";
+import { DEFAULT_RETIRED_IDLE_MS, Retirement } from "./retirement.mjs";
 import { SessionManager } from "./session-manager.mjs";
+import {
+  parseTestFaults,
+  testFaultError,
+  UpstreamError,
+} from "./upstream-errors.mjs";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MESSAGES_PATH = "/v1/messages";
@@ -36,6 +47,7 @@ function readPositiveIntegerEnv(name, fallback) {
 const host = process.env.HOST || "127.0.0.1";
 const port = readPositiveIntegerEnv("PORT", 4142);
 const apiKey = process.env.BRIDGE_API_KEY;
+const allowUnauthenticated = process.env.BRIDGE_ALLOW_UNAUTHENTICATED === "1";
 const instanceId = process.env.BRIDGE_INSTANCE_ID || null;
 const preferredModel = process.env.GHCP_MODEL || "claude-sonnet-5";
 const copilotHome = resolveCopilotHome(process.env.COPILOT_HOME);
@@ -68,7 +80,8 @@ const sessionOperationTimeoutMs = readPositiveIntegerEnv(
 );
 const turnTimeoutMs = readPositiveIntegerEnv("TURN_IDLE_TIMEOUT_MS", 300_000);
 const maxTurnDurationMs = readPositiveIntegerEnv("TURN_MAX_DURATION_MS", 30 * 60_000);
-for (const [name, value] of [["TURN_IDLE_TIMEOUT_MS", turnTimeoutMs], ["TURN_MAX_DURATION_MS", maxTurnDurationMs]]) {
+const retiredIdleMs = readPositiveIntegerEnv("RETIRED_IDLE_MS", DEFAULT_RETIRED_IDLE_MS);
+for (const [name, value] of [["TURN_IDLE_TIMEOUT_MS", turnTimeoutMs], ["TURN_MAX_DURATION_MS", maxTurnDurationMs], ["RETIRED_IDLE_MS", retiredIdleMs]]) {
   if (value > 2_147_483_647) throw new Error(`${name} exceeds the supported timer range.`);
 }
 
@@ -81,8 +94,34 @@ if (
 if (port > 65_535) {
   throw new Error("PORT must be between 1 and 65535.");
 }
-if (!apiKey && process.env.BRIDGE_ALLOW_UNAUTHENTICATED !== "1") {
+if (!apiKey && !allowUnauthenticated) {
   throw new Error("BRIDGE_API_KEY is required.");
+}
+// Verification seam, not a feature. BRIDGE_TEST_FAULTS="rate_limit:1,overloaded:1"
+// fails that many agent turns of each kind, in the listed order, before they
+// reach Copilot. Only requests that declare tools count: Claude Code's title
+// and summary side calls declare none. Each failure is the error a real
+// upstream failure of that kind raises, so the status mapping below runs as
+// it would in production. Unset or empty, nothing changes.
+const testFaults = parseTestFaults(process.env.BRIDGE_TEST_FAULTS);
+
+// One JSON object per stderr line, whatever LOG_LEVEL says. A verification
+// harness parses these, so event and field names are a contract, and none
+// may carry prompt or output content.
+function emitDiagnostic(event) {
+  console.error(JSON.stringify(event));
+}
+
+function reportRequestFailure(requestId, { status, type, retryAfterSeconds = null }, { streaming = false, headersSent = false } = {}) {
+  emitDiagnostic({
+    event: "bridge.request_failed",
+    requestId,
+    status,
+    errorType: type,
+    retryAfterSeconds,
+    streaming,
+    headersSent,
+  });
 }
 
 const manager = new SessionManager({
@@ -93,9 +132,7 @@ const manager = new SessionManager({
   maxReplayBytes,
   maxStates,
   maxToolResults,
-  onDiagnostic: (event) => {
-    console.error(JSON.stringify(event));
-  },
+  onDiagnostic: emitDiagnostic,
   pendingToolWaitMs,
   sessionOperationTimeoutMs,
   turnTimeoutMs,
@@ -104,26 +141,70 @@ const manager = new SessionManager({
 });
 await manager.start();
 
-function writeJson(res, status, value) {
+// src/bridge-daemon.mjs names the lease directory for the bridges it spawns;
+// an ephemeral bridge has none and is never retired.
+const retirement = new Retirement({
+  instanceId,
+  leaseDir: process.env.BRIDGE_LEASE_DIR || null,
+  idleMs: retiredIdleMs,
+});
+
+function writeJson(res, status, value, headers = {}) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
+    ...headers,
     "content-type": "application/json",
     "content-length": Buffer.byteLength(body),
   });
   res.end(body);
 }
 
-function writeApiError(res, status, type, message) {
+function writeApiError(res, status, type, message, headers) {
   writeJson(res, status, {
     type: "error",
     error: { type, message },
-  });
+  }, headers);
+}
+
+// Comparing fixed-length digests keeps the time taken independent of where,
+// or whether, a presented credential first differs from the key.
+const apiKeyDigest = apiKey ? createHash("sha256").update(apiKey).digest() : null;
+
+function credentialMatches(value) {
+  return typeof value === "string" &&
+    timingSafeEqual(createHash("sha256").update(value).digest(), apiKeyDigest);
 }
 
 function isAuthenticated(req) {
-  if (!apiKey) return true;
+  // Startup refuses an empty key unless BRIDGE_ALLOW_UNAUTHENTICATED=1.
+  if (!apiKey) return allowUnauthenticated;
   const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "");
-  return bearer === apiKey || req.headers["x-api-key"] === apiKey;
+  // Check both headers every time, so the timing does not say which one held
+  // the key.
+  const matches = [credentialMatches(bearer), credentialMatches(req.headers["x-api-key"])];
+  return matches.includes(true);
+}
+
+// Claude Code retries 429 rate_limit_error and 529 overloaded_error, so those
+// keep the status an UpstreamError carries. Everything else is 400 when the
+// request itself is at fault and 500 otherwise.
+function errorResponse(error) {
+  if (error instanceof UpstreamError) {
+    return {
+      status: error.status,
+      type: error.type,
+      retryAfterSeconds: error.retryAfterSeconds == null
+        ? null
+        : Math.max(0, Math.ceil(error.retryAfterSeconds)),
+    };
+  }
+  const invalidRequest =
+    error instanceof BridgeRequestError ||
+    error instanceof ModelUnavailableError ||
+    error instanceof ReasoningEffortUnavailableError;
+  return invalidRequest
+    ? { status: 400, type: "invalid_request_error", retryAfterSeconds: null }
+    : { status: 500, type: "api_error", retryAfterSeconds: null };
 }
 
 async function readBody(req) {
@@ -194,15 +275,15 @@ const server = http.createServer(async (req, res) => {
       capabilities: {
         actualUsageAfterCall: true,
         backgroundBridge: true,
+        // src/bridge-daemon.mjs only retires a bridge that says it can drain;
+        // an older one would take SIGUSR2's default action and die mid-request.
+        retirement: true,
         mcpToolSearch: "full-schema-fallback",
         structuredOutput: "claude-code-validator",
         tokenCounting: "estimated-preflight",
-        unsupportedNativeControls: [
-          "temperature",
-          "top_p",
-          "max_tokens",
-          "stop_sequences",
-        ],
+        unsupportedNativeControls: DEGRADED_CONTROLS,
+        // Accepted and ignored; logged as ignoredFields beside the controls.
+        ignoredRequestFields: IGNORED_FIELDS,
       },
       ok: true,
       instanceId,
@@ -212,6 +293,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (!isAuthenticated(req)) {
+    if (requestPath === MESSAGES_PATH) {
+      reportRequestFailure(requestId, { status: 401, type: "authentication_error" });
+    }
     writeApiError(
       res,
       401,
@@ -253,6 +337,7 @@ const server = http.createServer(async (req, res) => {
   res.once("close", abortRequest);
   let keepAlive;
   let streaming = false;
+  retirement.begin();
 
   try {
     if (req.aborted || res.destroyed) abortRequest();
@@ -263,6 +348,9 @@ const server = http.createServer(async (req, res) => {
       body = await readBody(req);
       validateBody(body);
     } catch (error) {
+      if (requestPath === MESSAGES_PATH) {
+        reportRequestFailure(requestId, { status: 400, type: "invalid_request_error" });
+      }
       if (!res.destroyed) writeApiError(res, 400, "invalid_request_error", error.message);
       return;
     }
@@ -294,6 +382,22 @@ const server = http.createServer(async (req, res) => {
       return stream;
     };
 
+    const fault = body.tools?.length
+      ? testFaults.find((candidate) => candidate.remaining > 0)
+      : null;
+    if (fault) {
+      fault.remaining -= 1;
+      emitDiagnostic({
+        event: "bridge.test_fault_injected",
+        requestId,
+        kind: fault.kind,
+        remaining: fault.remaining,
+      });
+      throw fault.kind === "context_limit"
+        ? manager.contextLimitErrorFor(req.headers)
+        : testFaultError(fault.kind);
+    }
+
     const result = await manager.execute(body, req.headers, {
       requestId,
       responseId,
@@ -313,7 +417,31 @@ const server = http.createServer(async (req, res) => {
 
     if (streaming) ensureStream(result.model).finish(response);
     else writeJsonMessage(res, response);
+    emitDiagnostic({
+      event: "bridge.turn_completed",
+      requestId,
+      responseId,
+      requestedModel: body.model ?? null,
+      model: result.model,
+      servedModels: result.servedModels ?? [],
+      claudeAgent: req.headers["x-claude-code-agent-id"] ? "subagent" : "root",
+      inputTokens: response.inputTokens,
+      outputTokens: result.usage?.outputTokens ?? result.message.outputTokens ?? 0,
+      usageReported: result.usage?.inputTokens != null,
+      stopReason: anthropicStopReason(result.message, result.usage),
+      // anthropicContent writes one tool_use block per surviving request.
+      toolUses: result.message.toolRequests?.length ?? 0,
+    });
   } catch (error) {
+    const failure = error.name === "AbortError"
+      ? { status: 499, type: "client_closed_request", retryAfterSeconds: null }
+      : errorResponse(error);
+    if (requestPath === MESSAGES_PATH) {
+      reportRequestFailure(requestId, failure, {
+        streaming,
+        headersSent: Boolean(res.headersSent),
+      });
+    }
     if (error.name === "AbortError") {
       if (!res.destroyed && !res.headersSent) {
         writeApiError(
@@ -327,21 +455,21 @@ const server = http.createServer(async (req, res) => {
     }
     console.error(`[${requestId}] ${error.name}: ${error.message}`);
     if (res.destroyed) return;
-    const invalidRequest =
-      error instanceof BridgeRequestError ||
-      error instanceof ModelUnavailableError ||
-      error instanceof ReasoningEffortUnavailableError;
     if (streaming && res.headersSent) {
-      writeSseError(res, error, invalidRequest ? "invalid_request_error" : "api_error");
+      writeSseError(res, error, failure.type);
       return;
     }
     writeApiError(
       res,
-      invalidRequest ? 400 : 500,
-      invalidRequest ? "invalid_request_error" : "api_error",
+      failure.status,
+      failure.type,
       error.message,
+      failure.retryAfterSeconds == null
+        ? undefined
+        : { "retry-after": String(failure.retryAfterSeconds) },
     );
   } finally {
+    retirement.end();
     clearInterval(keepAlive);
     req.removeListener("aborted", abortRequest);
     res.removeListener("close", abortRequest);
@@ -367,3 +495,22 @@ async function shutdown() {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Sent by src/bridge-daemon.mjs when a newer persistent bridge replaces this
+// one. The sessions already holding this bridge's port and token keep being
+// served; see src/retirement.mjs for when it finally exits.
+const RETIREMENT_POLL_MS = 30_000;
+process.on("SIGUSR2", () => {
+  if (!retirement.retire()) return;
+  console.log(
+    JSON.stringify({ event: "bridge.retired", ...retirement.status() }),
+  );
+  const timer = setInterval(() => {
+    if (!retirement.readyToExit()) return;
+    clearInterval(timer);
+    console.log(
+      JSON.stringify({ event: "bridge.retired_exit", ...retirement.status() }),
+    );
+    shutdown();
+  }, RETIREMENT_POLL_MS);
+});

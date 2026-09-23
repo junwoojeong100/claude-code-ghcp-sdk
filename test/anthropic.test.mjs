@@ -704,3 +704,94 @@ test("emits no tool_use bytes for a tool call Copilot never registers", () => {
   );
   assert.equal(response.ended, true);
 });
+
+// Native streams frame one block at a time: every content_block_start follows
+// the previous block's content_block_stop, and indices count up from zero.
+function assertStrictBlockNesting(events) {
+  let open = null;
+  let nextIndex = 0;
+  for (const data of events) {
+    if (data.type === "content_block_start") {
+      assert.equal(open, null, `block ${data.index} opened while ${open} was open`);
+      assert.equal(data.index, nextIndex++);
+      open = data.index;
+    } else if (data.type === "content_block_delta") {
+      assert.equal(data.index, open, `delta for ${data.index} while ${open} was open`);
+    } else if (data.type === "content_block_stop") {
+      assert.equal(data.index, open, `stop for ${data.index} while ${open} was open`);
+      open = null;
+    } else if (["message_delta", "message_stop"].includes(data.type)) {
+      assert.equal(open, null, `${data.type} while block ${open} was open`);
+    }
+  }
+  assert.equal(open, null);
+}
+
+function blockFrames(events) {
+  return events
+    .filter((data) => data.type.startsWith("content_block_"))
+    .map((data) => [data.type.slice("content_block_".length), data.index]);
+}
+
+test("stops each content block before the next one starts", () => {
+  const response = fakeResponse();
+  startSse(response);
+  const stream = new AnthropicSseStream(response, { id: "msg-order", inputTokens: 10 });
+  stream.start("gpt-6-astra");
+  stream.handleSdkEvent({ type: "assistant.message_delta", data: { deltaContent: "Reading " } });
+  stream.handleSdkEvent({ type: "assistant.message_delta", data: { deltaContent: "both." } });
+  stream.finish({
+    model: "gpt-6-astra",
+    message: {
+      content: "Reading both.",
+      toolRequests: [
+        { toolCallId: "tool-a", name: "Read", arguments: { file_path: "/tmp/a" } },
+        { toolCallId: "tool-b", name: "Read", arguments: { file_path: "/tmp/b" } },
+      ],
+      outputTokens: 5,
+    },
+  });
+
+  const events = sseEvents(response);
+  assertStrictBlockNesting(events);
+  // Each tool_use stops right after its input_json_delta.
+  assert.deepEqual(blockFrames(events), [
+    ["start", 0], ["delta", 0], ["delta", 0], ["stop", 0],
+    ["start", 1], ["delta", 1], ["stop", 1],
+    ["start", 2], ["delta", 2], ["stop", 2],
+  ]);
+  assert.equal(events.find((data) => data.type === "message_delta").delta.stop_reason, "tool_use");
+});
+
+test("keeps strict block nesting for tool-only, text-only and repeated-call turns", () => {
+  for (const message of [
+    { content: "", toolRequests: [{ toolCallId: "t1", name: "Bash", arguments: { command: "ls" } }] },
+    { content: "plain answer", toolRequests: [] },
+    {
+      content: "twice",
+      toolRequests: [
+        { toolCallId: "dup", name: "Read", arguments: { file_path: "/tmp/a" } },
+        { toolCallId: "dup", name: "Read", arguments: { file_path: "/tmp/a" } },
+      ],
+    },
+  ]) {
+    const response = fakeResponse();
+    startSse(response);
+    const stream = new AnthropicSseStream(response, { id: "msg-shapes", inputTokens: 10 });
+    stream.finish({ model: "gpt-6-sol", message: { ...message, outputTokens: 1 } });
+
+    const events = sseEvents(response);
+    assertStrictBlockNesting(events);
+    const starts = events.filter((data) => data.type === "content_block_start");
+    const toolIds = starts.map((data) => data.content_block.id).filter(Boolean);
+    assert.deepEqual(toolIds, [...new Set(message.toolRequests.map((tool) => tool.toolCallId))]);
+    for (const { index } of starts.filter((data) => data.content_block.type === "tool_use")) {
+      const input = events
+        .filter((data) => data.index === index && data.delta?.type === "input_json_delta")
+        .map((data) => data.delta.partial_json)
+        .join("");
+      assert.doesNotThrow(() => JSON.parse(input));
+    }
+    assert.equal(response.ended, true);
+  }
+});

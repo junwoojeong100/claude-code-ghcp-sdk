@@ -22,8 +22,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
+import { isEntryPoint } from "../../src/entry-point.mjs";
 import { settingsFileState } from "../../src/settings-file-state.mjs";
 import { PRIMARY_MODELS, SCENARIOS, DEFAULT_PLAN, planRun, validateCatalog } from "./scenarios.mjs";
 import { coverage } from "./features.mjs";
@@ -421,7 +421,7 @@ async function main() {
   return summary.green ? 0 : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   main().then(
     (code) => { process.exitCode = code; },
     (error) => {

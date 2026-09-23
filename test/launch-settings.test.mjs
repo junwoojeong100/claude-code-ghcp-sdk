@@ -73,7 +73,7 @@ test("clears inherited context overrides without replacing recognized Claude lim
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
   assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
   assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
-  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5[1m]");
   assert.equal(
     settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME,
     "GitHub Copilot Claude Opus 5.5",
@@ -94,7 +94,7 @@ test("temporary Direct settings pin exactly six picker options without a routing
     assert.equal(settings.modelPicker.replaceBuiltInOptions, true);
     assert.equal(settings.modelPicker.options.length, 6);
     assert.deepEqual(settings.modelPicker.options.map((option) => option.model), [
-      "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5",
+      "claude-opus-5-5[1m]", "claude-sonnet-5[1m]", "claude-haiku-4-5",
       "github-copilot/claude-gpt-6-astra[1m]",
       "github-copilot/claude-gpt-6-sol[1m]",
       "github-copilot/claude-gpt-6-luna[1m]",
@@ -105,8 +105,8 @@ test("temporary Direct settings pin exactly six picker options without a routing
 
 test("launching Claude Opus 5.5 uses the Opus family row instead of a custom option", () => {
   const settings = writeSettings("claude-opus-5.5");
-  assert.equal(settings.env.ANTHROPIC_MODEL, "claude-opus-5-5");
-  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5");
+  assert.equal(settings.env.ANTHROPIC_MODEL, "claude-opus-5-5[1m]");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "claude-opus-5-5[1m]");
   assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
   assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
 });
@@ -132,4 +132,24 @@ test("blanks inherited model options from user settings", () => {
     familySettings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION,
     "",
   );
+});
+
+test("runs model-less subagents and Explore on a non-Claude launch model", () => {
+  for (const model of ["gpt-6-astra", "github-copilot/claude-gpt-6-astra[1m]", "gpt-5.6-sol"]) {
+    const settings = writeSettings(model);
+    assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, settings.env.ANTHROPIC_MODEL);
+    assert.match(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, /^github-copilot\/claude-gpt-/);
+    // Without this, Explore's "inherit" is capped at the opus alias for a GPT
+    // main model and lands on the Opus family model.
+    assert.equal(settings.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP, "1");
+  }
+});
+
+test("blanks the subagent model for Claude family launches", () => {
+  for (const model of ["claude-opus-5.5", "claude-sonnet-5", "claude-haiku-4.5"]) {
+    // The writer's own environment must not decide what Claude Code inherits.
+    const settings = writeSettings(model, { CLAUDE_CODE_SUBAGENT_MODEL: "gpt-6-luna" });
+    assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, "");
+    assert.equal(settings.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP, "1");
+  }
 });

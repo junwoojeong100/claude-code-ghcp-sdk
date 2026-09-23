@@ -249,7 +249,7 @@ export function estimateTokens(value) {
   return Math.max(1, Math.ceil(JSON.stringify(value || {}).length / 4));
 }
 
-function anthropicStopReason(message, usage) {
+export function anthropicStopReason(message, usage) {
   if (message.toolRequests?.length) return "tool_use";
   if (usage?.contentFilterTriggered || usage?.finishReason === "content_filter") {
     return "refusal";
@@ -323,6 +323,9 @@ export class AnthropicSseStream {
     this.nextIndex = 0;
     this.textBlock = null;
     this.toolBlocks = new Map();
+    // Native streams never interleave blocks: each content_block_stop lands
+    // before the next content_block_start, so at most one block is open.
+    this.openBlock = null;
   }
 
   start(model) {
@@ -371,23 +374,16 @@ export class AnthropicSseStream {
     this.#writeTextDelta(remainingContent);
 
     for (const tool of message.toolRequests || []) {
+      // A repeated call id would write input into a block already stopped.
+      if (this.toolBlocks.has(tool.toolCallId)) continue;
       const block = this.#ensureToolBlock(tool.toolCallId, tool.name);
       this.#writeToolInputDelta(
         block,
         JSON.stringify(normalizeToolArguments(tool.arguments)),
       );
+      this.#closeOpenBlock();
     }
-
-    const blocks = [
-      ...(this.textBlock ? [this.textBlock] : []),
-      ...this.toolBlocks.values(),
-    ].sort((left, right) => left.index - right.index);
-    for (const block of blocks) {
-      event(this.res, "content_block_stop", {
-        type: "content_block_stop",
-        index: block.index,
-      });
-    }
+    this.#closeOpenBlock();
 
     event(this.res, "message_delta", {
       type: "message_delta",
@@ -403,8 +399,11 @@ export class AnthropicSseStream {
 
   #writeTextDelta(text) {
     if (!text) return;
-    if (!this.textBlock) {
-      this.textBlock = { index: this.nextIndex++, content: "" };
+    if (!this.textBlock || this.openBlock !== this.textBlock) {
+      this.#closeOpenBlock();
+      const content = this.textBlock?.content || "";
+      this.textBlock = { index: this.nextIndex++, content };
+      this.openBlock = this.textBlock;
       event(this.res, "content_block_start", {
         type: "content_block_start",
         index: this.textBlock.index,
@@ -423,11 +422,13 @@ export class AnthropicSseStream {
     const existing = this.toolBlocks.get(toolCallId);
     if (existing) return existing;
 
+    this.#closeOpenBlock();
     const block = {
       index: this.nextIndex++,
       name: toolName,
     };
     this.toolBlocks.set(toolCallId, block);
+    this.openBlock = block;
     event(this.res, "content_block_start", {
       type: "content_block_start",
       index: block.index,
@@ -440,6 +441,15 @@ export class AnthropicSseStream {
     });
 
     return block;
+  }
+
+  #closeOpenBlock() {
+    if (!this.openBlock) return;
+    event(this.res, "content_block_stop", {
+      type: "content_block_stop",
+      index: this.openBlock.index,
+    });
+    this.openBlock = null;
   }
 
   #writeToolInputDelta(block, inputDelta) {

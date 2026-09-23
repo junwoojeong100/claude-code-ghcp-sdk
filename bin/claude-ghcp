@@ -23,11 +23,16 @@ Usage: claude-ghcp [bridge options] [--] [claude options and prompt]
 Bridge options:
   --ghcp-model MODEL   GitHub Copilot model ID (default: claude-sonnet-5)
   --bridge-port PORT   Fixed loopback port (default: choose a free port)
-  --background, --bg   Use a persistent bridge for background agent sessions
+  --background, --bg   Start the session in the background (persistent bridge)
   -h, --help           Show this help
 
 Use --ghcp-model instead of Claude Code's --model flag. The launcher maps the
 GitHub Copilot model to a Claude Code-compatible frontend model name.
+
+Interactive sessions, --background, and the agents view share one persistent
+loopback bridge, so /background can hand a session to Claude Code's daemon.
+Print mode (-p) gets a private bridge that stops when the launcher exits.
+Inspect or stop the persistent bridge with claude-ghcp-status/claude-ghcp-stop.
 EOF
 }
 
@@ -95,6 +100,23 @@ if [[ "${CLAUDE_ARGS[0]:-}" == "agents" ]]; then
   PERSISTENT_BRIDGE=1
 fi
 
+# Only print mode runs start to finish inside this process. Any interactive
+# session can be handed to Claude Code's own daemon with /background, and the
+# job it leaves there keeps calling the bridge -- and is respawned from
+# --settings -- after this launcher has exited. On the ephemeral bridge that
+# job lost both: cleanup stopped the bridge under an in-flight request (the job
+# ended "API Error: 499 The client closed the request.") and deleted the
+# settings file its respawn flags name.
+PRINT_MODE=0
+for argument in ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}; do
+  case "$argument" in
+    -p|--print) PRINT_MODE=1 ;;
+  esac
+done
+if ((PRINT_MODE == 0)); then
+  PERSISTENT_BRIDGE=1
+fi
+
 for command in node copilot curl; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "Required command not found: $command" >&2
@@ -123,6 +145,7 @@ BRIDGE_LOG="$RUNTIME_DIR/bridge.log"
 SETTINGS_FILE=""
 BRIDGE_PID=""
 BRIDGE_TOKEN=""
+LEASE_FILE=""
 
 cleanup() {
   if [[ -n "$BRIDGE_PID" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
@@ -136,6 +159,11 @@ cleanup() {
   # Its lifetime belongs to the bridge daemon, and claude-ghcp-stop ends it.
   if ((PERSISTENT_BRIDGE == 0)) && [[ -n "$SETTINGS_FILE" ]]; then
     rm -f "$SETTINGS_FILE"
+  fi
+  # The lease only holds a retired bridge open for this launcher's own session;
+  # a job it handed to Claude Code's daemon is covered by the idle window.
+  if [[ -n "$LEASE_FILE" ]]; then
+    rm -f "$LEASE_FILE"
   fi
   rm -rf "$RUNTIME_DIR"
 }
@@ -164,6 +192,13 @@ if ((PERSISTENT_BRIDGE)); then
     printf '%s' "$DAEMON_JSON" |
       node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).logPath))'
   )"
+  # Keeps this bridge serving the session below if a later launch replaces it
+  # (src/retirement.mjs). The PID is this shell's: it outlives Claude Code.
+  LEASE_FILE="$(
+    printf '%s' "$DAEMON_JSON" |
+      node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).leasePath))'
+  )"
+  (umask 077 && printf '%s\n' "$$" >"$LEASE_FILE")
 else
   SETTINGS_FILE="$RUNTIME_DIR/settings.json"
   BRIDGE_TOKEN="$(
@@ -192,7 +227,7 @@ else
   #
   # 60s and not more because this ceiling is spent out of a caller's budget. The
   # v11 driver's second launch is spawnSync(bin/claude-ghcp, ["-p", ...],
-  # {timeout: 180_000}) in scripts/verify/drivers.mjs, and with no --background
+  # {timeout: 180_000}) in scripts/verify/drivers.mjs, and as a -p run with no --background
   # it takes this ephemeral branch, so 180 - 72.25 leaves ~107s for the Claude
   # turn itself -- against a measured 63.1s and 63.5s for the equivalent
   # single-turn read-and-answer (.verify-runs/2026-09-21T02-02-27-681Z/

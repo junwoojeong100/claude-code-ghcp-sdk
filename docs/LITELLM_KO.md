@@ -343,7 +343,9 @@ Alias를 설정하지 않은 family는 `LITELLM_MODEL`로 routing합니다.
 - **Sampling control은 무시됩니다.** `temperature`, `top_p`, `max_tokens`,
   `stop_sequences`는 Copilot SDK가 노출하지 않습니다. `GET /health`가 이를
   `unsupportedNativeControls`로 보고하며, bridge는 어느 front end가 보내든 degraded
-  control로 기록하고 무시합니다. LiteLLM은 이 값들을 그대로 받아 전달합니다.
+  control로 기록하고 무시합니다. LiteLLM은 이 값들을 그대로 받아 전달합니다. 그 밖에
+  bridge가 받기만 하고 쓰지 않는 필드(`thinking`, `top_k`, `metadata` 등)는
+  `ignoredRequestFields`로 보고하고, control 옆에 `ignoredFields`로 기록합니다.
 - **`forward_llm_provider_auth_headers`는 설정하지 않습니다.**
   `forward_client_headers_to_llm_api`와는 다른 설정으로, client 자신의 `x-api-key`를
   전달해 구성된 bridge key를 덮어씁니다.

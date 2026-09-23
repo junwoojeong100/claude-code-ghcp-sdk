@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 
 import { DRIVERS, parseWorktreeList, phaseVerdict } from "../scripts/verify/drivers.mjs";
 import { buildFixture, commitAll } from "../scripts/verify/fixtures.mjs";
-import { HeadlessRun } from "../scripts/verify/session.mjs";
+import { HeadlessRun, servedExpectedModel } from "../scripts/verify/session.mjs";
 
 const MODEL = "verification-test-model";
 const SCENARIOS = {
@@ -472,16 +472,33 @@ test("multi-step media prompt states the format without disclosing either random
   }
 });
 
+const flipGlyph = (char) => (char === "0" ? "D" : "0");
+
 test("multi-step still fails a misread image token when every other check passes", async (t) => {
   const ctx = fakeContext(t, SCENARIOS.media);
   const specPath = path.join(ctx.slotDir, "fake-spec.json");
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
-  const wrongToken = ctx.fixture.pngToken.slice(0, -1) + (ctx.fixture.pngToken.endsWith("0") ? "D" : "0");
+  const token = ctx.fixture.pngToken;
+  const wrongToken = token.slice(0, -2) + flipGlyph(token.at(-2)) + flipGlyph(token.at(-1));
   spec.phases.main.answer = `Completed all four.\n${ctx.fixture.pdfToken}\n${wrongToken}`;
   fs.writeFileSync(specPath, JSON.stringify(spec));
   const result = await DRIVERS[SCENARIOS.media](ctx);
   assert.equal(result.outcome, "fail");
   assert.deepEqual(result.checks.filter((check) => !check.ok).map((check) => check.name), ["the image's token came back"]);
+});
+
+test("multi-step passes one misread image glyph and names it in the check", async (t) => {
+  const ctx = fakeContext(t, SCENARIOS.media);
+  const specPath = path.join(ctx.slotDir, "fake-spec.json");
+  const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+  const token = ctx.fixture.pngToken;
+  const misread = token.slice(0, -1) + flipGlyph(token.at(-1));
+  spec.phases.main.answer = `Completed all four.\n${ctx.fixture.pdfToken}\n${misread}`;
+  fs.writeFileSync(specPath, JSON.stringify(spec));
+  const result = await DRIVERS[SCENARIOS.media](ctx);
+  assert.equal(result.outcome, "pass", result.reason);
+  const check = result.checks.find((c) => c.name === "the image's token came back");
+  assert.equal(check.detail, `read ${misread} for ${token}: one glyph misread`);
 });
 
 for (const [field, label] of [["pdfToken", "PDF"], ["pngToken", "image"]]) {
@@ -699,4 +716,26 @@ test("v11 awaits the async helper at every command and cleanup site", () => {
   for (const call of calls) {
     assert.match(source.slice(0, call.index), /\bawait\s*$/, `unawaited command: ${source.slice(call.index, call.index + 50)}`);
   }
+});
+
+test("the served-model check ignores the [1m] window hint but still rejects another model", () => {
+  const served = (...keys) => new HeadlessRun({
+    events: [{ type: "result", modelUsage: Object.fromEntries(keys.map((key) => [key, {}])) }],
+  });
+  // Usage keys exactly as a 1M matrix run reported them.
+  for (const [model, frontendModel, key] of [
+    ["claude-opus-5.5", "claude-opus-5-5[1m]", "claude-opus-5-5[1m]"],
+    ["claude-sonnet-5", "claude-sonnet-5[1m]", "claude-sonnet-5[1m]"],
+    ["claude-haiku-4.5", "claude-haiku-4-5", "claude-haiku-4-5"],
+    ["gpt-6-astra", "github-copilot/claude-gpt-6-astra[1m]", "github-copilot/claude-gpt-6-astra[1m]"],
+    // A launch id with the hint still matches a usage key without it, and back.
+    ["claude-sonnet-5", "claude-sonnet-5[1m]", "claude-sonnet-5"],
+    ["claude-opus-5.5", "claude-opus-5-5", "claude-opus-5-5[1m]"],
+  ]) {
+    const verdict = servedExpectedModel(served(key), { model, frontendModel });
+    assert.ok(verdict.ok, `${frontendModel} vs ${key}: ${verdict.reason}`);
+  }
+  const wrong = servedExpectedModel(served("claude-sonnet-5[1m]"), { model: "claude-opus-5.5", frontendModel: "claude-opus-5-5[1m]" });
+  assert.equal(wrong.ok, false);
+  assert.match(wrong.reason, /claude-sonnet-5\[1m\], expected claude-opus-5\.5/);
 });

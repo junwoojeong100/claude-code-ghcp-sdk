@@ -86,22 +86,27 @@ function whichAll(name, env) {
   return found;
 }
 
+const WRAPPERS = new Set(["claude", "claude-ghcp", "claude-litellm", "claude-current"]);
+
 /**
  * Port of bin/resolve-claude.sh.
  *
  * This repo's own bin/ is on PATH during development and those wrappers
- * re-invoke the launcher, so resolving to one would fork-bomb. Any candidate
- * that canonicalises onto a repo wrapper is skipped.
+ * re-invoke the launcher, so resolving to one would fork-bomb. A wrapper is
+ * recognised by name and by the resolve-claude.sh beside it, which catches
+ * every checkout's launchers and not only rootDir's: run from a worktree with
+ * the main checkout's bin/ on PATH, matching rootDir alone resolved to the main
+ * checkout's bin/claude, and every slot of that matrix was blocked by that
+ * launcher's own --settings guard.
  */
 export function resolveClaudeBin({ rootDir = ROOT_DIR, env = process.env } = {}) {
-  const wrappers = new Set(
-    ["claude", "claude-ghcp", "claude-litellm", "claude-current"]
-      .map((name) => canonical(path.join(rootDir, "bin", name)))
-      .filter(Boolean),
-  );
   const isWrapper = (candidate) => {
     const real = canonical(candidate);
-    return real !== null && wrappers.has(real);
+    return (
+      real !== null &&
+      WRAPPERS.has(path.basename(real)) &&
+      fs.existsSync(path.join(path.dirname(real), "resolve-claude.sh"))
+    );
   };
 
   const explicit = env.CLAUDE_CODE_BIN;
@@ -123,7 +128,7 @@ export function resolveClaudeBin({ rootDir = ROOT_DIR, env = process.env } = {})
     return candidate;
   }
   throw new ClaudeBinaryError(
-    `Claude Code executable not found outside ${rootDir}/bin. ` +
+    `Claude Code executable not found outside this repo's launchers (${rootDir}/bin). ` +
       "Install Claude Code or set CLAUDE_CODE_BIN.",
   );
 }
