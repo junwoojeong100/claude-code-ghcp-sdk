@@ -70,7 +70,7 @@ The GitHub Copilot SDK and bridge on the Direct path handle only the model backe
 1. Claude Code sends the system prompt, conversation, and tool schema to `/v1/messages`.
 2. The bridge translates the Claude Code model ID to a Copilot model ID.
 3. `output_config.effort` is compared against the model's `supportedReasoningEfforts`.
-4. A Copilot SDK session is created with `mode: "empty"` and the selected `reasoningEffort`.
+4. A Copilot SDK session is created with `mode: "empty"`, the selected `reasoningEffort`, and the runtime's own MCP servers listed in `disabledMcpServers`.
 5. The Claude Code system prompt and tool declarations are registered with the SDK session.
 6. Tool requests from the Copilot model are returned as Anthropic `tool_use` blocks.
 7. Claude Code executes the tool and sends the `tool_result` in the next request.
@@ -116,6 +116,36 @@ The turn's idle deadline is distinct from its hard duration limit. Root text,
 reasoning and tool-input deltas rearm the idle timer; empty deltas and subagent
 traffic do not. The hard cap bounds even an endlessly streaming turn. Both
 deadlines are included in daemon configuration fingerprints.
+
+### Copilot Runtime MCP Servers
+
+Claude Code's MCP servers are unaffected: Claude Code starts them and the bridge
+forwards their tools like any other declared tool. The Copilot runtime separately
+loads the Copilot CLI configuration for every SDK session — the user
+`mcp-config.json`, workspace files, installed Copilot plugins and its built-in
+`github-mcp-server` — even in `mode: "empty"`. Because `availableTools` exposes
+only `custom:*` tools, none of those servers can reach the model.
+
+At startup the bridge calls `mcp.discover` with its working directory to learn
+the exact registered names. A plugin server is named by its config key, such as
+`azure` for azmcp, not by its executable. The bridge adds `github-mcp-server`,
+which discovery does not report, and passes the list as `disabledMcpServers` on
+every SDK session create and resume. An empty `mcpServers` map was tested and
+does not replace the discovered servers. No Copilot configuration is modified.
+`bridge.mcp_servers_disabled` records the count; a discovery failure or
+10-second timeout is logged as `bridge.mcp_discovery_failed`, and then only the
+built-in server is disabled. Servers added to the Copilot configuration while a
+bridge runs are picked up at the next bridge start.
+
+Measured on the development machine, one open bridge-equivalent session used to
+start azmcp and two Playwright MCP node servers (~330 MB RSS) plus the remote
+`microsoft-learn` and `github-mcp-server` connections. The runtime reaped them
+only when the SDK session closed, so the cost grew with cached states. With the
+option, a real bridge serving two concurrent Claude sessions ran 0 runtime MCP
+children instead of 6, and the two cold first requests finished in a median
+3.95 s instead of 8.08 s over four alternating pairs with Claude Haiku 4.5.
+Sequential session creation on a warm runtime was unchanged within noise,
+because the runtime connects MCP servers after `session.create` returns.
 
 ### Model ID Translation
 
@@ -315,6 +345,8 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 - Claude Code root session and subagent SDK session isolation
 - Six-model interleaved root/worker tool-result isolation and sibling survival
   after cancellation
+- Runtime MCP discovery and `disabledMcpServers` on SDK session create and
+  resume, including the discovery-failure and timeout fallback
 - Inherited history recovery for forked subagents and pending tool-call handoff with `agentId`
 - Gateway routing values in the Direct/LiteLLM temporary settings
 - Mode `0600`, argument handling, and provider detection for LiteLLM settings
@@ -363,10 +395,11 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 
 `npm run verify` consumes real GitHub Copilot AI Credits; `npm test` does not.
 
-The full run `2026-09-22T23-45-15-077Z` validated the six-model catalogue on
-commit `6a6691c` with Claude Code 2.1.280. It passed 66/66 in 624 seconds with
-three model workers and two scenario workers per model, with unchanged code and
-user settings. This laptop profile reduces startup pressure after native
+The full run `2026-09-23T00-38-10-470Z` validated the six-model catalogue on
+commit `1df3aa4`, including the runtime MCP change, with Claude Code 2.1.280. It
+passed 66/66 in 740 seconds with three model workers and two scenario workers per
+model, with unchanged code and user settings, and a `ps` sampler found no MCP
+server process under any of its runtimes. This laptop profile reduces startup pressure after native
 background stalls in earlier 7 × 2 runs; defaults, timeout budgets and pass
 criteria are not reduced. The first six-model run (64/66) exposed Claude Opus
 5.5 completing the v02 edit and v08 record through shell commands, so those

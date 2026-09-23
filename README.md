@@ -334,6 +334,15 @@ On exit, the Direct path removes the local bridge and the temporary credentials 
 
 Managed settings take precedence over the temporary settings written by the launch scripts. If an organization policy enforces a provider selector, `availableModels`, or MCP tool search, the launch scripts do not override it.
 
+The Copilot runtime behind the bridge would otherwise start the Copilot CLI's
+own MCP servers — `~/.copilot/mcp-config.json`, installed Copilot plugins,
+workspace files and the built-in `github-mcp-server` — for every SDK session,
+although only Claude Code's tools ever reach the model. The bridge discovers
+their registered names at startup, adds the built-in server that discovery does
+not report, and disables them per session with `disabledMcpServers`, without
+changing that configuration. Claude Code's own MCP servers are unaffected. See
+[Copilot Runtime MCP Servers](docs/ARCHITECTURE.md#copilot-runtime-mcp-servers).
+
 ### Support Scope
 
 The table below shows the current status for the Direct SDK path.
@@ -366,23 +375,36 @@ Running the launch scripts directly from the integrated terminal in VS Code or J
 **Strict result: PASS — 66/66 (100%) in one complete run.** The primary matrix is
 now Claude Opus 5.5, Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol and
 GPT-6 Luna, each with the same eleven scenarios. The laptop's native Claude Code
-**2.1.280** executed every slot through the bridge and Copilot SDK. The final run
-took **624 seconds (10 min 24 s)**, with no failed, blocked, missing, duplicate or
-unexpected slots and unchanged code/user settings. This is the selected matrix's
-pass rate, not a claim of complete feature coverage or guaranteed success on
-future executions.
+**2.1.280** executed every slot through the bridge and Copilot SDK. The final run,
+on the commit that also stops the Copilot runtime from starting unused MCP
+servers, took **740 seconds (12 min 20 s)** with no failed, blocked, missing,
+duplicate or unexpected slots and unchanged code/user settings. This is the
+selected matrix's pass rate, not a claim of complete feature coverage or
+guaranteed success on future executions.
 
 - **Pinned picker:** Claude Code's native `supportedModels()` control request
   returned `Default` plus exactly the six rows above, in order. `setModel()` into
-  each row sent no request to the bridge (its log holds only the startup line),
+  each row sent no request to the bridge (its log holds only startup lines),
   and `getContextUsage()` reported 200K for the three Claude rows, 1M for the
   three GPT-6 rows, and 200K again after switching back to Haiku. `Default`
   resolved to `claude-opus-5-5[1m]` (1M). Artifacts:
-  `.verify-runs/picker-six-2026-09-22T23-56-44Z/`.
+  `.verify-runs/picker-six-2026-09-23T00-51-18Z/`.
+- **Runtime MCP servers:** all 72 retained bridge logs of the final run (66
+  per-slot bridges plus six v11 daemons) record `bridge.mcp_servers_disabled` for
+  five servers; the six v11 foreground launches use ephemeral bridges whose logs
+  the launcher deletes on exit. A `ps` sampler took 354 samples over 12 minutes
+  with up to nine concurrent runtimes and never saw an MCP server process under
+  them; the only children were short-lived `git` calls and exiting processes
+  (`<defunct>`, `(copilot-runtime)`).
+  Before the change, one open session started azmcp and two Playwright MCP node
+  servers (~330 MB), and a bridge serving two concurrent sessions ran six such
+  children. Two concurrent cold first requests now finish in a median 3.95 s
+  instead of 8.08 s. Artifacts: `.verify-runs/runtime-sampler-2026-09-23T00-38-10Z/`
+  and `.verify-runs/mcp-check-2026-09-23T00-32-13Z/`.
 - **SDK budgets** recorded by `bridge.context_budget`: Opus 5.5 and Sonnet 5
   200,000 and Haiku 4.5 136,000 on the default tier; Astra 1,050,000 and Sol and
   Luna 872,000 on the long-context tier.
-- **Offline:** `npm test` passed **388/388**, with no failures, cancellations or
+- **Offline:** `npm test` passed **390/390**, with no failures, cancellations or
   skips.
 - **Independent audit** of the raw artifacts: **1,146 recorded checks** with none
   failing, **90 headless phase transcripts** carrying 95 result envelopes, all with
@@ -396,7 +418,10 @@ future executions.
   `/model` choice to `~/.claude/settings.json` mid-run, which the settings gate
   correctly refused. The v02 and v08 prompts now name Edit and Write, as the v08
   cron turn already names CronCreate; checks and pass criteria are unchanged. A
-  focused Opus 5.5 rerun of both scenarios passed 2/2 before the final full run.
+  focused Opus 5.5 rerun of both scenarios passed 2/2, and the next full run
+  passed 66/66 in 624 s. The runtime MCP change then required a fresh full run on
+  its own commit; it took longer while another repository's Copilot runtime
+  stability jobs were loading the same laptop (load average ≈ 8.5).
 
 Full-run history remains separate, under each run's recorded implementation and
 model catalogue:
@@ -404,7 +429,8 @@ model catalogue:
 | Full run | Run ID (UTC) | Matrix | Pass / fail / blocked / unknown | Model × scenario workers | Duration | User settings |
 |---|---|---|---|---|---|---|
 | Six-model first run — NOT GREEN | `2026-09-22T23-29-13-171Z` | 6 × 11 | 64 / 2 / 0 / 0 | 3 × 2 | 778 s | Changed by an interactive session outside the harness |
-| Six-model final — PASS | `2026-09-22T23-45-15-077Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **624 s** | **Intact** |
+| Six-model before the runtime MCP change — PASS | `2026-09-22T23-45-15-077Z` | 6 × 11 | 66 / 0 / 0 / 0 | 3 × 2 | 624 s | Intact |
+| Six-model final, runtime MCP servers disabled — PASS | `2026-09-23T00-38-10-470Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **740 s** | **Intact** |
 | Seven-model: previous closeout 1 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 456 s | Changed; writer/cause unknown |
 | Seven-model: previous closeout 2 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 7 × 11 | 74 / 2 / 1 / 0 | 7 × 2 | 863 s | Intact |
 | Seven-model: fresh baseline — NOT GREEN | `2026-09-22T00-01-29-757Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 943 s | Intact |
@@ -414,13 +440,13 @@ model catalogue:
 | Seven-model: context/streaming recovery — PASS | `2026-09-22T12-29-58-559Z` | 7 × 11 | 77 / 0 / 0 / 0 | 3 × 2 | 812 s | Intact |
 
 The final run recorded commit
-`6a6691cb52da84e5232ba4eebfacff9450b5b174` (clean checkout) and matching start/end
+`1df3aa4982ce2eb688a7d48f64aeab61e1499e22` (clean checkout) and matching start/end
 41-file `verification-code-v1` SHA-256 fingerprints:
-`4e7986206619e28c6bbe5f1f50fdf957009d6f0db1468abcd1d417a8342cc453`.
+`5dad75f80408a699feac9f2221d6edcea848a7d9265e0a9e25cd170277c9cd7b`.
 Both generated verification documents use **only that final full run**.
-Its ignored local directory `.verify-runs/2026-09-22T23-45-15-077Z/` contains
+Its ignored local directory `.verify-runs/2026-09-23T00-38-10-470Z/` contains
 `summary.json`, `slots.jsonl`, `console.log`, `audit.json`, phase transcripts and
-launcher logs. The first six-model run and the focused rerun
+launcher logs. The earlier six-model runs and the focused rerun
 (`2026-09-22T23-44-23-074Z`) remain separate local records; none of their cells
 contribute to the final 66/66.
 

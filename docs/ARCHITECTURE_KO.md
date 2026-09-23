@@ -88,7 +88,7 @@ Direct 경로의 GitHub Copilot SDK와 bridge는 모델 backend 연결만 담당
 1. Claude Code가 `/v1/messages`에 system prompt, conversation, tool schema를 전송합니다.
 2. Bridge가 Claude Code 모델 ID를 Copilot 모델 ID로 변환합니다.
 3. `output_config.effort`를 모델의 `supportedReasoningEfforts`와 대조합니다.
-4. Copilot SDK session을 `mode: "empty"`와 선택된 `reasoningEffort`로 생성합니다.
+4. Copilot SDK session을 `mode: "empty"`, 선택된 `reasoningEffort`, 그리고 `disabledMcpServers`에 담은 runtime 자체 MCP server 목록으로 생성합니다.
 5. Claude Code system prompt와 tool declaration을 SDK session에 등록합니다.
 6. Copilot 모델의 tool 요청을 Anthropic `tool_use` block으로 반환합니다.
 7. Claude Code가 tool을 실행하고 `tool_result`를 다음 요청에 보냅니다.
@@ -132,6 +132,32 @@ SDK session 생성·재개와 `setModel()`에는 추론 timeout과 별도로
 도구 입력 delta는 idle timer를 갱신하지만, 빈 delta나 subagent 이벤트는
 갱신하지 않습니다. 계속 출력하는 턴에도 전체 시간 상한은 유지하며, 두 값 모두
 daemon 설정 지문에 포함됩니다.
+
+### Copilot runtime MCP server
+
+Claude Code의 MCP server는 영향을 받지 않습니다. Claude Code가 직접 실행하고 bridge는
+그 도구를 다른 선언 도구와 똑같이 전달합니다. 반면 Copilot runtime은 `mode: "empty"`에서도
+SDK session마다 Copilot CLI 설정 — 사용자 `mcp-config.json`, workspace 파일, 설치된
+Copilot plugin, 내장 `github-mcp-server` — 을 따로 불러옵니다. `availableTools`는
+`custom:*` 도구만 노출하므로 이 server들은 모델에 한 번도 도달하지 못합니다.
+
+Bridge는 시작 시 자신의 작업 디렉터리로 `mcp.discover`를 호출해 정확한 등록 이름을
+확인합니다. Plugin server의 이름은 실행 파일이 아니라 설정 key입니다(예: azmcp는
+`azure`). Discovery가 보고하지 않는 `github-mcp-server`를 더해, 모든 SDK session 생성·재개
+시 `disabledMcpServers`로 전달합니다. 빈 `mcpServers` map은 시험해 보았지만 discovery된
+server를 대체하지 못했습니다. Copilot 설정은 수정하지 않습니다. 개수는
+`bridge.mcp_servers_disabled`에 기록하며, discovery가 실패하거나 10초 timeout에 걸리면
+`bridge.mcp_discovery_failed`를 남기고 내장 server만 비활성화합니다. Bridge 실행 중
+Copilot 설정에 추가한 server는 다음 bridge 시작부터 반영됩니다.
+
+개발 장비의 측정에서 bridge와 같은 설정의 SDK session 하나가 열려 있으면 azmcp와
+Playwright MCP node server 2개(~330 MB RSS), 원격 `microsoft-learn`·`github-mcp-server`
+연결이 함께 떠 있었습니다. Runtime은 SDK session이 닫힐 때에만 이를 정리하므로 비용이
+캐시된 state 수만큼 늘었습니다. 이 옵션을 적용하자 두 Claude session을 동시에 처리하는
+실제 bridge의 runtime MCP 자식 프로세스가 6개에서 0개가 되었고, 두 cold 첫 요청의
+완료 시간 중앙값은 Claude Haiku 4.5의 번갈아 실행한 4쌍에서 8.08초에서 3.95초로
+줄었습니다. Warm runtime에서 순차적으로 session을 만드는 시간은 오차 범위 안에서
+같았습니다. Runtime이 `session.create` 응답 후에 MCP server를 연결하기 때문입니다.
 
 ### 모델 ID 변환
 
@@ -349,6 +375,8 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - Claude Code root session과 subagent의 SDK session 분리
 - 6모델의 interleaved root/worker tool-result 격리와
   취소 후 sibling 생존 검사
+- Runtime MCP discovery와 SDK session 생성·재개 시 `disabledMcpServers` 전달,
+  discovery 실패·timeout 시의 fallback
 - Forked subagent의 inherited history 복구와 `agentId`가 있는 pending tool-call handoff
 - Direct/LiteLLM 임시 settings의 gateway routing 값
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
@@ -397,9 +425,10 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 
 `npm run verify`는 실제 GitHub Copilot AI Credits를 사용하며, `npm test`는 사용하지 않습니다.
 
-전체 실행 `2026-09-22T23-45-15-077Z`는 Claude Code 2.1.280으로 commit `6a6691c`의
-6개 모델 catalog를 검증했습니다. 코드·사용자 설정을 유지한 채 모델 작업자 3개와
-모델별 시나리오 작업자 2개로 624초 만에 66/66 통과했습니다. 앞선 7 × 2 실행의
+전체 실행 `2026-09-23T00-38-10-470Z`는 Claude Code 2.1.280으로 runtime MCP 변경을
+포함한 commit `1df3aa4`의 6개 모델 catalog를 검증했습니다. 코드·사용자 설정을 유지한
+채 모델 작업자 3개와 모델별 시나리오 작업자 2개로 740초 만에 66/66 통과했으며, `ps`
+sampler는 어느 runtime 아래에서도 MCP server 프로세스를 발견하지 못했습니다. 앞선 7 × 2 실행의
 네이티브 백그라운드 정지 이후 랩탑의 기동 부하를 낮춘 설정이며 기본값, timeout
 예산, 통과 기준을 낮추지는 않았습니다. 첫 6개 모델 실행(64/66)에서 Claude Opus
 5.5가 v02 편집과 v08 기록을 셸 명령으로 처리해, 해당 검사가 관찰하는 Edit·Write

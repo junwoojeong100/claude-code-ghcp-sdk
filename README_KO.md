@@ -378,6 +378,15 @@ Managed settings는 실행 스크립트의 임시 settings보다 우선합니다
 selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트는 이를 우회하지
 않습니다.
 
+Bridge 뒤의 Copilot runtime은 기본적으로 SDK session마다 Copilot CLI 자체 MCP server —
+`~/.copilot/mcp-config.json`, 설치된 Copilot plugin, workspace 파일, 내장
+`github-mcp-server` — 를 띄우지만, 모델에 전달되는 것은 Claude Code의 도구뿐입니다.
+그래서 bridge는 시작 시 이 server들의 등록 이름을 확인하고, discovery가 보고하지 않는
+내장 server를 더해 session마다 `disabledMcpServers`로 비활성화하며, 해당 설정은 바꾸지
+않습니다. Claude Code 자체 MCP server는 영향을 받지 않습니다.
+[Copilot runtime MCP server](docs/ARCHITECTURE_KO.md#copilot-runtime-mcp-server)를
+참고합니다.
+
 ### 지원 범위
 
 다음 표는 Direct SDK 경로의 현재 상태입니다.
@@ -412,20 +421,32 @@ VS Code나 JetBrains의 통합 터미널에서 실행 스크립트를 직접 실
 **엄격한 판정: PASS — 단일 전체 실행에서 66/66(100%) 통과.** 주요 매트릭스는 이제
 Claude Opus 5.5, Claude Sonnet 5, Claude Haiku 4.5, GPT-6 Astra, GPT-6 Sol,
 GPT-6 Luna이며, 모두 같은 11개 시나리오를 받습니다. 랩탑에 설치된 실제 Claude Code
-**2.1.280**으로 모든 슬롯을 bridge와 Copilot SDK를 거쳐 실행했습니다. 최종 실행은
-**624초(10분 24초)**가 걸렸으며 실패·blocked·누락·중복·예상 밖 슬롯이 없고 코드와
+**2.1.280**으로 모든 슬롯을 bridge와 Copilot SDK를 거쳐 실행했습니다. 사용하지 않는
+MCP server를 Copilot runtime이 띄우지 않게 한 commit에서 수행한 최종 실행은
+**740초(12분 20초)**가 걸렸으며 실패·blocked·누락·중복·예상 밖 슬롯이 없고 코드와
 사용자 설정도 보존되었습니다. 이는 선택한 매트릭스의 통과율이며, 모든 기능의 완전한
 커버리지나 이후 실행의 성공을 보장하는 수치가 아닙니다.
 
 - **고정된 피커:** Claude Code의 native `supportedModels()` control 요청은 `Default`와
   위 6개 행만 순서대로 반환했습니다. 각 행으로의 `setModel()`은 bridge에 요청을
-  보내지 않았고(bridge 로그에는 시작 기록만 있음), `getContextUsage()`는 Claude 세
+  보내지 않았고(bridge 로그에는 시작 관련 기록만 있음), `getContextUsage()`는 Claude 세
   행에서 200K, GPT-6 세 행에서 1M, Haiku로 되돌아오면 다시 200K를 보고했습니다.
   `Default`는 `claude-opus-5-5[1m]`(1M)으로 해석되었습니다. 기록:
-  `.verify-runs/picker-six-2026-09-22T23-56-44Z/`.
+  `.verify-runs/picker-six-2026-09-23T00-51-18Z/`.
+- **Runtime MCP server:** 최종 실행에서 보존된 bridge 로그 72개(슬롯별 bridge 66개와
+  v11 daemon 6개)가 모두 server 5개에 대한 `bridge.mcp_servers_disabled`를 기록합니다.
+  v11의 foreground 실행 6회는 임시 bridge를 쓰며, 런처가 종료 시 그 로그를 지웁니다.
+  `ps` sampler는 최대 9개 runtime이 동시에 도는 12분 동안 354회 표본을 수집했으며, 그
+  아래에서 MCP server 프로세스를 한 번도 보지 못했습니다. 자식 프로세스는 잠깐 뜬 `git`
+  호출과 종료 중인 프로세스(`<defunct>`, `(copilot-runtime)`)뿐이었습니다. 변경
+  전에는 열린 session 하나가 azmcp와 Playwright MCP node server 2개(~330 MB)를 띄웠고,
+  두 session을 동시에 처리하는 bridge에는 이런 자식 프로세스가 6개 있었습니다. 두 cold
+  첫 요청의 동시 처리 시간 중앙값은 8.08초에서 3.95초로 줄었습니다. 기록:
+  `.verify-runs/runtime-sampler-2026-09-23T00-38-10Z/`,
+  `.verify-runs/mcp-check-2026-09-23T00-32-13Z/`.
 - **SDK 예산**(`bridge.context_budget`): 기본 tier에서 Opus 5.5·Sonnet 5 200,000,
   Haiku 4.5 136,000; long-context tier에서 Astra 1,050,000, Sol·Luna 872,000.
-- **오프라인:** `npm test` **388/388 통과**, 실패·취소·건너뜀 없음.
+- **오프라인:** `npm test` **390/390 통과**, 실패·취소·건너뜀 없음.
 - **원시 산출물 별도 대조:** 기록된 검사 **1,146개** 중 실패 0개, headless 단계
   transcript **90개**에 담긴 result envelope 95개가 모두 양수 입력 usage와 예상한
   응답 모델을 기록했습니다. 응답 없는 `tool_use`가 없고, 6개 런처 슬롯의
@@ -437,15 +458,18 @@ GPT-6 Luna이며, 모두 같은 11개 시나리오를 받습니다. 랩탑에 �
   세션이 실행 도중 `/model` 선택을 `~/.claude/settings.json`에 저장했고, 설정 보존
   판정이 이를 정확히 거부했습니다. 이제 v02와 v08 프롬프트는 v08 cron 턴이 이미
   CronCreate를 명시하듯 Edit과 Write를 명시합니다. 검사와 통과 기준은 바꾸지
-  않았습니다. 최종 전체 실행 전에 Opus 5.5의 두 시나리오만 다시 실행한 부분 실행도
-  2/2 통과했습니다.
+  않았습니다. Opus 5.5의 두 시나리오만 다시 실행한 부분 실행은 2/2, 다음 전체 실행은
+  624초에 66/66 통과했습니다. 이후 runtime MCP 변경은 해당 commit에서 새 전체 실행이
+  필요했고, 다른 저장소의 Copilot runtime 안정성 작업이 같은 랩탑에 부하를 주는
+  동안(load average ≈ 8.5) 실행되어 더 오래 걸렸습니다.
 
 전체 실행 이력은 각 실행 당시의 구현과 모델 catalog를 기준으로 구분해 보존합니다.
 
 | 전체 실행 | 실행 ID (UTC) | 매트릭스 | pass / fail / blocked / unknown | 모델 × 시나리오 작업자 | 소요 | 사용자 설정 |
 |---|---|---|---|---|---|---|
 | 6개 모델 첫 실행 — NOT GREEN | `2026-09-22T23-29-13-171Z` | 6 × 11 | 64 / 2 / 0 / 0 | 3 × 2 | 778초 | 하네스 밖 대화형 세션이 변경 |
-| 6개 모델 최종 — PASS | `2026-09-22T23-45-15-077Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **624초** | **보존** |
+| 6개 모델, runtime MCP 변경 전 — PASS | `2026-09-22T23-45-15-077Z` | 6 × 11 | 66 / 0 / 0 / 0 | 3 × 2 | 624초 | 보존 |
+| 6개 모델 최종, runtime MCP server 비활성화 — PASS | `2026-09-23T00-38-10-470Z` | 6 × 11 | **66 / 0 / 0 / 0** | **3 × 2** | **740초** | **보존** |
 | 7개 모델: 이전 마무리 1차 — NOT GREEN | `2026-09-21T22-54-08-294Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 456초 | 변경됨; 변경 주체·원인 미확인 |
 | 7개 모델: 이전 마무리 2차 — NOT GREEN | `2026-09-21T23-07-19-056Z` | 7 × 11 | 74 / 2 / 1 / 0 | 7 × 2 | 863초 | 보존 |
 | 7개 모델: 새 기준 실행 — NOT GREEN | `2026-09-22T00-01-29-757Z` | 7 × 11 | 76 / 1 / 0 / 0 | 7 × 2 | 943초 | 보존 |
@@ -455,13 +479,13 @@ GPT-6 Luna이며, 모두 같은 11개 시나리오를 받습니다. 랩탑에 �
 | 7개 모델: 컨텍스트·스트리밍 복구 — PASS | `2026-09-22T12-29-58-559Z` | 7 × 11 | 77 / 0 / 0 / 0 | 3 × 2 | 812초 | 보존 |
 
 최종 실행은 commit
-`6a6691cb52da84e5232ba4eebfacff9450b5b174`(clean 작업 트리)에서 시작·종료했고,
+`1df3aa4982ce2eb688a7d48f64aeab61e1499e22`(clean 작업 트리)에서 시작·종료했고,
 41개 파일의 `verification-code-v1` SHA-256 지문도 일치합니다.
-`4e7986206619e28c6bbe5f1f50fdf957009d6f0db1468abcd1d417a8342cc453`.
+`5dad75f80408a699feac9f2221d6edcea848a7d9265e0a9e25cd170277c9cd7b`.
 생성된 영문·한글 검증 문서는 모두 **이 최종 전체 실행만** 사용합니다.
-git 무시 대상 `.verify-runs/2026-09-22T23-45-15-077Z/`에 `summary.json`,
+git 무시 대상 `.verify-runs/2026-09-23T00-38-10-470Z/`에 `summary.json`,
 `slots.jsonl`, `console.log`, `audit.json`, 단계별 transcript와 런처 로그를
-보존했습니다. 첫 6개 모델 실행과 부분 재실행(`2026-09-22T23-44-23-074Z`)은 별도
+보존했습니다. 앞선 6개 모델 실행들과 부분 재실행(`2026-09-22T23-44-23-074Z`)은 별도
 기록으로 남기며, 그 셀을 최종 66/66에 보태지 않았습니다.
 
 ### 이전 7개 모델 기록 (2026-09-22)
