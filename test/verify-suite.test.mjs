@@ -133,6 +133,7 @@ test("scenario budgets are stated and finite", () => {
     );
     assert.ok(scenario.pass.length > 0, `${scenario.id} states no pass criteria`);
     assert.ok(scenario.intentKo && scenario.bridgeRiskKo, `${scenario.id} is missing Korean copy`);
+    assert.equal(scenario.passKo.length, scenario.pass.length, `${scenario.id} is missing Korean check text`);
   }
 });
 

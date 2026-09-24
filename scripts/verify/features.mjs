@@ -1,6 +1,6 @@
 /**
  * Claude Code core-feature inventory, and the coverage arithmetic behind the
- * "the catalog covers ~90%" claim.
+ * feature-coverage percentage in docs/VERIFICATION.md.
  *
  * The claim is only worth making if it is checkable, so it is computed here
  * from two declared lists rather than asserted in prose:
@@ -8,9 +8,9 @@
  *   - FEATURES      every core capability, with a weight for how central it is
  *   - scenario.covers  which of those each scenario actually exercises
  *
- * coverage() multiplies out and reports the real number. Features nothing
- * covers stay in the inventory and drag the number down; they are the honest
- * remainder, listed in the report rather than quietly dropped.
+ * coverage() multiplies out and reports the real number. It counts features
+ * the scenarios declare, not checks. Features no scenario declares stay in the
+ * inventory, lower the number, and are listed in the report.
  *
  * Weights
  *   3  used in almost every session (Read, Bash, the tool loop)
@@ -40,7 +40,7 @@ function feature(id, name, nameKo, tier, requiresTool = null) {
  * independent signals agree for every tool named. Scenarios reach for Bash
  * instead, which is why nothing failed while the note was wrong.
  *
- *   measured on Claude Code 2.1.278, 2026-09-20
+ *   measured on Claude Code 2.1.278, 2026-09-20 (ABSENT_TOOLS_MEASURED_ON)
  *   node scripts/verify/probe.mjs --only inventory-crosscheck,todo-write,background-shell
  *
  * Features gated on an absent tool leave BOTH sides of the coverage fraction.
@@ -49,15 +49,18 @@ function feature(id, name, nameKo, tier, requiresTool = null) {
  */
 export const ABSENT_TOOLS = Object.freeze(["TodoWrite", "BashOutput", "KillShell", "Glob", "Grep"]);
 
+/** The Claude Code version probe.mjs measured ABSENT_TOOLS on; the report prints it. */
+export const ABSENT_TOOLS_MEASURED_ON = "2.1.278";
+
 export const FEATURES = Object.freeze([
   // --- built-in tools ------------------------------------------------
-  feature("read", "Read tool (numbered lines, offset/limit)", "Read 도구", "core"),
+  feature("read", "Read tool (numbered lines, offset/limit)", "Read 도구(줄 번호, offset/limit)", "core"),
   feature("glob", "Glob path matching", "Glob 경로 검색", "core", "Glob"),
   feature("grep", "Grep content search", "Grep 내용 검색", "core", "Grep"),
   feature("edit", "Edit exact-string replacement", "Edit 정밀 치환", "core"),
   feature("write", "Write file creation", "Write 파일 생성", "core"),
   feature("bash", "Bash command execution", "Bash 명령 실행", "core"),
-  feature("bash-background", "Background shells and output polling", "백그라운드 셸/출력 폴링", "common", "BashOutput"),
+  feature("bash-background", "Background shells and output polling", "백그라운드 셸과 출력 폴링", "common", "BashOutput"),
   feature("todo", "TodoWrite task tracking", "TodoWrite 작업 추적", "common", "TodoWrite"),
   feature("git", "Git workflow driven through Bash", "Bash 기반 git 워크플로", "common"),
   feature("worktree", "Git worktree isolation", "git worktree 격리", "common"),
@@ -66,7 +69,7 @@ export const FEATURES = Object.freeze([
   feature("tool-loop", "Multi-turn tool_use -> tool_result loop", "멀티턴 도구 루프", "core"),
   feature("parallel-tools", "Several tool_use blocks in one turn", "한 턴 내 병렬 도구 호출", "common"),
   feature("error-recovery", "Recovering from a failed tool result", "실패한 도구 결과에서 복구", "core"),
-  feature("thinking", "Extended thinking / reasoning blocks", "확장 사고 블록", "common"),
+  feature("thinking", "Extended thinking / reasoning blocks", "확장 사고(reasoning) 블록", "common"),
   feature("multi-hop", "Multi-step reasoning over retrieved facts", "검색한 사실 기반 다단 추론", "common"),
 
   // --- delegation ----------------------------------------------------
@@ -76,14 +79,14 @@ export const FEATURES = Object.freeze([
   // --- extensibility -------------------------------------------------
   feature("mcp-stdio", "MCP stdio server connection", "MCP stdio 서버 연결", "core"),
   feature("mcp-tools", "Invoking tools exposed over MCP", "MCP 도구 호출", "core"),
-  feature("hooks", "Hook lifecycle (PreToolUse/PostToolUse)", "훅 수명주기", "common"),
+  feature("hooks", "Hook lifecycle (PreToolUse/PostToolUse)", "훅 수명주기(PreToolUse/PostToolUse)", "common"),
   feature("hook-deny", "Hook-driven tool denial", "훅 기반 도구 차단", "common"),
   feature("memory", "CLAUDE.md project instructions", "CLAUDE.md 프로젝트 지침", "core"),
   feature("slash-commands", "Custom slash commands", "커스텀 슬래시 명령", "common"),
   feature("skills", "Skills discovery and invocation", "스킬 탐색/호출", "common"),
   feature("settings", "settings.json driven configuration", "settings.json 설정", "core"),
-  feature("permission-mode", "Permission modes and enforcement", "권한 모드와 집행", "core"),
-  feature("plan-mode", "Plan mode withholds edits and still completes", "플랜 모드(편집 보류)", "common"),
+  feature("permission-mode", "Permission modes and enforcement", "권한 모드와 그 적용", "core"),
+  feature("plan-mode", "Plan mode withholds edits and still completes", "plan 모드(편집을 보류하고 턴은 끝냄)", "common"),
   feature("plugins", "Plugins loaded from --plugin-dir", "플러그인(--plugin-dir)", "common"),
   feature("cron", "In-session scheduled tasks", "세션 내 예약 작업", "niche"),
 
@@ -96,27 +99,28 @@ export const FEATURES = Object.freeze([
   // verified the bridge but never the thing shipped around it.
   feature("launcher", "bin/claude-ghcp launcher and preflight", "bin/claude-ghcp 런처와 사전 점검", "core"),
   feature("daemon", "Persistent bridge daemon (start, status, stop)", "상주 브리지 데몬(기동·상태·종료)", "common"),
-  feature("background-agent", "Detached background agent sessions", "분리형 백그라운드 에이전트 세션", "common"),
+  feature("background-agent", "Detached background agent sessions", "분리 실행한 백그라운드 에이전트 세션", "common"),
 
   // --- session and context -------------------------------------------
   feature("session-resume", "Resuming a session in a new process", "새 프로세스에서 세션 재개", "core"),
   feature("session-id", "Stable session identity", "세션 ID 일관성", "common"),
-  feature("session-fork", "Forking a resumed session", "세션 포크(--fork-session)", "common"),
+  feature("session-fork", "Forking a resumed session", "재개한 세션 포크", "common"),
   feature("long-context", "Retrieval from a large context window", "대형 컨텍스트에서 검색", "common"),
 
   // --- transport and output ------------------------------------------
-  feature("headless", "Headless -p invocation", "헤드리스 -p 실행", "core"),
+  feature("headless", "Headless -p invocation", "print 모드(-p) 실행", "core"),
   feature("streaming", "stream-json event protocol", "stream-json 이벤트 프로토콜", "core"),
-  feature("stream-input", "stream-json input and user-message replay", "stream-json 입력/사용자 메시지 재생", "common"),
+  feature("stream-input", "stream-json input and user-message replay", "stream-json 입력과 사용자 메시지 재전송", "common"),
   feature("structured-output", "--json-schema validated result", "구조화 출력(--json-schema)", "common"),
   feature("multimodal", "Image and PDF content reaching the model", "이미지·PDF 콘텐츠 전달", "common"),
   feature("result-envelope", "result event: stop_reason and usage", "result 이벤트(stop_reason/usage)", "core"),
   feature("model-identity", "Serving model verified from modelUsage", "modelUsage 기반 모델 검증", "core"),
 
-  // --- the remainder: real features the catalog does not reach ---
+  // --- mostly not reached: only v05 declares notebook -----------------
   feature("webfetch", "WebFetch / WebSearch", "WebFetch / WebSearch", "common"),
-  feature("notebook", "NotebookEdit for .ipynb", "NotebookEdit(.ipynb)", "niche"),   // reached by v05
-  feature("tui", "Interactive TUI affordances (plan picker, /rewind)", "대화형 TUI 요소", "common"),
+  // v05 checks the .ipynb file, not which tool edited it.
+  feature("notebook", "Jupyter notebook (.ipynb) edit", "주피터 노트북(.ipynb) 편집", "niche"),
+  feature("tui", "Interactive TUI affordances (plan picker, /rewind)", "대화형 TUI 요소(plan 선택 화면, /rewind)", "common"),
   feature("compaction", "Automatic context compaction", "자동 컨텍스트 압축", "common"),
 ]);
 
