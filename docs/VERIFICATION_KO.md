@@ -1,57 +1,57 @@
-# 검증 결과 — 6개 모델 × 11개 시나리오
+# 검증 결과: Copilot 모델 6개, 66개 슬롯 중 66개 통과
 
-이 문서는 `scripts/verify/report.mjs`가 실행 기록(`slots.jsonl`)에서 생성합니다. 손으로 고치지 마세요 — 다시 생성하면 덮어쓰입니다.
+<!-- scripts/verify/report.mjs가 생성하는 파일입니다. 다시 생성하면 덮어쓰므로 직접 고치지 마세요. -->
 
-## 무엇을 검증했나
+> **언어 / Language:** [English](VERIFICATION.md) | 한국어
 
-모든 슬롯은 실제 경로를 그대로 지납니다: 진짜 Claude Code 바이너리 → 브리지 → Copilot SDK → Copilot 모델. 목이나 스텁은 없습니다. 판정은 모델이 무엇을 말했는지가 아니라 **디스크 상태, git 이력, 훅 로그, stream-json 이벤트**로 합니다.
+**PASS.** 66개 슬롯이 모두 통과했습니다. 기록된 검사 1,146개 중 실패한 검사는 없습니다.
 
-- Claude Code: `2.1.280`
-- 실행 시각: 2026-09-23T09:11:26.241Z → 2026-09-23T09:19:25.033Z
-- 소요: 479초
-- 호스트: darwin arm64 / node v22.16.0
+슬롯은 Copilot 모델 하나가 시나리오 하나를 실행하는 단위이며, 이 실행은 모델 6개 × 시나리오 11개입니다.
 
-## 정책, 완전성 및 코드 출처
+- 코드: 커밋 `bed30ce`. 커밋하지 않은 변경이 없었습니다. 실행하는 동안 코드가 바뀌지 않았습니다.
+- Claude Code: 2.1.280.
+- 브리지 설정(모든 브리지 공통): `PENDING_TOOL_WAIT_MS=30000`, 기본값은 10000입니다.
+- 검증 하네스: `--timeout-scale 2`, 모델 3개 병렬, 모델마다 시나리오 2개 병렬. 기록된 설정 전체는 [이 실행의 설정](#이-실행의-설정)에 있습니다.
+- 실행: 2026-09-23T09:11:26.241Z부터 2026-09-23T09:19:25.033Z까지 479초. 호스트: darwin arm64, Node v22.16.0.
 
-- 정책: strict-all-pass-v1
-- 범위: full (66 전체 매트릭스 카탈로그 슬롯)
-- 예상: 66 / 실제: 66
-- 결과: PASS
-- 엄격한 통과는 비어 있지 않은 예상 매트릭스의 정확하고 중복 없는 완료, 모든 슬롯의 pass, 사용자 설정 보존 및 시작/종료 코드 출처 일치를 요구합니다.
-- 코드 출처 start: commit: bed30cebc49b155b09c2795618b7e28ad044aae5; dirty: false; fingerprint: sha256 verification-code-v1 1fa37d3abcd284e9d1481fafef02c211d976e63fabeaa8d64d4879a159fb5bc7; files: 41
-- 코드 출처 end: commit: bed30cebc49b155b09c2795618b7e28ad044aae5; dirty: false; fingerprint: sha256 verification-code-v1 1fa37d3abcd284e9d1481fafef02c211d976e63fabeaa8d64d4879a159fb5bc7; files: 41
+## 슬롯 실행 방식
 
-## 기록된 실행 설정
+- **v01–v10.** 검증 하네스가 슬롯의 모델에 맞춘 브리지(`node src/server.mjs`, 비어 있는 로컬 포트)를 띄우고, 런처가 쓰는 것과 같은 `src/write-launch-settings.mjs`로 Claude Code 설정 파일을 만듭니다. 그다음 설치된 `claude` 바이너리를 print 모드(`-p`, stream-json 출력)로 실행하면서 `--settings`로 그 파일을 넘깁니다. 슬롯마다 브리지, 작업 폴더, Claude Code 설정 폴더가 따로 있습니다.
+- **v11.** 하네스가 사용자처럼 `bin/claude-ghcp`를 실행합니다. 상주 브리지 데몬을 띄우는 `--background` 실행, 자체 브리지를 쓰는 `-p` 실행, 데몬을 거치는 `agents` 실행입니다.
 
-| 설정 / 대기 | 기록된 값 | 적용 범위 |
-| --- | --- | --- |
-| `--timeout-scale` | 2 | 검증 전용 timeout 배율 |
-| `PENDING_TOOL_WAIT_MS` | 30000 ms (30 s) | 별도의 pending-tool 대기. --timeout-scale을 곱하지 않음 |
-| `--model-concurrency` | 3 | 동시에 실행할 모델 작업자 수 |
-| `--scenario-concurrency` | 2 | 모델별로 동시에 실행할 시나리오 작업자 수 |
-| `bridgeHealthMs` | 240000 ms (240 s) | 검증용 bridge health 대기 |
-| `planTurnMs` | 180000 ms (180 s) | plan-mode의 각 headless 턴 |
-| `backgroundLaunchMs` | 240000 ms (240 s) | v11 background launcher 호출 |
-| `foregroundLaunchMs` | 360000 ms (360 s) | v11 foreground launcher 호출 |
-| `persistentLaunchMs` | 240000 ms (240 s) | v11 persistent launcher 호출 |
-| `detachedOutputMs` | 480000 ms (480 s) | v11 detached 출력 대기 |
-| `scenarioMs.v01-repo-recon` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v02-surgical-edit` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v03-test-fix-loop` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v04-shell-ops` | 840000 ms (840 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v05-multi-step` | 600000 ms (600 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v06-subagent` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v07-mcp-playwright` | 600000 ms (600 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v08-hooks-memory` | 660000 ms (660 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v09-session-resume` | 600000 ms (600 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v10-long-context` | 480000 ms (480 s) | 슬롯 전체가 아닌 headless 턴마다 적용 (v01–v10) |
-| `scenarioMs.v11-daemon-background` | 840000 ms (840 s) | 계획용 값만 기록. v11은 위의 별도 단계별 대기를 사용 |
+LiteLLM을 거치는 슬롯은 없고, 모의 응답이나 대체 구현도 쓰지 않습니다. 모든 모델 턴은 GitHub Copilot으로 갑니다.
 
-Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한, SIGKILL 유예 시간과 실제 운용 launcher/daemon 시작 기본값은 timeout 배율로 바뀌지 않습니다.
+검사는 디스크의 파일, git 이력, 훅 로그, Claude Code의 stream-json 출력(init 이벤트, 도구 호출, 도구 결과, 마지막 result 이벤트)을 읽습니다. v11 검사는 런처, `claude-ghcp-status`, `claude-ghcp-stop`, `claude agents`의 출력과 데몬 폴더도 읽습니다. 모델의 답을 읽는 검사는 하네스가 심어 둔 값을 찾습니다. 예외는 두 가지입니다. v05는 모든 단계를 마쳤다는 주장을 파일과 대조하고, v08은 명령이 차단되었다는 말이 답에 있어야 합니다.
 
-명령 한정 PENDING_TOOL_WAIT_MS=30000(30초)은 검증 시의 예방 조치이지, 결과 없이 종료되는 현상의 확립된 해결책이 아닙니다.
+v01–v10의 Claude Code 실행에는 모두 아래 검사가 더 붙습니다. 한 슬롯은 Claude Code를 1–3회 실행합니다.
 
-단일 턴 기준 일정 추정치는 계획용이며 deadline이나 실제 최악의 경우 상한이 아닙니다. 한 슬롯에 여러 호출이 있을 수 있고, v11은 scenarioMs 계획 예산이 아닌 별도의 단계별 대기를 사용합니다.
+1. 제한 시간 안에 result 이벤트로 끝났습니다.
+2. 모든 tool_use에 tool_result가 있고, 모든 tool_result에 tool_use가 있습니다.
+3. `modelUsage`에 슬롯의 모델이나 Claude Code를 실행할 때 쓴 별칭이 있습니다.
+4. result 이벤트에 `stop_reason`이나 `subtype`이 있습니다.
+5. usage의 입력 토큰이 0보다 큽니다.
+6. result가 오류가 아닙니다.
+
+1–3번 중 하나라도 실패하면 슬롯은 BLOCK입니다. 판정할 수 없다는 뜻이며 미통과로 셉니다. 브리지가 끝내 정상 응답을 하지 않는 것처럼 검증 하네스 자체가 실패해도 BLOCK입니다. 4–6번 중 하나라도 실패하면 FAIL입니다. v09는 첫 번째 실행이 통과하지 못하면 멈추고, 건너뛴 두 실행 때문에 슬롯은 BLOCK이 됩니다. v11은 Claude Code의 stream-json 출력을 읽지 않으므로 이 검사가 없습니다. 대신 런처의 종료 코드와 출력, 데몬 상태, 백그라운드 에이전트가 쓴 파일을 검사합니다.
+
+## 이 실행으로 검증하지 않은 것
+
+통과한 실행이라도 아래 내용은 보여 주지 않습니다.
+
+- **업스트림 오류.** Copilot 실패를 일부러 일으키는 슬롯이 없습니다. 브리지의 429(요청 한도)와 529(과부하) 응답은 이 실행이 아니라 `npm test`가 확인합니다.
+- **컨텍스트 한도 오류와 압축.** 모델의 컨텍스트 창을 채우는 시나리오가 없습니다. 그래서 브리지의 컨텍스트 한도 오류와 그 뒤에 Claude Code가 하는 압축이 일어나지 않습니다.
+- **대화형 세션.** v01–v10은 Claude Code를 모두 print 모드(`-p`)로 실행합니다. v11은 런처를 `--background`, `-p`, `agents`로 실행합니다. 대화형 터미널 화면, `/rewind`, Esc 취소는 다루지 않습니다.
+- **권한 확인 창.** v01–v10은 `bypassPermissions`로 실행하고, v02의 plan 모드 턴만 예외입니다. v11에서 모델을 호출하는 실행은 `acceptEdits`로 실행합니다. 사람에게 도구 사용 승인을 묻는 확인 창은 검증하지 않습니다.
+- **실제로 답한 Copilot 모델.** 모델 검사는 `modelUsage`를 읽는데, 여기에는 Claude Code가 요청한 모델 이름이 들어 있습니다. 어떤 Copilot 모델이 턴을 처리했는지는 알 수 없습니다.
+- **커스텀 명령, 스킬, 예약 작업의 실행.** v08은 이들이 Claude Code의 init 이벤트에 나오는지, 예약 작업이 만들어지고 목록에 나오는지만 확인합니다. 실제로 실행되었는지는 검사하지 않습니다.
+- **세션 도중의 브리지 재시작.** v09의 처음·재개·포크 프로세스는 계속 실행 중인 브리지 하나를 함께 씁니다.
+- **LiteLLM.** 모든 슬롯이 브리지에 직접 연결합니다.
+- **매트릭스 밖의 모델.** 결과 표에 있는 모델만 실행했습니다.
+- **브리지가 무시하거나 적용하지 못하는 요청 값.** [COMPATIBILITY_KO.md](COMPATIBILITY_KO.md#적용하지-않는-요청-값)를 보세요.
+- **검사가 없는 기능과 어느 시나리오도 선언하지 않은 기능.** 둘 다 [기능 커버리지](#기능-커버리지)에 있습니다.
+- **다른 호스트.** 이 실행은 이 문서 맨 위에 적은 머신 한 대에서만 돌았습니다.
+- **기록한 커밋 이후의 코드.** 이 실행은 이 문서 맨 위에 적은 커밋만 검증합니다. 이후 변경과 그 변경을 확인하는 방법은 [README_KO.md](../README_KO.md#검증한-것)에 있습니다.
+- **기본 `PENDING_TOOL_WAIT_MS` 값.** 이 실행의 모든 브리지는 Copilot이 도구 호출을 등록하기를 최대 30000 ms 기다렸습니다. 기본값은 10000 ms입니다.
 
 ## 결과 매트릭스
 
@@ -69,182 +69,247 @@ Status/list/stop/final-cleanup wrapper, poll/probe, 로컬 테스트 제한, SIG
 | `v10-long-context` | PASS | PASS | PASS | PASS | PASS | PASS |
 | `v11-daemon-background` | PASS | PASS | PASS | PASS | PASS | PASS |
 
-**pass 66 / fail 0 / blocked 0** — 전체 66슬롯, 통과 기준 66.
+**pass 66 / fail 0 / blocked 0**, 전체 66개 슬롯.
 
-BLOCK(blocked)는 통과가 아닙니다. 실행하지 못한 슬롯이며 분모에 그대로 남습니다. DUP는 중복 기록, UNKNOWN은 알 수 없는 결과입니다.
+아래 슬롯에서는 `modelUsage`에 모델이 둘 이상 있었습니다. 모델 검사는 그중 하나라도 슬롯의 모델이나 실행할 때 쓴 별칭이면 통과합니다.
+
+- gpt-6-astra × `v01-repo-recon`: `github-copilot/claude-gpt-6-astra[1m]`, `claude-opus-5-5[1m]`
+
+## 통과하지 못한 슬롯
+
+없습니다.
 
 ## 시나리오
 
 ### `v01-repo-recon` — 저장소 정찰
 
-코드를 고치기 전에 저장소에서 대상을 찾아내는, 거의 모든 세션의 첫 동작.
+코드를 고치기 전에 저장소에서 대상을 찾습니다. 거의 모든 세션이 이 동작으로 시작합니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 큰 tool_result가 전송 중 잘리거나 재인코딩되는 경우, 또는 다중 호출 턴 순서가 뒤바뀌어 읽지도 않은 경로를 답하는 경우.
+**잡아내려는 브리지 결함:** 여러 검색 호출의 결과가 유실되거나, 짝이 어긋나거나, 순서가 바뀌어 모델이 읽지 않은 경로를 답하는 경우.
 
-판정 기준:
-- The prompt went in as a stream-json envelope and the CLI replayed it back.
-- A search tool was actually used (Bash — this build offers no Glob or Grep).
-- The answer names the planted file, not either decoy.
-- Every tool_use in the transcript has a matching tool_result.
-- result carries a stop_reason and non-zero usage, and modelUsage names the expected backend.
+검사:
+
+- Claude Code가 stream-json 입력을 해석하고 사용자 메시지를 되돌려 보냈습니다.
+- 검색 도구(Bash, Glob, Grep, Task 중 하나)를 사용했습니다. 이 빌드에는 Glob과 Grep이 없습니다.
+- 답에 상수를 정의한 파일과 그 상수의 값이 있습니다.
+- 답이 미끼 파일을 가리키지 않습니다.
 
 ### `v02-surgical-edit` — 정밀 편집과 파일 생성
 
-요청한 것만 정확히 바꾸고 나머지는 건드리지 않은 뒤 새 파일을 만드는, 바이트 단위 편집 계약.
+요청한 부분만 정확히 바꾸고 나머지는 그대로 둔 뒤 새 파일을 만듭니다. 그보다 먼저 plan 모드 턴이 실행되며, 이 턴은 파일을 바꾸면 안 됩니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: tool_use 페이로드의 공백·개행 정규화로 Edit의 정확 일치가 실패하거나 엉뚱한 줄에 조용히 매칭되는 경우.
+**잡아내려는 브리지 결함:** tool_use 입력의 공백이나 줄바꿈이 정규화되어 Edit의 정확한 일치가 실패하거나, 엉뚱한 줄이 조용히 바뀌는 경우.
 
-판정 기준:
-- A plan-mode turn finished on its own and left the file untouched.
-- The second marked line holds the new value.
-- The first and third marked lines are byte-for-byte unchanged.
-- The requested new file exists with the requested export.
-- The Edit tool was used; the file was not rewritten wholesale.
+검사:
+
+- plan 모드 턴이 승인을 기다리지 않고 끝났고, 요청받은 변경을 하지 않았습니다.
+- 편집 턴에서 표시한 값이 새 값으로 바뀌었습니다.
+- 표시한 다른 두 줄은 바뀌지 않은 채 남아 있습니다.
+- 요청한 새 파일이 있고, 요청한 const를 export합니다.
+- 편집 턴에서 Edit(또는 MultiEdit, NotebookEdit)를 사용했습니다.
 
 ### `v03-test-fix-loop` — 실패 테스트 진단과 수정
 
-실행 → 실패 확인 → 소스 수정 → 재실행을 녹색이 될 때까지 반복하는 핵심 에이전트 루프.
+테스트를 실행하고, 실패를 읽고, 소스를 고친 뒤 테스트가 통과할 때까지 다시 실행하는 핵심 에이전트 루프입니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 비정상 종료나 stderr 위주의 tool_result가 유실·오표기되어 모델이 실패 사실을 모른 채 조기 종료하는 경우.
+**잡아내려는 브리지 결함:** 실패한 테스트 실행의 tool_result가 모델에 전달되지 않아, 모델이 실패를 모른 채 일찍 멈추는 경우.
 
-판정 기준:
-- Bash was used to run the suite.
-- The first run came back failing and the session continued anyway.
-- The test file is byte-for-byte unchanged.
-- The runner re-runs the suite itself afterwards and it exits 0.
+검사:
+
+- 모델이 Bash를 호출했습니다.
+- 도구 결과 중 하나에 "not ok", "fail", "AssertionError"가 있거나 오류 결과가 있고, 모델이 도구를 두 번 이상 호출했습니다. `node --test` 출력은 "# fail" 개수를 늘 찍으므로 어떤 출력이든 이 조건에 맞습니다.
+- 테스트 파일은 바이트 단위로 그대로입니다.
+- 검증 하네스가 테스트를 직접 다시 실행했고, 종료 코드가 0입니다.
 
 ### `v04-shell-ops` — 백그라운드 셸과 git 워크플로
 
-단일 명령보다 오래 사는 두 가지 셸 워크플로 — 장기 실행 프로세스와 버전 관리.
+명령 하나로 끝나지 않는 두 가지 셸 작업, 오래 실행되는 프로세스와 버전 관리를 다룹니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 백그라운드 셸 핸들이 턴을 넘기며 유실되어 모델이 완료를 확인하지 못하고 프로세스가 고아로 남는 경우.
+**잡아내려는 브리지 결함:** 길게 이어지는 셸과 git 도구 결과가 유실되거나 짝이 어긋나, 모델이 커밋, worktree 생성, ticker 종료 중 하나를 건너뛰는 경우.
 
-판정 기준:
-- A long-running process was started and watched to completion.
-- The tick log reached at least three lines.
-- git log shows exactly the requested commit subject.
-- Exactly one secondary worktree matches the requested branch or its native EnterWorktree equivalent.
-- The same worktree holds the marker file both on disk and committed unchanged in HEAD.
-- The marker file is absent from both the primary checkout and its HEAD.
-- No ticker process survives the slot.
+검사:
+
+- ticker 스크립트 이름이 들어가거나 백그라운드로 실행한 Bash 호출이 있고, tick 로그 파일 이름이 들어간 Bash 명령이나 Read 호출이 있습니다.
+- tick 로그가 세 줄 이상이고, 기록 파일이 만들어졌습니다.
+- git log에 요청한 제목과 정확히 같은 커밋이 있습니다.
+- git의 worktree 목록을 읽을 수 있고, 요청한 브랜치나 EnterWorktree가 그 이름으로 만드는 브랜치에 등록된 다른 worktree가 정확히 하나 있습니다.
+- 그 worktree의 디스크와 HEAD 커밋에 표식 파일이 같은 내용으로 있습니다.
+- 주 체크아웃과 그 HEAD에는 표식 파일이 없습니다.
+- 턴이 끝난 뒤 실행 중인 ticker 프로세스가 없습니다.
 
 ### `v05-multi-step` — 파일 종류를 넘나드는 4단계 계획
 
-한 턴 안에서 4단계 계획을 유지하며 소스 파일, 평문 파일, 새 마크다운 파일, 주피터 노트북까지 모든 단계를 완수하는 것.
+한 턴 안에서 4단계 계획을 끝까지 지킵니다. 소스 파일, 텍스트 파일, 새 마크다운 파일, 주피터 노트북을 차례로 고친 뒤, 작업 폴더의 PDF와 PNG에서 확인 문자열을 읽습니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 도구 루프가 길어지며 계획이 유실되어 앞쪽 단계만 반영되고 뒤쪽 단계가 조용히 누락되는 경우.
+**잡아내려는 브리지 결함:** tool_result 안에 담긴 PDF 페이지나 이미지가 텍스트만 옮기는 변환에서 빠지는 경우, 또는 도구 루프가 길어지며 계획이 흐트러져 마지막 단계가 조용히 빠지는 경우.
 
-판정 기준:
-- All four changes are present on disk.
-- The notebook still parses as a valid nbformat 4 document.
-- No step was reported done without the file backing it.
-- The tokens inside the attached PDF and PNG both came back, each with at most one of its six random glyphs misread.
+검사:
+
+- 네 가지 변경이 모두 디스크에 반영되었습니다.
+- 노트북이 여전히 nbformat 4 문서로 파싱되고, 셀의 RATE가 새 값입니다.
+- 답이 모든 단계를 마쳤다고 주장하면, 네 파일이 모두 그 주장과 맞습니다.
+- 답에 PDF와 PNG에 적힌 확인 문자열이 모두 있습니다. 각 문자열의 무작위 여섯 글자 중 한 글자까지는 잘못 읽어도 허용합니다.
 
 ### `v06-subagent` — 서브에이전트 위임
 
-프로젝트에 정의된 서브에이전트에 작업을 넘기고 그 결과를 이어 쓰는 동작.
+프로젝트에 정의한 서브에이전트에 작업을 넘기고, 돌아온 결과를 이어서 씁니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 서브에이전트의 도구 루프는 중첩 세션에서 돌기 때문에 최종 보고가 인계 지점에서 유실되고 부모가 답을 지어내는 경우.
+**잡아내려는 브리지 결함:** 중첩 세션에서 도구 루프를 돈 서브에이전트의 최종 보고가 인계 지점에서 유실되어, 부모 에이전트가 답을 지어내는 경우.
 
-판정 기준:
-- The project-defined agent is advertised in the init event.
-- The Task tool was invoked against that agent.
-- A tool_result came back for the delegation.
-- The final answer names the files only the delegated search could have found.
+검사:
 
-### `v07-mcp-playwright` — MCP 브라우저 자동화(헤드리스)
+- 프로젝트에 정의한 에이전트가 init 이벤트에 나옵니다.
+- Agent 도구(init 이벤트에는 Task로 표시)를 그 에이전트를 `subagent_type`으로 지정해 호출했습니다.
+- 위임 호출이 오류가 아닌 tool_result를 돌려받았습니다.
+- 최종 답에 표식이 든 파일이 모두 있습니다.
 
-MCP로 들어온 외부 기능을 실제로 사용하는 것 — @playwright/mcp로 구동되는 헤드리스 Chrome.
+### `v07-mcp-playwright` — MCP 브라우저 자동화(headless Chrome)
 
-**이 시나리오가 잡아내려는 브리지 결함**: MCP 도구 스키마가 경유 중 재작성·네임스페이스 변경되어 모델이 호출하지 못하거나 잘못된 형태로 호출하는 경우.
+MCP로 들어온 외부 기능을 실제로 씁니다. @playwright/mcp가 headless Chrome을 조작합니다.
 
-판정 기준:
-- The playwright MCP server is connected in the init event.
-- At least one mcp__playwright__* tool was called.
-- The answer carries the token that only exists in the served page's DOM.
+**잡아내려는 브리지 결함:** MCP 도구 스키마가 브리지를 지나며 바뀌거나 이름공간이 달라져, 모델이 도구를 호출하지 못하거나 잘못된 형태로 호출하는 경우.
+
+검사:
+
+- init 이벤트에서 playwright MCP 서버가 연결됨으로 나옵니다.
+- `mcp__playwright__*` 도구를 한 번 이상 호출했습니다.
+- 하네스가 띄운 페이지에 표시된 빌드 토큰이 답에 있습니다.
 
 ### `v08-hooks-memory` — 훅·메모리·명령·스킬
 
-프로젝트가 모델 주위에 설정하는 모든 것 — CLAUDE.md 규칙, 관찰·차단하는 훅, 커스텀 명령과 스킬.
+프로젝트가 모델에 덧붙여 설정하는 것을 모두 씁니다. CLAUDE.md 규칙, 관찰하고 차단하는 훅, 커스텀 명령, 스킬, 플러그인, 예약 작업입니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 훅 차단이 거부가 아닌 평범한 tool_result로 전달되어 모델이 막힌 동작을 수행된 것으로 오인하는 경우.
+**잡아내려는 브리지 결함:** 훅의 차단이 오류가 아닌 평범한 tool_result로 모델에 전달되어, 모델이 막힌 명령을 실행된 것으로 보고하는 경우.
 
-판정 기준:
-- The CLAUDE.md rule was obeyed: the record landed at the path the project mandates.
-- The PreToolUse hook fired and left its log.
-- The forbidden command was denied and never ran.
-- The custom command and skill are advertised in the init event.
-- A plugin loaded from --plugin-dir contributes a command and a skill, both advertised.
-- A cron job was created and came back out of the job list, carrying the id or the prompt it was created with.
+검사:
+
+- 감사 기록이 프롬프트가 제안한 경로가 아니라 CLAUDE.md가 정한 경로에 생겼고, 감사 토큰과 정해진 제목이 들어 있습니다.
+- 훅 로그에 PreToolUse 훅과 차단 훅이 모두 실행된 기록이 있습니다.
+- 금지한 `curl` 명령이 요청한 페이지가 어떤 도구 결과에도 없고, 답에 차단이나 거부를 뜻하는 말(blocked, denied, 차단, 거부 등)이 있습니다.
+- 커스텀 슬래시 명령과 프로젝트 스킬이 init 이벤트에 나옵니다. Claude Code는 모델 요청 전에 로컬 파일로 이 이벤트를 만들므로, 이 검사에는 브리지가 관여하지 않습니다.
+- `--plugin-dir`로 불러온 플러그인이 명령과 스킬을 하나씩 추가하고, 둘 다 init 이벤트에 나옵니다. 이 검사에도 브리지는 관여하지 않습니다.
+- 두 번째 턴에서 CronCreate로 작업을 만들었고, CronList가 그 작업을 id나 프롬프트로 다시 보여 줍니다.
 
 ### `v09-session-resume` — 프로세스 간 세션 재개
 
-작업을 덮었다 다시 여는 상황 — 이후 프로세스가 도구나 영구 메모리 없이 대화 문맥에서 원래 문자열을 그대로 기억해야 한다.
+Claude Code 프로세스 세 개가 브리지 하나를 차례로 씁니다. 처음 턴, `--resume` 턴, `--resume --fork-session` 턴입니다. 뒤의 두 턴은 도구나 영구 메모리 없이 처음 턴에서 준 값을 그대로 답해야 합니다. 그동안 브리지는 계속 실행 중입니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 세션 상태가 업스트림 연결에 묶여 있어 재개 시 빈 대화가 열리고 아무 근거 없이 답하는 경우.
+**잡아내려는 브리지 결함:** 브리지는 Claude Code 세션 ID와 에이전트, 모델, 도구, 시스템 프롬프트로 Copilot 세션을 찾습니다. 재개하거나 포크한 프로세스가 엉뚱한 기록에 연결되거나 아무 기록에도 연결되지 않아, 앞선 턴 없이 답하는 경우.
 
-판정 기준:
-- The resumed process reports the same session id.
-- It recalls the planted build id.
-- The seed, resumed, and forked processes use no tools, including persistent-memory reads or writes.
-- A forked resume inherits the same context under a session id of its own.
-- The fork recalls the original deploy-window string without adding a calendar date.
+검사:
+
+- 처음 턴이 하네스가 준 세션 ID로 실행되었고, 재개한 턴도 같은 ID를 유지했습니다.
+- 재개한 턴이 심어 둔 빌드 ID로 답했습니다.
+- 세 턴 모두 도구를 호출하지 않았습니다.
+- 포크한 턴이 자기 세션 ID로 실행되면서 심어 둔 배포 시간을 답했습니다.
 
 ### `v10-long-context` — 대형 컨텍스트 검색과 추론
 
-큰 컨텍스트의 멀리 떨어진 두 사실을 꺼내 결합하는 것 — 긴 컨텍스트의 실제 용도.
+프롬프트에 붙여 넣은 약 108,000자 분량의 보고서에서 멀리 떨어진 두 사실을 찾아 숫자 하나로 계산합니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 업스트림에서 컨텍스트가 조용히 잘려 모델이 남은 절반만 보고 자신 있게 답하는 경우.
+**잡아내려는 브리지 결함:** 업스트림에서 컨텍스트가 조용히 잘려, 모델이 남은 부분만 보고 자신 있게 답하는 경우. 보고서를 프롬프트에 붙여 넣으므로, 크게 잘리면 입력 토큰 수에 드러납니다.
 
-판정 기준:
-- The result carries a schema-valid structured object, not just prose.
-- The arithmetic answer is exactly right, which needs both facts.
-- Reported input usage reflects the whole corpus, not a truncated prefix.
-- The answer came from the prompt itself: no file-reading tool was used.
+검사:
+
+- result에 `--json-schema`가 요구하는 숫자 `difference`를 가진 구조화 객체가 있습니다.
+- 두 사실이 모두 있어야 나오는 차이 값이 정확합니다.
+- 한 줄짜리 대조 턴과 비교해 입력 토큰이 보고서 추정 크기(글자 수 ÷ 4)의 절반 이상 늘었습니다.
+- Read, Grep, Glob을 호출하지 않았습니다. Bash는 막지 않으며, 작업 폴더에도 보고서 사본이 있습니다.
 
 ### `v11-daemon-background` — 런처·데몬·백그라운드 에이전트
 
-이 프로젝트가 실제로 배포하는 진입점 — bin/claude-ghcp 런처, 그것이 남기는 상주 브리지 데몬, 런처가 종료된 뒤에도 계속 응답받는 분리형 에이전트.
+이 프로젝트가 실제로 제공하는 진입점을 씁니다. bin/claude-ghcp 런처, 런처가 남겨 두는 상주 브리지 데몬, 런처가 끝난 뒤에도 계속 응답을 받는 분리 실행 에이전트입니다.
 
-**이 시나리오가 잡아내려는 브리지 결함**: 데몬은 자신을 띄운 프로세스보다 오래 살기 때문에 수명이 부모가 아니라 레지스트리 파일에 묶인다. 레지스트리가 낡으면 죽은 포트를 건네고, 두 번째 실행이 살아 있는 데몬을 재사용하지 않고 조용히 경쟁 데몬을 띄우며, 종료가 포트를 남긴다. 슬롯마다 단명 브리지를 직접 띄우는 시나리오로는 보이지 않는 영역이다.
+**잡아내려는 브리지 결함:** 두 번째 실행이 살아 있는 데몬을 재사용하지 않고 경쟁 데몬을 띄우거나, 낡은 레지스트리가 죽은 포트를 넘기거나, 정지한 뒤에도 포트가 점유된 채 남는 경우. v01–v10은 슬롯마다 브리지를 따로 띄우므로 v11만 이 문제를 볼 수 있습니다.
 
-판정 기준:
-- The launcher's own preflight passed and it reported a backgrounded session id.
-- claude-ghcp-status reports the daemon running, with a pid and port, under the requested model.
-- The detached agent wrote a value that exists only in a file it had to read.
-- claude agents lists the background session against the slot's workspace.
-- A foreground launch answers from its own ephemeral bridge and leaves the daemon undisturbed.
-- A launch that asks for the persistent bridge goes through the daemon and reuses the same pid and port instead of starting a rival.
-- claude-ghcp-stop reports stopped, status goes not-running, and the registry and log are gone.
+검사:
 
-## 커버리지
+- `bin/claude-ghcp --background`가 종료 코드 0으로 끝났고 백그라운드 세션 ID를 출력했습니다.
+- `claude-ghcp-status`가 데몬이 실행 중이며 pid와 포트가 있다고 보고하고, 그 기록의 모델이 슬롯의 모델과 같습니다.
+- 분리 실행한 에이전트가 검증용 파일에만 있는 값을 기록했습니다.
+- `claude agents`가 슬롯 작업 폴더의 백그라운드 세션을 보여 줍니다.
+- 자체 브리지를 쓰는 print 모드(`-p`) 실행이 종료 코드 0으로 끝났고, 읽으라고 한 파일의 값으로 답했으며, 데몬의 pid와 포트는 바뀌지 않았습니다.
+- 상주 브리지를 쓰는 실행(모델을 호출하지 않는 `agents` 하위 명령)이 종료 코드 0으로 끝났고, 데몬 폴더에 설정 파일을 하나 더 만들었으며, 같은 pid와 포트의 데몬을 찾았습니다.
+- `claude-ghcp-stop`이 정지를 보고하고, 이후 status가 데몬이 실행 중이 아님을 보여 주며, 레지스트리와 로그가 지워졌습니다.
 
-선택한 11개 시나리오는 현재 Claude Code 핵심 기능 인벤토리의 **92.2%**(가중치 94/102)에 해당합니다. 이는 카탈로그 커버리지이며 통과율이 아니고 모든 슬롯 실행의 증거도 아닙니다. 결과 집계와 별도로 `scripts/verify/features.mjs`의 기능 목록과 선택한 각 시나리오의 `covers`에서 계산됩니다.
+## 기능 커버리지
 
-### 커버하지 못한 기능 (정직한 잔여분)
+이 실행의 시나리오 11개는 `scripts/verify/features.mjs`에서 세는 기능 43개 중 39개를 선언합니다. 가중치로는 **92.2%**(102 중 94)입니다. 이 비율은 검사가 아니라 시나리오가 `covers`에 적은 기능을 센 값이고, 통과율이 아닙니다. 가중치는 거의 모든 세션에서 쓰는 기능이 3, 자주 쓰는 기능이 2, 드물게 쓰는 기능이 1입니다. 파일에는 기능이 47개 있고, 그중 Claude Code에 없는 도구가 필요한 4개는 세지 않습니다.
 
-- `thinking` (가중치 2) — 확장 사고 블록
-- `webfetch` (가중치 2) — WebFetch / WebSearch
-- `tui` (가중치 2) — 대화형 TUI 요소
-- `compaction` (가중치 2) — 자동 컨텍스트 압축
+### 선언했지만 검사하지 않는 기능
 
-### 이 빌드에 없는 도구 (분모에서 제외)
+아래 기능은 비율에 들어가지만, 적힌 시나리오의 검사 중 이 기능을 확인하는 것은 없습니다.
 
-Claude Code 2.1.280는 다음 도구를 제공하지 않습니다: `TodoWrite`, `BashOutput`, `KillShell`, `Glob`, `Grep`. `scripts/verify/probe.mjs`가 측정합니다. 각 도구를 이름으로 지목해 호출시키고 스트림을 읽습니다 — 빌드가 제공하지 않는 도구는 아무리 강하게 요구해도 tool_use 블록을 만들 수 없기 때문입니다. 같은 턴에서 Read를 양성 대조군으로 함께 호출시키므로, 모델이 통째로 거부한 경우와 도구가 실제로 없는 경우를 구분할 수 있습니다. 브리지의 결함이 아니라 CLI가 애초에 제공하지 않는 기능이므로, 커버한 것으로도 못 한 것으로도 세지 않고 분모에서 제외합니다.
+- `parallel-tools` (`v01-repo-recon`): 한 어시스턴트 메시지에 든 도구 호출 수를 세는 검사가 없습니다. 이 기능을 선언한 다른 시나리오도 없습니다.
+- `error-recovery` (`v04-shell-ops`): v04에는 실패한 도구 결과를 다루는 검사가 없습니다. v03과 v08도 이 기능을 선언합니다.
 
-- `glob` (가중치 3, `Glob` 필요) — Glob 경로 검색
-- `grep` (가중치 3, `Grep` 필요) — Grep 내용 검색
-- `bash-background` (가중치 2, `BashOutput` 필요) — 백그라운드 셸/출력 폴링
-- `todo` (가중치 2, `TodoWrite` 필요) — TodoWrite 작업 추적
+### 어느 시나리오도 선언하지 않은 기능
+
+- `thinking`: 확장 사고(reasoning) 블록
+- `webfetch`: WebFetch / WebSearch
+- `tui`: 대화형 TUI 요소(plan 선택 화면, /rewind)
+- `compaction`: 자동 컨텍스트 압축
+
+각 기능이 브리지에서 동작하는지는 [COMPATIBILITY_KO.md](COMPATIBILITY_KO.md#기능별-확인)에서 확인하세요.
+
+### Claude Code에 없는 도구
+
+`scripts/verify/probe.mjs`로 확인한 결과 Claude Code 2.1.278에는 다음 도구가 없습니다: `TodoWrite`, `BashOutput`, `KillShell`, `Glob`, `Grep`. 각 도구를 이름으로 지정해 호출하게 했을 때, 같은 턴의 Read 호출은 tool_use를 만들었지만 이 도구들은 만들지 않았습니다. 이 실행이 쓴 Claude Code 2.1.280에서는 프로브를 다시 돌리지 않았습니다. 이 도구가 있어야 하는 기능은 선언한 것으로도, 빠진 것으로도 세지 않습니다.
+
+- `glob` (`Glob` 필요): Glob 경로 검색
+- `grep` (`Grep` 필요): Grep 내용 검색
+- `bash-background` (`BashOutput` 필요): 백그라운드 셸과 출력 폴링
+- `todo` (`TodoWrite` 필요): TodoWrite 작업 추적
 
 ## 재현
 
-아래 명령은 기록된 설정을 다시 사용합니다. 기록되지 않은 설정에는 과거 값을 추정하지 않고 현재 기본값을 적용합니다.
+`npm run verify`는 모든 슬롯에서 실제 Copilot 모델을 호출하며, 지금 체크아웃된 코드를 실행합니다. 이 실행이 검증한 코드를 다시 돌리려면 먼저 다음 커밋을 체크아웃하세요: `bed30ce`. 첫 번째 명령은 이 실행에 기록된 `--timeout-scale`, `--model-concurrency`, `--scenario-concurrency`, `PENDING_TOOL_WAIT_MS` 값을 그대로 씁니다. 다른 브리지 설정과 설치된 Claude Code를 포함한 나머지는 실행하는 컴퓨터의 것을 씁니다.
 
 ```bash
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 # 6개 모델 × 11개 시나리오
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 --dry-run # 실행 없이 계획만
-npm run verify:probe        # 없는 도구 목록의 근거가 되는 능력 프로브
-npm run verify:report       # 최근 실행 결과 요약
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 # 모델 6개 × 시나리오 11개
+PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 --dry-run # 모델 호출 없이 계획만 출력
+npm run verify:probe        # 이 Claude Code 빌드에 없는 도구를 다시 확인 (모델 호출)
+npm run verify:report       # 가장 최근 실행 요약
 ```
 
+### 이 실행의 설정
+
+| 설정 | 값 | 적용 대상 |
+| --- | --- | --- |
+| `--timeout-scale` | 2 | 아래 하네스 대기 시간에 곱하는 배율 |
+| `PENDING_TOOL_WAIT_MS` | 30000 ms (30 s) | 브리지 설정. 각 브리지가 Copilot이 도구 호출을 등록하기를 기다리는 시간. 기본값 10000 ms. 배율 적용 안 함. |
+| `--model-concurrency` | 3 | 동시에 실행하는 모델 수 |
+| `--scenario-concurrency` | 2 | 모델마다 동시에 실행하는 시나리오 수 |
+| `bridgeHealthMs` | 240000 ms (240 s) | 슬롯 브리지가 정상 응답할 때까지 대기 |
+| `planTurnMs` | 180000 ms (180 s) | v02의 plan 모드 Claude Code 실행 |
+| `backgroundLaunchMs` | 240000 ms (240 s) | v11의 `--background` 실행 |
+| `foregroundLaunchMs` | 360000 ms (360 s) | v11의 `-p` 실행 |
+| `persistentLaunchMs` | 240000 ms (240 s) | v11에서 데몬을 거치는 `agents` 실행 |
+| `detachedOutputMs` | 480000 ms (480 s) | v11에서 백그라운드 에이전트의 출력 파일 대기 |
+| `scenarioMs.v01-repo-recon` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v02-surgical-edit` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v03-test-fix-loop` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v04-shell-ops` | 840000 ms (840 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v05-multi-step` | 600000 ms (600 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v06-subagent` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v07-mcp-playwright` | 600000 ms (600 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v08-hooks-memory` | 660000 ms (660 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v09-session-resume` | 600000 ms (600 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v10-long-context` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
+| `scenarioMs.v11-daemon-background` | 840000 ms (840 s) | 쓰지 않음. v11은 위의 v11 대기 시간을 따름 |
+
+`--timeout-scale`은 이 표의 하네스 대기 시간에만 곱합니다. `PENDING_TOOL_WAIT_MS`, 하네스의 고정 대기(status·stop·`claude agents`·정리 명령, 폴링, v03의 테스트 재실행, SIGKILL 전 5초 유예 등), 런처와 데몬 자체의 시작 제한에는 배율을 적용하지 않습니다.
+
+## 실행 기록
+
+이 문서는 `scripts/verify/report.mjs`가 실행 `2026-09-23T09-11-26-241Z`의 `summary.json`과 `slots.jsonl`로 만듭니다. 이 두 파일은 실행한 컴퓨터에만 있고 커밋하지 않습니다. 결과, 설정, 코드 기록은 그 실행에서 가져옵니다. 시나리오 설명과 기능 목록은 문서를 생성할 때의 `scripts/verify/`에서 가져옵니다. 이전 실행과 일회성 실측은 [VERIFICATION_HISTORY_KO.md](VERIFICATION_HISTORY_KO.md)에 있습니다.
+
+- 정책: strict-all-pass-v1
+- 범위: full (전체 매트릭스 66개 슬롯)
+- 예상: 66 / 실제: 66
+- 결과: PASS
+- PASS가 되려면 다음을 모두 만족해야 합니다. 기록한 매트릭스에 빠지거나 중복되거나 예상 밖인 슬롯이 없고, 모든 슬롯이 통과하고, 사용자의 Claude Code 설정 파일이 바뀌지 않고, 실행이 끝날 때의 코드가 시작할 때와 같아야 합니다.
+- 시작과 종료 시 코드: commit: bed30cebc49b155b09c2795618b7e28ad044aae5; dirty: false; fingerprint: sha256 verification-code-v1 1fa37d3abcd284e9d1481fafef02c211d976e63fabeaa8d64d4879a159fb5bc7; files: 41
+- 사용자 설정 파일: 바뀌지 않음
+
+코드 지문(fingerprint)은 `src/`, `bin/`, `scripts/verify/`의 코드 파일과 패키지 매니페스트로 계산한 SHA-256 해시입니다.

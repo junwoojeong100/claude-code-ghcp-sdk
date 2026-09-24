@@ -119,13 +119,24 @@ test("reports recorded timing and concurrency in terminal and both document lang
     }
     const turnLine = output.split("\n").find((line) => line.includes(`scenarioMs.${SELECTED[0].id}`));
     const launcherLine = output.split("\n").find((line) => line.includes(`scenarioMs.${SELECTED[2].id}`));
-    assert.match(turnLine, format === "--markdown=ko" ? /슬롯 전체가 아닌 headless 턴마다/ : /Per headless turn, not per slot/);
-    assert.match(launcherLine, format === "--markdown=ko" ? /계획용 값만/ : /Planning only/);
-    assert.match(output, format === "--markdown=ko" ? /확립된 해결책이 아닙니다/ : /not an established fix for no-result exits/);
-    assert.match(output, format === "--markdown=ko" ? /실제 최악의 경우 상한이 아닙니다/ : /not deadlines or true worst-case bounds/);
-    assert.match(output, /Status\/list\/stop\/final-cleanup/);
+    assert.match(turnLine, format === "--markdown=ko" ? /Claude Code 실행 1회마다/ : /Each Claude Code invocation in the scenario/);
+    assert.match(launcherLine, format === "--markdown=ko" ? /쓰지 않음/ : /Not used/);
+    assert.match(output, format === "--markdown=ko" ? /하네스 대기 시간에만 곱합니다/ : /multiplies only the harness waits/);
+    assert.match(output, format === "--markdown=ko"
+      ? /`PENDING_TOOL_WAIT_MS`, 하네스의 고정 대기/
+      : /does not scale `PENDING_TOOL_WAIT_MS`, the harness's fixed waits/);
+    assert.match(output, format === "--markdown=ko" ? /기본값 10000 ms/ : /Default 10000 ms/);
     assert.ok(output.includes(command));
-    if (format !== "terminal") assert.ok(output.includes(`${command} --dry-run`));
+    if (format !== "terminal") {
+      assert.ok(output.includes(`${command} --dry-run`));
+      const settings = output.indexOf(format === "--markdown=ko" ? "### 이 실행의 설정\n" : "### Settings this run used\n");
+      const reproduce = output.indexOf(format === "--markdown=ko" ? "## 재현\n" : "## Reproducing\n");
+      assert.ok(reproduce >= 0 && settings > reproduce, "the settings table sits under Reproducing");
+      assert.ok(output.indexOf("`PENDING_TOOL_WAIT_MS=30000`") < reproduce, "the lead names the bridge setting");
+      assert.match(output, format === "--markdown=ko"
+        ? /\*\*기본 `PENDING_TOOL_WAIT_MS` 값\.\*\* .*최대 30000 ms.*기본값은 10000 ms/
+        : /\*\*The default `PENDING_TOOL_WAIT_MS`\.\*\* .*up to 30000 ms.*The default is 10000 ms/);
+    }
     assert.doesNotMatch(output, /654321/);
   }
 });
@@ -167,6 +178,7 @@ test("partial execution metadata is not completed from defaults or the report en
     assert.ok(command);
     assert.match(command, /--timeout-scale 1\.5 --model-concurrency 3/);
     assert.doesNotMatch(command, /PENDING_TOOL_WAIT_MS|--scenario-concurrency/);
+    assert.doesNotMatch(output, /The default `PENDING_TOOL_WAIT_MS`|기본 `PENDING_TOOL_WAIT_MS` 값/);
     assert.doesNotMatch(output, /654321/);
   }
 });
