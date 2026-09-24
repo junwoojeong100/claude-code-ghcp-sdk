@@ -5,8 +5,7 @@
 이 문서는 maintainer를 위한 구현·검증 설명입니다. 설치와 실행은
 [README](../README_KO.md), LiteLLM 운영은 [LiteLLM 가이드](LITELLM_KO.md)를 따릅니다.
 
-핵심 원칙은 하나입니다. Claude Code가 UI, 세션, 도구 실행을 담당하고 이 저장소는
-모델 backend 연결만 바꿉니다.
+Claude Code가 UI, 세션, 도구 실행을 담당하고 이 저장소는 모델 backend만 바꿉니다.
 
 ## 시스템 구성
 
@@ -95,6 +94,12 @@ Direct 경로의 GitHub Copilot SDK와 bridge는 모델 backend 연결만 담당
 8. Bridge가 `handlePendingToolCall`로 결과를 SDK session에 전달합니다.
 9. 최종 응답을 Anthropic Messages 형식으로 Claude Code에 반환합니다.
 
+텍스트는 도착하는 대로 스트리밍하고, 각 tool call은 턴 끝에 완성된 `tool_use` block으로
+씁니다. SSE 스트림은 content block을 한 번에 하나만 열어 두므로, 각
+`content_block_stop`이 다음 `content_block_start`보다 먼저 나옵니다. Claude Code가 tool
+result 옆에 함께 보내는 사용자 텍스트(Skill reminder, TUI에서 큐에 넣은 메시지)는 마지막
+tool result에 덧붙여, 모델이 같은 턴에서 읽게 합니다.
+
 ## 세션과 모델 매핑
 
 ### 세션 분리
@@ -117,7 +122,7 @@ Cold replay는 tool-use ID, tool-result 오류 여부와 native `tool_reference`
 
 Copilot SDK session ID는 bridge-instance namespace와 Claude session, agent, resolved
 model, tool schema signature, system prompt signature로 결정됩니다. Persistent
-daemon은 같은 bridge process 안에서 evicted session을 resume할 수 있습니다. Process
+bridge는 같은 bridge process 안에서 evicted session을 resume할 수 있습니다. Process
 재시작 후에는 과거 provider state를 재사용하지 않고 bounded cold history replay를
 수행해 cross-run conversation leakage를 방지합니다.
 
@@ -125,13 +130,15 @@ SDK session 생성·재개와 `setModel()`에는 추론 timeout과 별도로
 `SESSION_OPERATION_TIMEOUT_MS`(기본 60초)를 적용합니다. 호출 취소와 shutdown도
 이 대기를 중단하며, 큐에서 취소된 요청 때문에 후속 요청이 실행 중인 턴을
 추월하지 않습니다. 준비 실패 시 세션 generation을 바꾸고 늦게 도착한 응답은
-캐시에 설치하지 않고 정리합니다. Persistent daemon의 설정 지문에도 이 제한이
+캐시에 설치하지 않고 정리합니다. Persistent bridge의 설정 지문에도 이 제한이
 포함됩니다.
 
 모델 턴의 idle 대기와 전체 시간 상한은 별개입니다. Root의 실제 텍스트·추론·
 도구 입력 delta는 idle timer를 갱신하지만, 빈 delta나 subagent 이벤트는
 갱신하지 않습니다. 계속 출력하는 턴에도 전체 시간 상한은 유지하며, 두 값 모두
-daemon 설정 지문에 포함됩니다.
+persistent bridge의 설정 지문에 포함됩니다. Copilot runtime이 upstream 429나 5xx
+재시도를 기다리는 동안 걸린 timeout은 그 upstream 오류로 실패합니다.
+[Upstream 오류](#upstream-오류)를 참고합니다.
 
 ### Copilot runtime MCP server
 
@@ -141,7 +148,8 @@ SDK session마다 Copilot CLI 설정 — 사용자 `mcp-config.json`, workspace 
 Copilot plugin, 내장 `github-mcp-server` — 을 따로 불러옵니다. `availableTools`는
 `custom:*` 도구만 노출하므로 이 server들은 모델에 한 번도 도달하지 못합니다.
 
-Bridge는 시작 시 자신의 작업 디렉터리로 `mcp.discover`를 호출해 정확한 등록 이름을
+Bridge는 시작 시 자신의 작업 디렉터리(persistent bridge는 daemon 디렉터리)로
+`mcp.discover`를 호출해 정확한 등록 이름을
 확인합니다. Plugin server의 이름은 실행 파일이 아니라 설정 key입니다(예: azmcp는
 `azure`). Discovery가 보고하지 않는 `github-mcp-server`를 더해, 모든 SDK session 생성·재개
 시 `disabledMcpServers`로 전달합니다. 빈 `mcpServers` map은 시험해 보았지만 discovery된
@@ -193,6 +201,17 @@ Claude Code 2.1.280에서 `Default`는 Opus 5.5 행과 같은 `claude-opus-5-5[1
 발생시킵니다. Bridge 응답만 보고 추정하지 않고 설치된 CLI의 native
 `supportedModels()`, `setModel()`, `getContextUsage()` control 요청으로 확인했습니다.
 
+모델을 지정하지 않은 subagent는 `CLAUDE_CODE_SUBAGENT_MODEL`을 따릅니다. Gateway
+settings(`src/claude-gateway-env.mjs`)는 실행 모델이 family 모델이 아니면 이 값을 실행
+모델로, family 모델이면 빈 값으로 설정합니다. `CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP=1`도
+설정합니다. 이 값이 없으면 Claude Code는 main 모델 이름이 haiku, sonnet, opus가 아닐 때
+Explore가 상속하는 모델을 `opus` family로 제한해, GPT 세션의 Explore를 Opus로
+보냈습니다. Claude Code 2.1.281로 `gpt-6-luna`와 `gpt-6-astra`에서 실측한 결과, Explore
+subagent와 모델을 지정하지 않은 general-purpose subagent 모두 실행 모델
+(`github-copilot/claude-gpt-6-<name>`)을 요청했고, `bridge.turn_completed`의
+`servedModels`는 Copilot이 root와 subagent의 모든 턴을 그 모델로 처리했음을 보여
+주었으며, 실패는 없었습니다.
+
 호환 client를 위한 gateway discovery는 유지하되 `/v1/models`에는 주요 모델 중
 built-in과 중복되지 않는 항목(현재 GPT-6 세 모델)만 backend ID 기준으로 중복 제거해
 반환합니다.
@@ -209,7 +228,7 @@ Astra에 context·prompt 1,050,000 토큰을, Sol과 Luna에 1,000,000 토큰 wi
 모델별 힌트를 유지합니다. Claude Opus 5.5와 Claude Sonnet 5는 Claude Code의 native
 ID에 같은 힌트를 붙여 씁니다(`claude-opus-5-5[1m]`, `claude-sonnet-5[1m]`).
 Gateway 뒤에서 Claude Code는 힌트가 없는 ID를 200K로 잡습니다. 명시적으로 선택한
-Claude Opus 5, 4.8, 4.7도 같은 힌트를 받습니다. 임시 settings는 시작 모델의 한도를
+Claude Opus 5, 4.8, 4.7도 같은 힌트를 받습니다. 실행 settings는 시작 모델의 한도를
 전역에 고정하는 대신 상속된 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 비웁니다. Claude
 Haiku 4.5는 Claude Code의 native gateway window인 200K를 사용하며, 1M 행에서
 Haiku로 바꾸면 200K로 돌아갑니다. Native 자동 압축과 사용자가 지정한 더 작은
@@ -260,11 +279,14 @@ tool 실행은 Claude Code가 담당합니다.
 
 | 파일 | 역할 |
 |---|---|
-| `bin/claude-ghcp` | Direct bridge lifecycle과 임시 settings 관리 |
+| `bin/claude-ghcp` | Direct 런처: persistent bridge와 print mode bridge 중 하나를 고르고 실행별 settings를 씀 |
 | `bin/claude-litellm` | 외부 LiteLLM용 임시 settings 관리 |
 | `bin/claude-current` | 기존 Claude Code provider pass-through |
 | `src/server.mjs` | Loopback Anthropic Messages HTTP/SSE server |
+| `src/bridge-daemon.mjs` | Persistent bridge: registry, 지문, lease, retire, status와 stop |
+| `src/retirement.mjs` | Retired bridge가 종료해도 되는 시점 판단 |
 | `src/session-manager.mjs` | Copilot SDK session과 tool handoff |
+| `src/upstream-errors.mjs` | Copilot rate limit과 upstream 실패를 429/529로 매핑 |
 | `src/anthropic.mjs` | Messages request/response 변환 |
 | `src/model-map.mjs` | Claude Code와 Copilot model ID 변환 |
 | `src/write-launch-settings.mjs` | Direct 경로의 mode `0600` settings 생성 |
@@ -292,7 +314,9 @@ tool 실행은 Claude Code가 담당합니다.
 - Call 이후 실제 SDK usage와 provider finish reason mapping
 - Bounded cold-history replay와 history 축소 reconciliation
 - State split 진단, LRU/TTL eviction, history event cache invalidation
-- Background agent와 agent view용 persistent loopback bridge
+- Print mode를 제외한 모든 실행이 공유하는 persistent loopback bridge와, 교체된
+  bridge를 그 세션들이 끝날 때까지 유지하는 retire
+- Copilot rate limit과 upstream 5xx를 재시도 가능한 429/529 오류로 반환
 - Bounded `tool_choice` filtering/prompt emulation
 - 대규모 MCP tool set의 안전한 full-schema fallback
 
@@ -306,25 +330,111 @@ tool 실행은 Claude Code가 담당합니다.
   설정합니다.
 - User/project/shell의 Claude cloud-provider selector는 빈 값으로 덮어써 요청이 설정된
   endpoint를 우회하지 않게 합니다.
-- Gateway 경계의 Claude-native `tool_reference`는 비활성 상태로 두고, Copilot SDK가
-  provider-side tool search를 수행하며 필요하면 전체 선언 tool set으로 fallback합니다.
+- Gateway 경계의 Claude-native `tool_reference`는 비활성 상태로 두고, bridge가 선언된
+  tool 전체를 미리 불러옵니다. Declaration-only external tool은 Copilot SDK native
+  deferral에서 멈출 수 있으므로 native deferral은 끕니다.
 - Managed settings는 위 command-line settings보다 우선합니다. 따라서 조직 정책이
   provider selector나 MCP tool search를 강제하면 실행 스크립트는 이를 우회하지 않습니다.
 
 ### 네트워크와 credential
 
 - Direct 실행 스크립트는 bridge를 `127.0.0.1`에만 bind합니다.
-- Foreground 실행은 임의의 bridge token을 만들고 종료 시 삭제합니다. Background 실행은
-  `0600` registry, atomic lock, health check, stale cleanup, status/stop 명령을 갖는
-  persistent loopback daemon을 사용합니다.
+- Print mode(`-p`/`--print`)는 임의의 token으로 전용 bridge를 시작하고 종료 시
+  멈춥니다. 그 밖의 모든 실행은 [persistent bridge](#persistent-bridge와-retire)를
+  사용하며, 그 port와 token은 `0600` registry에 있습니다.
+- Bridge는 `Authorization: Bearer`나 `x-api-key`로 key를 요구합니다. SHA-256 digest를
+  `timingSafeEqual`로 비교하고 매 요청마다 두 header를 모두 확인하므로, 시간 차이로
+  추측한 값이 어디서 달라지는지도, 어느 header에 key가 있었는지도 드러나지 않습니다.
+  `BRIDGE_API_KEY`가 없으면 `BRIDGE_ALLOW_UNAUTHENTICATED=1`일 때만 시작합니다.
 - Bridge는 Copilot CLI 로그인 정보를 사용합니다. Anthropic credential을 읽거나
   프로젝트로 복사하지 않습니다.
 
+### Persistent bridge와 retire
+
+Print mode를 제외한 모든 실행은 `src/bridge-daemon.mjs ensure`가 시작한 loopback
+bridge 하나를 공유합니다. Print mode는 런처 안에서 처음부터 끝까지 실행되지만, 대화형
+세션은 `/background`로 Claude Code 자체 daemon에 넘길 수 있고, 그 작업은 런처가 종료된
+뒤에도 bridge를 호출하며 `--settings` 파일로 다시 띄워집니다.
+
+- **재사용.** 등록된 bridge의 PID가 살아 있고, `/health`가 등록된 `instanceId`를
+  보고하며, 설정 지문이 일치하면 `ensure`는 그 bridge를 재사용합니다. 지문
+  (`daemonConfigFingerprint`)에는 bridge 환경 변수(`COPILOT_*`, `MAX_*`, timeout 변수,
+  `RETIRED_IDLE_MS`, proxy·token 변수, `HOME`), 체크아웃의 절대 경로, `package.json`,
+  `package-lock.json`, 모든 `src/*.mjs`, 요청 포트가 들어갑니다. 모델은 들어가지
+  않습니다.
+- **실행별 파일.** `ensure`는 registry와 함께 `settings/` 아래의 settings 경로와
+  `leases/<instanceId>.<random>.pid` lease 경로를 돌려줍니다. 런처는 lease에 자기 셸의
+  PID를 씁니다. 24시간이 지난 settings 파일은 이후의 `ensure`가 삭제합니다.
+- **교체.** 지문이 다르면 `capabilities.retirement`를 알리는 bridge는 retire됩니다.
+  기록이 `retired/`로 옮겨지고 `SIGUSR2`를 받습니다. 자기 port와 token을 가진 세션을
+  계속 처리하며, 처리 중인 요청이 없고 `RETIRED_IDLE_MS`(기본 1시간) 동안 idle이고 자기를
+  가리키는 lease 중 살아 있는 PID가 없으면 종료합니다. 이 조건은 30초마다 확인합니다.
+  그 capability가 없는 bridge와 새 실행이 고정한 포트를 쓰는 bridge는 retire하지 않고
+  종료합니다. Retired bridge의 settings 파일은 24시간 reaper가 지울 때까지 남고, 종료된
+  bridge의 settings 파일은 바로 삭제합니다.
+- **Status와 stop.** `claude-ghcp-status`는 `{model, pid, port, retired, running}`을
+  출력하며 token은 출력하지 않습니다. `claude-ghcp-stop`은 현재 bridge와 모든 retired
+  bridge를 종료하고 lease, `bridge.log`, settings 파일을 삭제합니다.
+- **작업 디렉터리.** Bridge는 자신을 시작한 프로젝트가 아니라 daemon 디렉터리
+  (`$GHCP_DAEMON_DIR` 또는 플랫폼 cache 디렉터리)에서 실행됩니다. 프로젝트 디렉터리는
+  bridge가 실행 중일 때 삭제될 수 있고, 그렇지 않으면 runtime이 그 프로젝트의 workspace
+  MCP 설정을 다른 모든 프로젝트의 세션에 불러오게 됩니다.
+
 ### 로그
 
-Bridge는 request body, prompt, tool argument, tool result, credential을 직접 log하지
-않습니다. 기본 log는 startup metadata와 SDK 또는 bridge error로 제한하며 실행
-스크립트가 만든 임시 log는 종료 시 삭제합니다.
+Bridge는 request body, prompt, tool argument, tool result, credential을 log하지
+않습니다. Startup metadata와 오류 외에, 내용을 담지 않는 진단을 `LOG_LEVEL`과 관계없이
+stderr에 한 줄당 JSON 객체 하나로 씁니다. 검증 하네스가 이를 파싱하므로 event와 필드
+이름은 계약입니다.
+
+| Event | 기록 내용 |
+|---|---|
+| `bridge.turn_completed` | 요청 모델과 해석된 모델, `servedModels`, root·subagent 구분, 토큰 수, stop reason, tool use 수 |
+| `bridge.request_failed` | HTTP 상태, 오류 유형, `retryAfterSeconds`, 스트리밍 시작 여부 |
+| `bridge.degraded_controls` | 미지원 sampling control, 그리고 받되 무시하는 필드(`ignoredFields`) |
+| `bridge.turn_timeout`, `bridge.turn_aborted` | 턴 단계와 최근 event 유형. [검증 범위](#검증-범위) 참고 |
+| `bridge.session_operation_failed` | 실패하거나 timeout된 session 생성·재개·effort 변경 |
+
+`GET /health`는 같은 미지원 control과 무시하는 필드를 `unsupportedNativeControls`와
+`ignoredRequestFields`로 보여 줍니다. Print mode의 bridge log는 종료 시 삭제합니다.
+Persistent bridge는 `claude-ghcp-stop`이 지울 때까지 daemon 디렉터리의 `bridge.log`에
+이어서 씁니다.
+
+### Upstream 오류
+
+오류는 다음과 같이 bridge를 나갑니다(`src/server.mjs`의 `errorResponse`,
+`src/upstream-errors.mjs`의 `sessionError`).
+
+| 실패 | 응답 |
+|---|---|
+| `errorType`이 `rate_limit`이나 `quota`이거나 `statusCode`가 429인 `session.error` | 429 `rate_limit_error` |
+| `statusCode`가 5xx인 `session.error` | 529 `overloaded_error` |
+| `BridgeRequestError`(context-limit 오류 포함), `ModelUnavailableError`, `ReasoningEffortUnavailableError` | 400 `invalid_request_error` |
+| Client 연결 종료 | 499 `client_closed_request` |
+| 그 밖의 오류 | 500 `api_error` |
+
+Claude Code는 429와 529를 재시도합니다. SSE 스트림이 시작된 뒤의 실패는 같은 오류
+유형의 `event: error` frame으로 보냅니다. SDK 오류 event는 재시도 시간을 담지 않으므로
+실제 upstream 실패에는 `retry-after` header가 붙지 않습니다.
+
+Copilot runtime은 upstream 429나 5xx를 먼저 직접 재시도하며, upstream `retry-after`가
+있으면 그만큼 기다리고, 기다리는 동안 아무 event도 보내지 않습니다. 재시도가 모두
+실패하면 runtime은 `session.error`를 보고하기 전에 턴을 끝내므로, 메시지 없이 끝난 root
+턴은 그 오류나 뒤따르는 idle을 기다립니다. `statusCode`가 429나 5xx인 top-level
+`model.call_failure` 뒤에 진행도 `model.call_start`도 없는 동안 idle이나 전체 시간
+timeout이 걸리면, 요청은 그 upstream 오류로 실패하고 `bridge.turn_timeout`은 이를
+`upstreamRetryStatus`로 기록합니다.
+
+Claude Code 2.1.281과 Claude Haiku 4.5로, runtime의 `COPILOT_API_URL`을 추론 요청을
+실패시키는 로컬 proxy로 지정해 측정했습니다. Runtime은 6번 시도했고(429는 약 50초,
+503은 약 17초), bridge는 429 `rate_limit_error`와 529 `overloaded_error`를 반환했으며,
+약 0.5초 뒤 Claude Code의 재시도가 성공했습니다. Upstream의 90초 `retry-after`는
+runtime이 스스로 기다렸으며, 약 95초 동안 event가 없었습니다.
+
+`BRIDGE_TEST_FAULTS`는 기능이 아니라 검증용 seam입니다.
+`BRIDGE_TEST_FAULTS="rate_limit:1,overloaded:1"`은 tool을 선언한 요청을 나열한
+순서대로 그 수만큼 Copilot에 닿기 전에 실패시킵니다. 종류는 `rate_limit`,
+`overloaded`, `context_limit`이며, 각각 실제 실패와 같은 매핑을 거칩니다.
 
 ## 알려진 제약
 
@@ -334,14 +444,15 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - Bridge가 해석하는 주요 request field는 model, system text, messages, tools,
   attachments, `output_config.effort`, `tool_choice`와 stream 여부입니다.
   Copilot SDK에 없는 native `max_tokens`, `temperature`, `top_p`, `stop_sequences`
-  semantics는 degraded control 진단으로 노출합니다.
+  semantics는 degraded control 진단으로 노출하고, bridge가 쓰지 않는 그 밖의 허용
+  필드(`thinking`, `top_k`, `metadata` 등)는 ignored field로 보고합니다.
 - Claude Code gateway contract는 새 header와 body field가 추가되는 open contract입니다.
   이 bridge는 Anthropic upstream으로 그대로 forward하지 않고 Copilot SDK 형식으로
   변환하므로, Claude Code의 새 capability는 자동으로 지원되지 않으며 release별 호환성
   검토가 필요합니다.
 - Extended-thinking signature, encrypted reasoning content, reasoning summary, server
   tools, citations와 prompt-cache metadata는 완전하게 round-trip하지 않습니다.
-- Initial image/document content block은 E2E로 확인했습니다. Local tool이 반환하는
+- Initial image/document content block은 bridge가 변환합니다. Local tool이 반환하는
   binary image/document result는 provider 의존이며 text 또는 initial attachment
   fallback이 필요할 수 있습니다.
 - `/v1/messages/count_tokens`는 JSON 길이 기반 preflight 추정이며 response header로
@@ -355,14 +466,12 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - Tool-result retry/idempotency와 background Agent update는 처리합니다. 안정적인
   provider request ID가 없는 일반 message retry는 deduplicate하지 않으며 process crash
   중 in-flight external tool call 복구는 best-effort입니다.
-- Background mode와 agent view는 persistent bridge daemon으로 지원합니다. Remote
-  Control은 계속 사용할 수 없습니다.
+- Background mode, `/background`, agent view는 persistent bridge를 사용합니다.
 - Custom `ANTHROPIC_BASE_URL`을 사용하는 Claude Code 제약에 따라 Remote Control은
   비활성화됩니다. Cloud/web session과 cloud ultrareview는 local bridge 경로 밖입니다.
 - Claude Code structured-output validator/retry는 bridge를 통과해 동작하며 live E2E로
-  확인합니다. Native Claude `tool_reference` block은 round-trip하지 않고 Copilot
-  round-trip하지 않습니다. Declaration-only external tool과 native deferral 조합은
-  stall할 수 있어 전체 MCP schema preload fallback을 사용합니다.
+  확인합니다. Native Claude `tool_reference` block은 round-trip하지 않으며, 대신
+  full-schema MCP fallback을 사용합니다.
 - 원격·공유 배포에는 TLS, user authentication, authorization와 tenant-isolated
   Copilot identity/session storage가 필요합니다.
 - Prompt와 source code는 GitHub Copilot model service로 전송됩니다. 사용 전 enterprise
@@ -386,10 +495,13 @@ Bridge는 request body, prompt, tool argument, tool result, credential을 직접
 - Runtime MCP discovery와 SDK session 생성·재개 시 `disabledMcpServers` 전달,
   discovery 실패·timeout 시의 fallback
 - Forked subagent의 inherited history 복구와 `agentId`가 있는 pending tool-call handoff
-- Direct/LiteLLM 임시 settings의 gateway routing 값
+- Direct/LiteLLM settings의 gateway routing 값과 subagent·Explore 모델 설정
 - LiteLLM settings의 mode `0600`, 실행 인자 처리와 provider detection
 - Request cancellation, state eviction, bounded replay, 실제 usage, strict model
   selection, request policy, daemon registry, tool-result idempotency
+- Persistent bridge의 retire와 lease, upstream 429/5xx 매핑과 턴 timeout 변형, content
+  block을 하나씩만 여는 SSE 중첩, 사용자 텍스트를 마지막 tool result에 덧붙이기,
+  symlink 경로로 실행한 CLI entry point 인식
 - JSON/SSE의 명시적 usage 0은 추정치로 대체하지 않습니다. 누락/null일 때만
   기존 fallback을 사용하며, Claude Code result envelope의 캐시 포함 입력 총합이 0이면
   실제 검증은 여전히 실패합니다.

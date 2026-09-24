@@ -44,7 +44,7 @@ Claude Code
 - Claude Code's `claude` command
 - GitHub Copilot CLI's `copilot` command for sign-in and launcher checks
 - Node.js `^20.19.0` or `>=22.12.0`
-- Git
+- `curl` and Git
 - GitHub Copilot access
 - A model permitted by your organization's Copilot model policy
 
@@ -96,7 +96,7 @@ Confirm that both commands succeed and that the model you intend to use appears 
 # Select a different model
 ./bin/claude-ghcp --ghcp-model claude-haiku-4.5
 
-# Non-interactive prompt
+# Print mode (-p): answer one prompt, then exit
 ./bin/claude-ghcp \
   --ghcp-model claude-haiku-4.5 \
   -p "Describe the structure of this repository"
@@ -205,29 +205,83 @@ Check the models available to your account and their supported features before s
 
 Ultracode is available only on models that support `xhigh` and may consume more GitHub Copilot AI Credits than a standard call. For details on the `/model` picker and effort translation, see the [Architecture document](docs/ARCHITECTURE.md#model-discovery-and-context).
 
-Standard sessions support subagents and dynamic workflows. `--background` and
-the `agents` view automatically use a persistent loopback bridge. Inspect or
-stop it with `claude-ghcp-status` and `claude-ghcp-stop`.
+Subagents and dynamic workflows work in every session. When the launch model is
+not Claude Opus 5.5, Sonnet 5 or Haiku 4.5 (a GPT-6 model, for example), Explore
+and subagents that name no model run on the launch model: the launcher's settings
+set `CLAUDE_CODE_SUBAGENT_MODEL` to it and `CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP=1`.
+
+### Persistent bridge and print mode
+
+Every launch except print mode (`-p`/`--print`) uses one shared persistent
+loopback bridge: interactive sessions, `--background`, sessions handed off with
+`/background`, and the `agents` view. Print mode gets a private bridge that stops
+when the launcher exits.
+
+- Inspect the persistent bridge with `claude-ghcp-status`; stop it with
+  `claude-ghcp-stop`. It keeps running after Claude Code exits, so a
+  `/background` job can keep using it.
+- A different `--ghcp-model` reuses the running bridge. A launch with a different
+  configuration replaces it: changed bridge code or dependencies, another checkout
+  of this repository, a different `--bridge-port`, or a different bridge
+  environment variable such as `TURN_IDLE_TIMEOUT_MS` or `MAX_BODY_BYTES`.
+- The replaced bridge is retired, not stopped. It keeps serving the sessions
+  already open on it, and exits once none of their launchers is still running and
+  it has had no request for `RETIRED_IDLE_MS` (default 1 hour). It is stopped
+  instead if the new launch pins its port, or if it was started by an older
+  version that cannot retire.
+- `claude-ghcp-status` counts running retired bridges as `retired`, and
+  `claude-ghcp-stop` stops them too.
+- The bridge's registry, `bridge.log` and per-launch settings files live in its
+  daemon directory: `$GHCP_DAEMON_DIR` if set, otherwise
+  `~/Library/Caches/claude-code-ghcp-sdk` on macOS and
+  `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk` on Linux. The bridge runs in
+  that directory, not in the project that started it.
+
+### Rate limits and upstream errors
+
+When Copilot rate-limits a request or its upstream fails, the Copilot runtime
+first retries by itself, waiting out any upstream `retry-after`; nothing streams
+while it waits. Failures that reach the bridge leave it as:
+
+| Failure | Bridge response |
+|---|---|
+| Copilot `rate_limit` or `quota` error, or upstream HTTP 429 | 429 `rate_limit_error` |
+| Upstream HTTP 5xx | 529 `overloaded_error` |
+| A fault in the request itself, including a context-limit error | 400 `invalid_request_error` |
+| Anything else | 500 `api_error` |
+
+Claude Code retries 429 and 529 with its own backoff; the bridge sends no
+`retry-after` header, because the SDK reports no retry time. Every failed request
+writes a content-free `bridge.request_failed` line with its status and error type,
+and every completed turn a `bridge.turn_completed` line with the requested and
+serving models and token counts. The persistent bridge writes these to
+`bridge.log` in its daemon directory. A turn timeout during the runtime's wait
+also ends as 429 or 529; see [turn timeouts](#long-conversations-and-existing-sessions).
 
 ### Long conversations and existing sessions
 
 Cached input is counted once: Copilot's total input count is split into
-Anthropic's uncached, cache-read and cache-creation fields. Double-counting these
-fields inflated Claude Code's context meter and could trigger unnecessary
-compaction. Automatic compaction remains owned by Claude Code.
+Anthropic's uncached, cache-read and cache-creation fields, so Claude Code's
+context meter is not inflated. Automatic compaction remains owned by Claude Code.
 
-SDK session creation, resume and effort changes now have a separate
-`SESSION_OPERATION_TIMEOUT_MS` deadline (default **60,000 ms**). Cancellation
-also works during setup and while queued; a late setup reply cannot restore an
-abandoned session. A model turn has a **5-minute idle timeout** reset by real
-root text, reasoning or tool-input progress, plus a separate **30-minute hard
-cap** (`TURN_IDLE_TIMEOUT_MS`, `TURN_MAX_DURATION_MS`). An active long response
-is no longer cut off merely because five minutes elapsed. Failures emit
-content-free `bridge.session_operation_failed` diagnostics instead of waiting
-indefinitely before the model-turn timer starts.
+SDK session creation, resume and effort changes have their own
+`SESSION_OPERATION_TIMEOUT_MS` deadline (default **60,000 ms**); a step that runs
+out fails with a content-free `bridge.session_operation_failed` diagnostic
+instead of waiting indefinitely. Cancellation also works during setup and while
+queued, and a late setup reply cannot restore an abandoned session.
+
+A model turn has a **5-minute idle timeout** reset by real root text, reasoning
+or tool-input progress, plus a separate **30-minute hard cap**
+(`TURN_IDLE_TIMEOUT_MS`, `TURN_MAX_DURATION_MS`), so a response that keeps
+streaming is not cut off at five minutes. If either timer fires while the Copilot
+runtime is waiting to retry an upstream 429 or 5xx, with no progress since the
+last root model call failed that way, the request fails as 429
+`rate_limit_error` or 529 `overloaded_error`, which Claude Code retries, instead
+of 500 `api_error`. The message names the upstream status, and
+`bridge.turn_timeout` records it as `upstreamRetryStatus`.
 
 The primary GPT-6 models, Claude Opus 5.5 and Claude Sonnet 5 (and explicitly
-selected GPT-5.6 models) select the SDK's long-context tier and pass through
+selected GPT-5.6 models and Claude Opus 5, 4.8 and 4.7) select the SDK's long-context tier and pass through
 their discovered numeric catalogue limits. The SDK's default tier can be much
 smaller than the advertised model window: an earlier overnight probe measured
 Astra at 272K input tokens by default, versus 1.05M after applying its long tier
@@ -247,18 +301,19 @@ error so Claude Code can compact its canonical transcript. Errors detected
 before model streaming retain HTTP 400 instead of becoming a successful HTTP
 200 stream, which is necessary for native overflow recovery.
 
-An already-running foreground bridge keeps its loaded code. Exit the old Claude
-Code process, then resume from the same project directory using the previous
+A running bridge keeps the code it loaded. After you update this checkout, the
+next launch starts a new bridge and retires the old one, which keeps serving the
+sessions already open on it. To move a conversation onto the new code, exit its
+Claude Code process and resume it from the same project directory with the same
 model, for example:
 
 ```bash
 ./bin/claude-ghcp --ghcp-model gpt-6-astra --continue
 ```
 
-Use `--resume` to choose a different saved conversation. These changes do not
-erase Claude Code transcripts or modify global user settings. Persistent bridges
-check implementation/configuration fingerprints on the next launch and replace
-outdated daemons. Do not disable auto-compaction merely to force a larger window.
+Use `--resume` to choose a different saved conversation. Resuming does not erase
+Claude Code transcripts or modify global user settings. Do not disable
+auto-compaction merely to force a larger window.
 
 ## LiteLLM Quick Start
 
@@ -293,7 +348,7 @@ export LITELLM_MODEL="claude-sonnet-5"
 
 `LITELLM_MODEL` is a `model_name` alias from the gateway's configuration. To serve GitHub Copilot models, that alias must resolve to `model: anthropic/<copilot-model-id>` with `api_base` set to this repository's bridge root. Aliases pointing anywhere else do not use GitHub Copilot.
 
-The bridge binds to loopback unless `ALLOW_NON_LOOPBACK=1` is set, so LiteLLM runs on the same host as the bridge it fronts. If that host also runs `claude-ghcp`, export the same `GHCP_BRIDGE_PORT` in both shells. The requested port is part of the daemon's configuration fingerprint, so a launcher started without it stops the pinned daemon and starts a new one on a new port with a new token, and LiteLLM gets connection refused.
+The bridge binds to loopback unless `ALLOW_NON_LOOPBACK=1` is set, so LiteLLM runs on the same host as the bridge it fronts. If that host also runs `claude-ghcp` (any launch except `-p`), export the same `GHCP_BRIDGE_PORT` in both shells. The requested port is part of the bridge's configuration fingerprint, so a launcher started without it replaces the pinned bridge with one on a new port and token. The pinned bridge is retired: it keeps answering LiteLLM, but once it has gone `RETIRED_IDLE_MS` (default 1 hour) without a request it exits, and LiteLLM gets connection refused.
 
 LiteLLM is outside this repository's verification scope. The `npm run verify` matrix (6 models x 11 scenarios = 66 slots) starts `src/server.mjs` directly and never starts LiteLLM, so the LiteLLM path is a configuration reference, not a validated path.
 
@@ -307,11 +362,11 @@ For the bridge daemon, its pinned port and token, the example configuration, mod
 | List permitted Copilot models | `./bin/ghcp-models` |
 | Diagnose the GHCP environment | `./bin/ghcp-doctor` |
 | Inspect the persistent bridge | `./bin/claude-ghcp-status` |
-| Stop the persistent bridge | `./bin/claude-ghcp-stop` |
+| Stop the persistent bridge and any retired ones | `./bin/claude-ghcp-stop` |
 | Use the LiteLLM gateway | `./bin/claude-litellm` |
 | Use the original Claude Code provider | `./bin/claude-current` |
 
-Use `--ghcp-model` instead of `--model` with `claude-ghcp`. All other Claude Code options and prompts are passed through unchanged. If `bin` is in your PATH, the `./bin/` prefix can be omitted.
+`claude-ghcp` rejects `--model` and `--settings`; choose the model with `--ghcp-model`. All other Claude Code options and prompts are passed through unchanged. If `bin` is in your PATH, the `./bin/` prefix can be omitted.
 
 ### Configuration Inputs
 
@@ -322,17 +377,17 @@ Command-line options take precedence over environment variables. This repository
 | Direct SDK | none | `--ghcp-model` / `GHCP_MODEL`, `--bridge-port` / `GHCP_BRIDGE_PORT` |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_API_KEY` | `--litellm-model` / `LITELLM_MODEL` |
 
-The Direct SDK bridge defaults to **256 MiB (268,435,456 bytes)** for both HTTP request bodies (`MAX_BODY_BYTES`) and replayed conversation history (`MAX_REPLAY_BYTES`). Export either variable to override its limit. Larger limits can increase memory use; they do not expand the model's context window. Changes take effect when the bridge next starts, not in an already running bridge.
+The Direct SDK bridge defaults to **256 MiB (268,435,456 bytes)** for both HTTP request bodies (`MAX_BODY_BYTES`) and replayed conversation history (`MAX_REPLAY_BYTES`). Export either variable to override its limit. Larger limits can increase memory use; they do not expand the model's context window. A launch with a changed value replaces the persistent bridge; sessions already open on the old one keep its limits.
 
 ## Configuration and Support Scope
 
 ### Settings Preservation
 
-The launch scripts do not modify `~/.claude/settings.json`. A temporary settings file with `0600` permissions records only the values needed for gateway routing. Existing theme, permissions, hooks, plugins, skills, MCP, and project settings continue to be loaded.
+The launch scripts do not modify `~/.claude/settings.json`. A per-launch settings file with `0600` permissions records only the values needed for gateway routing. Existing theme, permissions, hooks, plugins, skills, MCP, and project settings continue to be loaded.
 
-On exit, the Direct path removes the local bridge and the temporary credentials and settings; the LiteLLM path removes the temporary settings.
+On exit, print mode (`-p`) stops its private bridge and deletes its settings file. Other Direct launches leave the [persistent bridge](#persistent-bridge-and-print-mode) running, and keep their settings file, which holds the bridge token, in the daemon directory so a `/background` job can be respawned from it. A later launch deletes it after 24 hours, and `claude-ghcp-stop` deletes it at once. The LiteLLM path deletes its temporary settings.
 
-Managed settings take precedence over the temporary settings written by the launch scripts. If an organization policy enforces a provider selector, `availableModels`, or MCP tool search, the launch scripts do not override it.
+Managed settings take precedence over the settings written by the launch scripts. If an organization policy enforces a provider selector, `availableModels`, or MCP tool search, the launch scripts do not override it.
 
 The Copilot runtime behind the bridge would otherwise start the Copilot CLI's
 own MCP servers — `~/.copilot/mcp-config.json`, installed Copilot plugins,
@@ -358,11 +413,11 @@ The table below shows the current status for the Direct SDK path.
 | Root/subagent session isolation | Implemented using Claude session and agent IDs |
 | SDK resume | Resume/fork and history-shrink reconciliation implemented; in-flight crash recovery remains best-effort |
 | Token counting | Actual post-call SDK usage; `/count_tokens` preflight remains an explicit estimate |
-| Sampling and generation controls | Unsupported native controls are diagnosed; `tool_choice` has bounded filtering/prompt emulation |
+| Sampling and generation controls | Unsupported controls (`temperature`, `top_p`, ...) and accepted-but-ignored fields (`thinking`, `top_k`, ...) are reported by `bridge.degraded_controls` and `GET /health`; `tool_choice` has bounded filtering/prompt emulation |
 | MCP tool search | Full-schema default; native ToolSearch available by explicit opt-in |
 | `--json-schema` structured output | Uses Claude Code's native validator/retry |
 | Remote Control | Disabled by Claude Code when a custom `ANTHROPIC_BASE_URL` is set |
-| `--background`/agent view | Supported through the private persistent bridge daemon |
+| `--background`, `/background`, agent view | Supported through the shared persistent bridge |
 | Claude web/cloud, `--cloud`, `--teleport`, cloud ultrareview | Outside the local execution path; the GHCP bridge is not used |
 | Reasoning text/signature, citations, prompt-cache metadata | Full round-trip not supported |
 
@@ -395,7 +450,7 @@ guaranteed success on future executions.
   `.verify-runs/picker-1m-2026-09-23T09-32-55Z/`.
 - **Runtime MCP servers:** all 72 retained bridge logs of the final run (66
   per-slot bridges plus six v11 daemons) record `bridge.mcp_servers_disabled` for
-  five servers; the six v11 foreground launches use ephemeral bridges whose logs
+  five servers; the six v11 foreground launches used ephemeral bridges whose logs
   the launcher deletes on exit. During the earlier full run
   `2026-09-23T00-38-10-470Z`, a `ps` sampler took 354 samples over 12 minutes
   with up to nine concurrent runtimes and never saw an MCP server process under
@@ -417,9 +472,11 @@ guaranteed success on future executions.
   checks** with none failing, **90 headless phase transcripts** carrying 95 result
   envelopes, all with positive input usage and the expected serving model, no
   unanswered `tool_use`, and retained command/daemon evidence for all six launcher
-  slots. GPT-6 Astra's v01 envelope also lists `claude-opus-5-5[1m]`: Claude
-  Code's built-in Explore subagent runs on the Opus alias, as it did in the
-  earlier green runs. All twelve media-token checks read their token exactly.
+  slots. GPT-6 Astra's v01 envelope also lists `claude-opus-5-5[1m]`: at this
+  commit Claude Code's built-in Explore subagent ran on the Opus alias, as it did
+  in the earlier green runs. `f6c1827` has since kept Explore on the launch model
+  (see the live checks below). All twelve media-token checks read their token
+  exactly.
 - **Before the final run,** the first six-model full run scored 64/66 and was NOT
   GREEN. Claude Opus 5.5 completed v02 and v08 correctly but through shell
   commands (`sed -i`, a redirect) instead of Edit and Write, so the Edit
@@ -449,6 +506,20 @@ guaranteed success on future executions.
   that flip are all single-glyph misreads. The resolvers now skip every
   checkout's launchers, and the final run resolved `~/.local/bin/claude` with
   PATH unchanged.
+- **Live checks after the final run** (Claude Code 2.1.281, outside the matrix):
+  - *Subagent model:* with the launcher's gateway settings on GPT-6 Luna and
+    GPT-6 Astra, an Explore subagent and a general-purpose subagent with no model
+    both requested the launch model, and `bridge.turn_completed` `servedModels`
+    showed Copilot serving every root and subagent turn with it.
+  - *Upstream 429 and 503:* with the Copilot runtime's `COPILOT_API_URL` pointed at
+    a local proxy that failed inference with 429 or 503 (Claude Haiku 4.5, `-p`),
+    the runtime made 6 attempts (about 50 s for the 429, about 17 s for the 503),
+    the bridge then returned 429 `rate_limit_error` and 529 `overloaded_error`, and
+    Claude Code's single retry about 0.5 s later succeeded. This needed a bridge
+    fix, because the runtime ends the turn before it reports `session.error` and
+    the bridge used to finish that turn as an empty success.
+  - *`retry-after`:* the runtime waited out a 90 s upstream `retry-after` by
+    itself, about 95 s with no events.
 
 Full-run history remains separate, under each run's recorded implementation and
 model catalogue:
@@ -613,9 +684,7 @@ EN/KO reports use the same strict assessment as the runner. Older summaries keep
 their **legacy stored gate and green** explicitly; they are never relabelled as
 strict all-pass results, and missing metadata is not reconstructed as success.
 
-Neither command covers LiteLLM. `npm run verify` starts `src/server.mjs`
-directly and never starts LiteLLM, so the LiteLLM path is a configuration
-reference rather than a validated one.
+Neither command covers LiteLLM; see [LiteLLM Quick Start](#litellm-quick-start).
 
 [Verification results](docs/VERIFICATION.md) records the latest full matrix, what
 each scenario is for, and the bridge defect each one is built to catch. It is

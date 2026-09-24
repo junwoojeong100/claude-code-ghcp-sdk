@@ -57,7 +57,7 @@ Claude Code
 - Claude Code의 `claude` 명령
 - 로그인과 launcher 확인에 사용할 GitHub Copilot CLI의 `copilot` 명령
 - Node.js `^20.19.0` 또는 `>=22.12.0`
-- Git
+- `curl`과 Git
 - GitHub Copilot 사용 권한
 - 조직의 Copilot 모델 정책에서 허용된 모델
 
@@ -110,7 +110,7 @@ SDK 1.0.14는 플랫폼별 Copilot runtime(1.0.85)을 포함하며, 더 이상
 # 다른 모델 선택
 ./bin/claude-ghcp --ghcp-model claude-haiku-4.5
 
-# 비대화형 프롬프트
+# Print mode(-p): 프롬프트 하나에 답한 뒤 종료
 ./bin/claude-ghcp \
   --ghcp-model claude-haiku-4.5 \
   -p "이 저장소의 구조를 설명해줘"
@@ -222,28 +222,79 @@ Ultracode는 `xhigh` 지원 모델에서만 사용할 수 있으며 일반 호�
 사용할 수 있습니다. `/model` picker와 effort 변환 방식은
 [아키텍처 문서](docs/ARCHITECTURE_KO.md#모델-discovery와-context)를 참고합니다.
 
-일반 세션에서는 subagent와 dynamic workflow를 사용할 수 있습니다. `--background`와
-`agents` view는 persistent loopback bridge를 자동 사용합니다. 상태 확인과 종료는
-`claude-ghcp-status`, `claude-ghcp-stop`을 사용합니다.
+모든 세션에서 subagent와 dynamic workflow를 사용할 수 있습니다. 실행 모델이 Claude
+Opus 5.5, Sonnet 5, Haiku 4.5가 아니면(예: GPT-6 모델) Explore와 모델을 지정하지 않은
+subagent도 실행 모델로 동작합니다. 런처 설정이 `CLAUDE_CODE_SUBAGENT_MODEL`을 실행
+모델로 지정하고 `CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP=1`을 설정하기 때문입니다.
+
+### Persistent bridge와 print mode
+
+Print mode(`-p`/`--print`)를 제외한 모든 실행은 공유 persistent loopback bridge 하나를
+사용합니다. 대화형 세션, `--background`, `/background`로 넘긴 세션, `agents` view가
+여기에 해당합니다. Print mode는 런처가 종료될 때 함께 멈추는 전용 bridge를 받습니다.
+
+- Persistent bridge 상태는 `claude-ghcp-status`로 확인하고 `claude-ghcp-stop`으로
+  종료합니다. Claude Code가 종료된 뒤에도 계속 실행되므로 `/background` 작업이 계속
+  사용할 수 있습니다.
+- `--ghcp-model`만 다르면 실행 중인 bridge를 그대로 사용합니다. 구성이 다른 실행은
+  bridge를 교체합니다. bridge 코드나 의존성 변경, 이 저장소의 다른 체크아웃, 다른
+  `--bridge-port`, `TURN_IDLE_TIMEOUT_MS`나 `MAX_BODY_BYTES` 같은 bridge 환경 변수
+  변경이 해당합니다.
+- 교체된 bridge는 종료되지 않고 retire됩니다. 이미 열린 세션을 계속 처리하며, 그
+  세션들의 런처가 모두 종료되고 `RETIRED_IDLE_MS`(기본 1시간) 동안 요청이 없으면
+  종료합니다. 새 실행이 그 포트를 고정했거나, retire를 지원하지 않는 이전 버전이
+  시작한 bridge라면 바로 종료합니다.
+- `claude-ghcp-status`는 실행 중인 retired bridge 수를 `retired`로 보고하고,
+  `claude-ghcp-stop`은 이들도 함께 종료합니다.
+- Bridge의 registry, `bridge.log`, 실행별 settings 파일은 daemon 디렉터리에 있습니다.
+  `$GHCP_DAEMON_DIR`을 설정했다면 그 디렉터리이고, 기본값은 macOS에서
+  `~/Library/Caches/claude-code-ghcp-sdk`, Linux에서
+  `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk`입니다. Bridge는 자신을 시작한
+  프로젝트가 아니라 이 디렉터리에서 실행됩니다.
+
+### Rate limit과 upstream 오류
+
+Copilot이 요청에 rate limit을 걸거나 upstream이 실패하면 Copilot runtime이 먼저 직접
+재시도하며, upstream `retry-after`가 있으면 그만큼 기다립니다. 기다리는 동안에는
+아무것도 스트리밍되지 않습니다. Bridge까지 도달한 실패는 다음과 같이 반환됩니다.
+
+| 실패 | Bridge 응답 |
+|---|---|
+| Copilot `rate_limit`·`quota` 오류 또는 upstream HTTP 429 | 429 `rate_limit_error` |
+| Upstream HTTP 5xx | 529 `overloaded_error` |
+| Context-limit 오류를 포함한 요청 자체의 오류 | 400 `invalid_request_error` |
+| 그 밖의 오류 | 500 `api_error` |
+
+Claude Code는 429와 529를 자체 backoff로 재시도합니다. SDK가 재시도 시간을 알려 주지
+않으므로 bridge는 `retry-after` header를 보내지 않습니다. 실패한 요청마다 상태와 오류
+유형을 담은 `bridge.request_failed`, 완료된 턴마다 요청·응답 모델과 토큰 수를 담은
+`bridge.turn_completed` 진단을 한 줄씩 남기며, 어느 쪽에도 prompt나 출력 내용은 담지
+않습니다. Persistent bridge는 이를 daemon 디렉터리의 `bridge.log`에 씁니다. Runtime이
+기다리는 동안 턴 timeout이 걸려도 429나 529로 끝납니다.
+[턴 timeout](#긴-대화와-기존-세션)을 참고합니다.
 
 ### 긴 대화와 기존 세션
 
 캐시 입력 토큰은 한 번만 집계합니다. Copilot의 입력 총합을 Anthropic의 uncached,
-cache-read, cache-creation 필드로 나누며, 같은 토큰을 중복으로 더해 context meter가
-부풀거나 불필요한 압축을 유발하지 않도록 합니다. 자동 압축은 계속 Claude Code가
-담당합니다.
+cache-read, cache-creation 필드로 나누므로 Claude Code의 context meter가 부풀지
+않습니다. 자동 압축은 계속 Claude Code가 담당합니다.
 
-SDK session 생성·재개·effort 변경에는 `SESSION_OPERATION_TIMEOUT_MS`라는 별도의
-대기 제한(기본 **60,000ms**)을 적용합니다. 준비 중이거나 큐에서 기다리는 요청도
-취소할 수 있고, 늦게 도착한 준비 응답이 폐기된 세션을 복구하지 못하게 합니다.
-모델 턴에는 실제 root의 텍스트·추론·도구 입력 진행으로 갱신되는 **5분 idle 제한**과,
-갱신되지 않는 **30분 전체 상한**을 따로 적용합니다
-(`TURN_IDLE_TIMEOUT_MS`, `TURN_MAX_DURATION_MS`). 답변이 계속 생성되는 중인데도
-5분 경과만으로 끊지 않습니다. 준비 단계 무한 대기는 내용을 포함하지 않는
-`bridge.session_operation_failed` 진단으로 실패를 알립니다.
+SDK session 생성·재개·effort 변경에는 별도의 `SESSION_OPERATION_TIMEOUT_MS` 제한(기본
+**60,000ms**)을 적용합니다. 제한을 넘긴 단계는 무한히 기다리지 않고 내용을 담지 않는
+`bridge.session_operation_failed` 진단과 함께 실패합니다. 준비 중이거나 큐에서 기다리는
+요청도 취소할 수 있으며, 늦게 도착한 준비 응답이 폐기된 세션을 복구하지 못합니다.
+
+모델 턴에는 실제 root의 텍스트·추론·도구 입력 진행으로 갱신되는 **5분 idle 제한**과
+갱신되지 않는 **30분 전체 상한**을 따로 적용하므로(`TURN_IDLE_TIMEOUT_MS`,
+`TURN_MAX_DURATION_MS`), 계속 스트리밍 중인 답변은 5분에 끊기지 않습니다. Copilot
+runtime이 upstream 429나 5xx 재시도를 기다리는 동안, 즉 마지막 root 모델 호출이 그렇게
+실패한 뒤 진행이 없는 상태에서 두 제한 중 하나가 걸리면, 요청은 500 `api_error`가 아니라
+Claude Code가 재시도하는 429 `rate_limit_error`나 529 `overloaded_error`로 실패합니다.
+오류 메시지에 upstream 상태가 나오며, `bridge.turn_timeout`은 이를
+`upstreamRetryStatus`로 기록합니다.
 
 주요 GPT-6 모델, Claude Opus 5.5, Claude Sonnet 5(와 명시적으로 선택한 GPT-5.6
-모델)는 SDK의 long-context tier를 명시하고 조회한 catalog의 숫자 한도를 함께
+모델, Claude Opus 5·4.8·4.7)는 SDK의 long-context tier를 명시하고 조회한 catalog의 숫자 한도를 함께
 전달합니다. SDK 기본 tier는 표시된 모델 window보다 훨씬 작을 수 있습니다. 앞선
 야간 실측에서 Astra의 입력 한도는 기본 272K였지만 long tier와 catalog
 capabilities를 적용하자 1.05M이었고, 기본 tier는 Opus 5.5와 Sonnet 5를 200,000으로
@@ -260,17 +311,17 @@ Claude Code가 원본 transcript를 압축할 수 있는 context-limit 오류를
 모델 스트리밍 전에 발견된 오류는 HTTP 200 스트림으로 바꾸지 않고 HTTP 400으로
 유지해야 native overflow 복구가 작동합니다.
 
-이미 실행 중인 foreground bridge는 로드한 이전 코드를 계속 사용합니다. 기존
-Claude Code를 종료한 뒤 같은 프로젝트 디렉터리에서 이전 모델로 재개합니다.
-예를 들어 Astra 대화는 다음과 같습니다.
+실행 중인 bridge는 로드한 코드를 계속 사용합니다. 이 체크아웃을 업데이트하면 다음
+실행이 새 bridge를 시작하고 이전 bridge를 retire하며, 이전 bridge는 이미 열린 세션을
+계속 처리합니다. 대화를 새 코드로 옮기려면 해당 Claude Code를 종료한 뒤 같은 프로젝트
+디렉터리에서 같은 모델로 재개합니다. 예를 들어 Astra 대화는 다음과 같습니다.
 
 ```bash
 ./bin/claude-ghcp --ghcp-model gpt-6-astra --continue
 ```
 
-다른 저장된 대화를 선택하려면 `--resume`을 사용합니다. Claude Code transcript를
-지우거나 전역 사용자 설정을 바꾸지 않습니다. Persistent bridge는 다음 실행에서
-구현·설정 지문을 비교해 오래된 daemon을 교체합니다. window를 억지로 늘리려고
+다른 저장된 대화를 선택하려면 `--resume`을 사용합니다. 재개해도 Claude Code
+transcript를 지우거나 전역 사용자 설정을 바꾸지 않습니다. window를 억지로 늘리려고
 자동 압축을 끄지 마세요.
 
 ## LiteLLM 빠른 시작
@@ -318,10 +369,11 @@ export LITELLM_MODEL="claude-sonnet-5"
 
 bridge는 `ALLOW_NON_LOOPBACK=1`을 설정하지 않는 한 loopback에만 bind하므로
 LiteLLM은 bridge와 같은 호스트에서 실행해야 합니다. 그 호스트에서
-`claude-ghcp`도 실행한다면 두 셸에서 같은 `GHCP_BRIDGE_PORT`를 export합니다.
-요청 포트는 daemon configuration fingerprint의 일부이므로, 이를 설정하지 않고
-실행한 launcher는 고정 포트의 daemon을 종료하고 새 포트와 새 token으로 daemon을
-다시 시작하며, LiteLLM은 connection refused를 받습니다.
+`claude-ghcp`도 실행한다면(`-p` 제외) 두 셸에서 같은 `GHCP_BRIDGE_PORT`를 export합니다.
+요청 포트는 bridge configuration fingerprint의 일부이므로, 이를 설정하지 않고 실행한
+launcher는 고정 포트의 bridge를 새 포트와 새 token의 bridge로 교체합니다. 고정 포트의
+bridge는 retire되어 LiteLLM 요청을 계속 받지만, `RETIRED_IDLE_MS`(기본 1시간) 동안
+요청이 없으면 종료하고 LiteLLM은 connection refused를 받습니다.
 
 LiteLLM은 이 저장소의 검증 범위 밖입니다. `npm run verify` matrix(6 모델 x
 11 시나리오 = 66 슬롯)는 `src/server.mjs`를 직접 실행하며 LiteLLM을 기동하지
@@ -338,12 +390,12 @@ bridge daemon과 고정 포트·token, 예제 구성, model mapping, multi-user 
 | 허용된 Copilot 모델 조회 | `./bin/ghcp-models` |
 | GHCP 환경 진단 | `./bin/ghcp-doctor` |
 | Persistent bridge 상태 확인 | `./bin/claude-ghcp-status` |
-| Persistent bridge 종료 | `./bin/claude-ghcp-stop` |
+| Persistent bridge와 retired bridge 종료 | `./bin/claude-ghcp-stop` |
 | LiteLLM gateway 사용 | `./bin/claude-litellm` |
 | 기존 Claude Code provider 사용 | `./bin/claude-current` |
 
-`claude-ghcp`에서는 `--model` 대신 `--ghcp-model`을 사용합니다. 나머지 Claude Code
-옵션과 프롬프트는 그대로 전달됩니다. `bin`을 PATH에 추가했다면 `./bin/`을 생략할 수
+`claude-ghcp`는 `--model`과 `--settings`를 거부하므로 모델은 `--ghcp-model`로
+선택합니다. 나머지 Claude Code 옵션과 프롬프트는 그대로 전달됩니다. `bin`을 PATH에 추가했다면 `./bin/`을 생략할 수
 있습니다.
 
 ### 설정 입력
@@ -360,21 +412,24 @@ bridge daemon과 고정 포트·token, 예제 구성, model mapping, multi-user 
 Direct SDK bridge의 HTTP 요청 본문(`MAX_BODY_BYTES`)과 대화 이력 재생
 (`MAX_REPLAY_BYTES`) 한도는 모두 기본 **256 MiB(268,435,456바이트)**입니다.
 각 환경 변수를 `export`해 한도를 바꿀 수 있습니다. 한도를 높이면 메모리 사용량이
-늘 수 있지만 모델의 컨텍스트 한도는 늘어나지 않습니다. 변경은 다음 bridge 시작부터
-적용되며, 이미 실행 중인 bridge에는 적용되지 않습니다.
+늘 수 있지만 모델의 컨텍스트 한도는 늘어나지 않습니다. 값을 바꿔 실행하면 persistent
+bridge가 교체되며, 이전 bridge에 이미 열린 세션은 이전 한도를 유지합니다.
 
 ## 설정과 지원 범위
 
 ### 설정 보존
 
-실행 스크립트는 `~/.claude/settings.json`을 수정하지 않습니다. 권한이 `0600`인 임시
+실행 스크립트는 `~/.claude/settings.json`을 수정하지 않습니다. 권한이 `0600`인 실행별
 settings 파일에는 gateway routing에 필요한 값만 기록합니다. 기존 theme, permissions,
 hooks, plugins, skills, MCP, project settings는 계속 불러옵니다.
 
-종료할 때 Direct 경로는 로컬 bridge와 임시 credential/settings를 삭제하고, LiteLLM
-경로는 임시 settings를 삭제합니다.
+종료할 때 print mode(`-p`)는 전용 bridge를 멈추고 settings 파일을 삭제합니다. 그 밖의
+Direct 실행은 [persistent bridge](#persistent-bridge와-print-mode)를 계속 실행해 두고,
+bridge token이 담긴 settings 파일도 daemon 디렉터리에 남겨 `/background` 작업을 그
+파일로 다시 띄울 수 있게 합니다. 이 파일은 24시간이 지나면 이후 실행이 삭제하고,
+`claude-ghcp-stop`은 바로 삭제합니다. LiteLLM 경로는 임시 settings를 삭제합니다.
 
-Managed settings는 실행 스크립트의 임시 settings보다 우선합니다. 조직 정책이 provider
+Managed settings는 실행 스크립트가 쓴 settings보다 우선합니다. 조직 정책이 provider
 selector, `availableModels`, MCP tool search를 강제하면 실행 스크립트는 이를 우회하지
 않습니다.
 
@@ -402,11 +457,11 @@ Bridge 뒤의 Copilot runtime은 기본적으로 SDK session마다 Copilot CLI �
 | Root/subagent 세션 분리 | Claude session/agent ID 기반으로 구현 |
 | SDK resume | Resume/fork와 history 축소 reconciliation 구현; in-flight crash recovery는 best-effort |
 | Token counting | Call 이후 실제 SDK usage; `/count_tokens` preflight는 명시적 추정 |
-| Sampling과 생성 제어 | 미지원 native control은 진단으로 노출; `tool_choice`는 bounded filtering/prompt emulation |
+| Sampling과 생성 제어 | 미지원 control(`temperature`, `top_p` 등)과 받되 무시하는 필드(`thinking`, `top_k` 등)를 `bridge.degraded_controls`와 `GET /health`로 보고; `tool_choice`는 bounded filtering/prompt emulation |
 | MCP tool search | Full-schema 기본값; native ToolSearch는 명시적 opt-in |
 | `--json-schema` structured output | Claude Code native validator/retry 사용 |
 | Remote Control | Custom `ANTHROPIC_BASE_URL`에서 Claude Code가 비활성화 |
-| `--background`/agent view | Private persistent bridge daemon으로 지원 |
+| `--background`, `/background`, agent view | 공유 persistent bridge로 지원 |
 | Claude web/cloud, `--cloud`, `--teleport`, cloud ultrareview | 로컬 실행 경로 밖이므로 GHCP bridge를 사용하지 않음 |
 | Reasoning text/signature, citations, prompt-cache metadata | 완전한 round-trip은 미지원 |
 
@@ -440,7 +495,7 @@ commit `bed30ce`에서 수행했습니다. 이 commit은 Opus 5.5와 Sonnet 5에
   `.verify-runs/picker-1m-2026-09-23T09-32-55Z/`.
 - **Runtime MCP server:** 최종 실행에서 보존된 bridge 로그 72개(슬롯별 bridge 66개와
   v11 daemon 6개)가 모두 server 5개에 대한 `bridge.mcp_servers_disabled`를 기록합니다.
-  v11의 foreground 실행 6회는 임시 bridge를 쓰며, 런처가 종료 시 그 로그를 지웁니다.
+  v11의 foreground 실행 6회는 임시 bridge를 썼으며, 런처가 종료 시 그 로그를 지웁니다.
   앞선 전체 실행 `2026-09-23T00-38-10-470Z`에서는 `ps` sampler가 최대 9개 runtime이
   동시에 도는 12분 동안 354회 표본을 수집했으며, 그 아래에서 MCP server 프로세스를
   한 번도 보지 못했습니다. 자식 프로세스는 잠깐 뜬 `git`
@@ -459,8 +514,9 @@ commit `bed30ce`에서 수행했습니다. 이 commit은 Opus 5.5와 Sonnet 5에
   headless 단계 transcript **90개**에 담긴 result envelope 95개가 모두 양수 입력
   usage와 예상한 응답 모델을 기록했습니다. 응답 없는 `tool_use`가 없고, 6개 런처
   슬롯의 명령·daemon 근거도 모두 남아 있습니다. GPT-6 Astra의 v01 envelope에는
-  `claude-opus-5-5[1m]`도 함께 나옵니다. Claude Code 내장 Explore 서브에이전트가
-  Opus 별칭으로 돌기 때문이며, 앞선 통과 실행들에서도 같았습니다. 미디어 토큰 검사
+  `claude-opus-5-5[1m]`도 함께 나옵니다. 이 commit에서는 Claude Code 내장 Explore
+  서브에이전트가 Opus 별칭으로 돌았기 때문이며, 앞선 통과 실행들에서도 같았습니다.
+  이후 `f6c1827`부터 Explore는 실행 모델을 유지합니다(아래 실측 참고). 미디어 토큰 검사
   12개는 모두 토큰을 정확히 읽었습니다.
 - **최종 실행 이전:** 첫 6개 모델 전체 실행은 64/66으로 NOT GREEN이었습니다.
   Claude Opus 5.5가 v02와 v08을 올바르게 처리했지만 Edit·Write 대신 셸
@@ -488,6 +544,19 @@ commit `bed30ce`에서 수행했습니다. 이 commit은 Opus 5.5와 Sonnet 5에
   통과하고, 새로 통과하는 11건은 모두 한 글자 오독입니다. resolver는 이제 어느
   체크아웃의 런처든 건너뛰며, 최종 실행은 PATH를 그대로 둔 채
   `~/.local/bin/claude`를 골랐습니다.
+- **최종 실행 이후 실측**(Claude Code 2.1.281, 매트릭스 밖):
+  - *Subagent 모델:* 런처의 gateway 설정으로 GPT-6 Luna와 GPT-6 Astra를 실행했을 때
+    Explore subagent와 모델을 지정하지 않은 general-purpose subagent 모두 실행 모델을
+    요청했고, `bridge.turn_completed`의 `servedModels`는 Copilot이 root와 subagent의
+    모든 턴을 그 모델로 처리했음을 보여 주었습니다.
+  - *Upstream 429와 503:* Copilot runtime의 `COPILOT_API_URL`을 추론 요청에 429나
+    503으로 실패하는 로컬 proxy로 지정하자(Claude Haiku 4.5, `-p`) runtime이 6번
+    시도한 뒤(429는 약 50초, 503은 약 17초) bridge가 각각 429 `rate_limit_error`와
+    529 `overloaded_error`를 반환했고, 약 0.5초 뒤 Claude Code의 한 번의 재시도가
+    성공했습니다. 이를 위해 bridge 수정이 필요했습니다. Runtime은 `session.error`를
+    보고하기 전에 턴을 끝내는데, bridge가 그 턴을 빈 성공으로 마무리했기 때문입니다.
+  - *`retry-after`:* runtime은 upstream의 90초 `retry-after`를 스스로 기다렸으며,
+    약 95초 동안 이벤트가 없었습니다.
 
 전체 실행 이력은 각 실행 당시의 구현과 모델 catalog를 기준으로 구분해 보존합니다.
 
@@ -644,9 +713,8 @@ SIGKILL 유예 시간과 실제 운용 launcher/daemon 시작 기본값은 바�
 green은 **legacy 저장 정책**으로 명시하여 보존하며, 엄격한 전체 통과로 바꾸거나
 없는 메타데이터를 성공으로 추정하지 않습니다.
 
-두 명령 모두 LiteLLM은 다루지 않습니다. `npm run verify`는 `src/server.mjs`를
-직접 실행하며 LiteLLM을 기동하지 않으므로, LiteLLM 경로는 검증된 경로가
-아니라 구성 참고 자료입니다.
+두 명령 모두 LiteLLM은 다루지 않습니다. [LiteLLM 빠른 시작](#litellm-빠른-시작)을
+참고합니다.
 
 [검증 결과](docs/VERIFICATION_KO.md)에 최신 전체 매트릭스, 각 시나리오의 의도,
 그리고 각 시나리오가 bridge에서 잡아내려는 결함을 기록합니다. 실행 기록에서

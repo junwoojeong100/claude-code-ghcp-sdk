@@ -22,9 +22,9 @@
 | Artifacts, cloud ultrareview, routines, Desktop scheduled tasks | publish, schedule, cloud multi-agent 실행은 Messages API가 아니라 claude.ai 서비스입니다. | 로컬 파일·에이전트와 외부 scheduler 사용 |
 | Anthropic Analytics, billing, subscription usage, SSO/SCIM | Anthropic 계정·조직 API입니다. Copilot 사용량은 GitHub가 별도로 계산합니다. | GitHub Copilot 사용량·조직 reporting 사용 |
 | Anthropic server-side WebSearch, auto-mode classifier, Channels, 계정 관리 MCP connector | gateway Messages API로 표현되지 않는 first-party server component에 의존합니다. | 로컬 `WebFetch`, 명시적 MCP server, 로컬 permission mode 사용 |
-| Anthropic prompt-cache metadata | `cache_control` 회계와 cache read/write metadata는 Anthropic model service가 생성합니다. | Copilot provider cache는 사용할 수 있지만 Anthropic cache semantics는 보고할 수 없음 |
-| encrypted thinking signature와 Anthropic reasoning block | Copilot SDK가 provider별 reasoning event/summary를 제공할 수는 있어도 Anthropic cryptographic thinking signature를 생성할 수 없습니다. | effort 전달 및 가능한 경우 서명 없는 provider reasoning summary를 text로 노출 |
-| Anthropic sampling semantics의 정확한 재현 | 고정된 Copilot SDK의 `SessionConfig`와 `MessageOptions`는 native `temperature`, `top_p`, `max_tokens`, `stop_sequences`, Anthropic `tool_choice`를 제공하지 않습니다. prompt 기반 모방은 동등하지 않습니다. | 미지원 control을 명시적으로 거부하거나 best-effort임을 문서화 |
+| Anthropic prompt caching | `cache_control` breakpoint와 그것이 제어하는 cache는 Anthropic model service에 속합니다. Copilot SDK에는 cache breakpoint control이 없으므로 이 marker는 효과가 없습니다. | 브리지는 Copilot 자체 cache read/write token 수를 `cache_read_input_tokens`와 `cache_creation_input_tokens`로 보고합니다. 이 값은 Anthropic cache가 아니라 Copilot cache를 나타냅니다. |
+| encrypted thinking signature와 Anthropic reasoning block | Copilot SDK는 provider reasoning event를 내보내지만 Anthropic thinking block에 붙는 cryptographic signature는 생성할 수 없습니다. | Reasoning effort는 전달합니다. 요청의 `thinking` 필드는 무시하며 응답에는 thinking block이 없습니다. Provider reasoning delta는 turn의 idle timer를 유지하는 데만 쓰입니다. |
+| Anthropic sampling semantics의 정확한 재현 | 고정된 Copilot SDK의 `SessionConfig`와 `MessageOptions`는 native `temperature`, `top_p`, `max_tokens`, `stop_sequences`, Anthropic `tool_choice`를 제공하지 않습니다. prompt 기반 모방은 동등하지 않습니다. | 네 가지 sampling control은 받지만 적용하지 않습니다. [미지원 control 처리 원칙](#미지원-control-처리-원칙)을 참고하세요. `tool_choice`는 도구 필터링과 system 지시로 모방합니다. |
 | Anthropic model availability, safety fallback, Fable consent | Anthropic 조직 정책과 billing에 연결된 검사입니다. | GitHub Copilot model catalog와 조직 정책 사용 |
 
 ## 구현된 호환성 보강
@@ -45,13 +45,15 @@
   동등성은 여전히 문서화된 한계
 - Custom agent 정의와 output style 등 native inline system 지시 전달. Token-budget이나
   cache-control metadata 변경을 대화 rewind로 잘못 처리하지 않음
-- `CopilotSession.abort()`까지 전달되는 request cancellation
+- Request cancellation: client 연결이 끊기면 아직 시작하지 않은 queued request는
+  제거하고, 이미 실행 중인 turn에는 `CopilotSession.abort()`를 호출
 - Edit, Write, NotebookEdit, Bash, permission, hook, skill, plugin, MCP,
-  multimodal input, worktree, session, stream, cron, subagent 실제 E2E
+  multimodal input, worktree, session, stream, cron, subagent와 launcher, daemon,
+  background agent 실제 E2E. [VERIFICATION_KO.md](VERIFICATION_KO.md) 참고
 
-정확한 native sampling semantics나 crash-atomic in-flight recovery 같은 남은
-제약은 기능 커버리지 표에 기록합니다. 이 구현들이 위 구조적 한계를 제거하지는
-않습니다.
+정확한 native sampling semantics나 브리지가 crash했을 때 진행 중이던 turn의 복구
+같은 남은 제약은 README의 [지원 범위](../README_KO.md#지원-범위) 표에 정리돼
+있습니다. 이 구현들이 위 구조적 한계를 제거하지는 않습니다.
 
 ## IDE 관련 구분
 
@@ -62,9 +64,25 @@ integrated terminal에서 `claude`를 실행하면 이 브리지를 사용합니
 
 ## 미지원 control 처리 원칙
 
-Copilot SDK로 표현할 수 없는 provider control 요청은 명시적으로 실패시키거나
-best-effort 동작이라고 표시해야 합니다. Anthropic과 동등한 semantics를 제공한다고
-조용히 가정하면 안 됩니다.
+Copilot SDK로 표현할 수 없는 control을 요청하면 브리지는 요청을 거부하거나, 받은 뒤
+보고합니다. 근사치를 적용하고 Anthropic과 동등하다고 주장하지는 않습니다.
+
+- **400 `invalid_request_error`로 거부:** 충족할 수 없는 `tool_choice`. 선언된
+  도구가 없는 `any`나 `tool`, 선언되지 않은 도구를 지정한 `tool`, 알 수 없는 mode가
+  해당합니다.
+- **모방:** `tool_choice: none`은 도구를 제거합니다. `tool_choice: tool`은 지정한
+  도구만 남기며, `tool`과 `any`는 도구를 호출하라는 system 지시를 추가합니다. 모델은
+  여전히 도구 호출 없이 답할 수 있습니다.
+- **받되 적용하지 않고 보고:** `temperature`, `top_p`, `max_tokens`,
+  `stop_sequences`. Claude Code 요청은 항상 `max_tokens`를 설정하므로 이를 거부하면
+  일반 요청이 실패합니다. 이 중 하나를 설정한 요청마다 `bridge.degraded_controls`를
+  기록하며, `GET /health`는 이를 `unsupportedNativeControls`로 나열합니다.
+- **받고 무시:** `thinking`, `top_k`, `metadata`, `output_config.format`처럼 이후
+  단계에서 읽지 않는 필드. 같은 diagnostic의 `ignoredFields`로 기록되고
+  `GET /health`의 `ignoredRequestFields`에 나열됩니다.
+
+보고는 브리지 log와 `GET /health`에만 남습니다. Claude Code에 가는 응답에는 표시가
+없으므로, 이런 보장이 필요한 호출자는 응답이 아니라 브리지를 확인해야 합니다.
 
 공식 참고 문서:
 

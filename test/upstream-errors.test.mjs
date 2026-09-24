@@ -51,9 +51,9 @@ test("BRIDGE_TEST_FAULTS parses kind:count entries in order", () => {
   assert.throws(() => parseTestFaults("overloaded:1,overloaded:1"), /lists overloaded more than once/);
 });
 
-test("injected upstream faults carry the mapped status, type and retry time", () => {
+test("injected upstream faults carry the mapped status and type and no retry time", () => {
   const rateLimit = testFaultError("rate_limit");
-  assert.deepEqual([rateLimit.status, rateLimit.type, rateLimit.retryAfterSeconds], [429, "rate_limit_error", 1]);
+  assert.deepEqual([rateLimit.status, rateLimit.type, rateLimit.retryAfterSeconds], [429, "rate_limit_error", null]);
   const overloaded = testFaultError("overloaded");
   assert.deepEqual([overloaded.status, overloaded.type, overloaded.retryAfterSeconds], [529, "overloaded_error", null]);
   // context_limit comes from the session manager, which knows the token limit.

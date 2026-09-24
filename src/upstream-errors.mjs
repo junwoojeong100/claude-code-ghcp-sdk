@@ -65,7 +65,8 @@ export function parseTestFaults(raw) {
 }
 
 // Built from SDK-shaped session.error data, so an injected fault goes through
-// the same classification and status mapping as a real one.
+// the same classification and status mapping as a real one. Neither carries
+// a retry time, as a real one never does.
 export function testFaultError(kind) {
   if (kind === "rate_limit") {
     return sessionError({
@@ -73,7 +74,7 @@ export function testFaultError(kind) {
       errorCode: "rate_limited",
       message: "BRIDGE_TEST_FAULTS injected an upstream rate limit.",
       statusCode: 429,
-    }, { retryAfterSeconds: 1 });
+    });
   }
   if (kind === "overloaded") {
     return sessionError({

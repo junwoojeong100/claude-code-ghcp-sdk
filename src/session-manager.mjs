@@ -20,7 +20,7 @@ import {
   sdkContextOptionsFor,
 } from "./model-map.mjs";
 import { applyRequestPolicy, BridgeRequestError } from "./request-policy.mjs";
-import { sessionError } from "./upstream-errors.mjs";
+import { sessionError, UpstreamError } from "./upstream-errors.mjs";
 
 const CONTINUATION_PROMPT =
   "Continue from the prior conversation and follow the current system instructions.";
@@ -1092,6 +1092,9 @@ export class SessionManager {
       let timeout;
       let hardTimeout;
       let lastProgressAt = startedAt;
+      // The HTTP status of the last root model call that failed, while
+      // neither progress nor the retried call has followed it.
+      let upstreamRetryStatus = null;
       const report = (event, details = {}) => {
         const outstanding = (name) => {
           const rpc = diagnostics.rpc[name];
@@ -1116,6 +1119,7 @@ export class SessionManager {
           turnStarted,
           completionStarted,
           deferredCompletion: Boolean(deferredCompletion),
+          upstreamRetryStatus,
           messages: messages.length,
           toolRequests: messages.reduce((count, message) => count + (message.toolRequests?.length || 0), 0),
           usageEvents: usageEvents.length,
@@ -1157,18 +1161,30 @@ export class SessionManager {
           });
       };
       const onAbort = () => terminate(createAbortError(), "client_abort");
+      // The runtime waits out an upstream 429 or 5xx itself, retry-after
+      // included, and emits nothing while it waits. A turn cut short then
+      // fails with that upstream error, which Claude Code retries, instead
+      // of as a bridge failure.
+      const cutShort = (message) => {
+        const upstream = upstreamRetryStatus == null ? null : sessionError({
+          statusCode: upstreamRetryStatus,
+          message: `${message} GitHub Copilot was waiting to retry an upstream HTTP ${upstreamRetryStatus}.`,
+        });
+        return upstream instanceof UpstreamError ? upstream : new Error(message);
+      };
       const armIdleTimeout = () => {
         if (settled || aborting) return;
         lastProgressAt = performance.now();
+        upstreamRetryStatus = null;
         clearTimeout(timeout);
         timeout = setTimeout(() => terminate(
-          new Error("Timed out waiting for the GitHub Copilot model turn."),
+          cutShort("Timed out waiting for the GitHub Copilot model turn."),
           "timeout",
         ), this.turnTimeoutMs);
       };
       armIdleTimeout();
       hardTimeout = setTimeout(() => terminate(
-        new Error(`GitHub Copilot turn exceeded the hard duration limit (${this.maxTurnDurationMs}ms).`),
+        cutShort(`GitHub Copilot turn exceeded the hard duration limit (${this.maxTurnDurationMs}ms).`),
         "duration_limit",
       ), this.maxTurnDurationMs);
 
@@ -1298,7 +1314,15 @@ export class SessionManager {
       const onTurnStart = (event) => {
         if (!event.agentId) turnStarted = true;
       };
+      // When the runtime's own retries run out it ends the turn first and
+      // reports session.error after that, so a turn that produced no message
+      // waits for the error or for the idle that follows it.
       const onTurnEnd = (event) => {
+        if (!event.agentId && messages.length) finishTurn();
+      };
+      // assistant.idle also arrives while background work holds back
+      // session.idle.
+      const onIdle = (event) => {
         if (!event.agentId) finishTurn();
       };
       const onError = (event) => {
@@ -1330,8 +1354,21 @@ export class SessionManager {
           if (!event.agentId) usageEvents.push(event.data);
         }),
         subscribe("assistant.turn_end", onTurnEnd),
+        subscribe("assistant.idle", onIdle),
         subscribe("session.idle", finishTurn),
         subscribe("session.error", onError),
+        // A failure without a status is a transport failure.
+        subscribe("model.call_failure", (event) => {
+          if (event.agentId || event.data?.source !== "top_level") return;
+          const { statusCode } = event.data;
+          upstreamRetryStatus = Number.isInteger(statusCode) ? statusCode : null;
+        }),
+        // The SDK's generated types omit this event, but it arrives when the
+        // wait ends and the retried call begins. A turn that stalls after
+        // that is not waiting on the upstream error any more.
+        subscribe("model.call_start", (event) => {
+          if (!event.agentId) upstreamRetryStatus = null;
+        }),
         ...["session.compaction_start", "session.truncation"].map((type) => subscribe(type, (event) => {
           if (event.agentId || settled || aborting || !state.contextReduction) return;
           state.invalidated = true;
