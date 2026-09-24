@@ -664,8 +664,8 @@ test("BRIDGE_TEST_FAULTS fails agent turns in order through the real error mappi
   assert.equal((await send(agentTurn(), "/v1/messages/count_tokens")).status, 200);
 
   const expected = [
-    [false, 429, "rate_limit_error", "1"],
-    [true, 429, "rate_limit_error", "1"],
+    [false, 429, "rate_limit_error", undefined],
+    [true, 429, "rate_limit_error", undefined],
     [false, 529, "overloaded_error", undefined],
     [true, 400, "invalid_request_error", undefined],
   ];
@@ -700,7 +700,7 @@ test("BRIDGE_TEST_FAULTS fails agent turns in order through the real error mappi
     assert.equal(failure.requestId, fault.requestId);
     assert.deepEqual(
       [failure.status, failure.errorType, failure.retryAfterSeconds, failure.streaming, failure.headersSent],
-      [expected[index][1], expected[index][2], expected[index][3] ? 1 : null, expected[index][0], false],
+      [expected[index][1], expected[index][2], null, expected[index][0], false],
     );
   }
 });

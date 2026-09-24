@@ -1274,6 +1274,154 @@ for (const [label, data, expected] of [
   });
 }
 
+// Recorded from the Copilot runtime with its API pointed at a local server
+// that answered every inference request with 429 or 503. send() returns once
+// the prompt is queued. When the runtime's own retries run out it ends the
+// turn, and only then reports the error.
+for (const [label, data, expected] of [
+  ["a rate limit", {
+    errorType: "rate_limit", errorCode: "rate_limited", eligibleForAutoSwitch: true, statusCode: 429,
+    message: "You've hit your rate limit. Please wait for your limit to reset or switch to auto model to continue.",
+  }, { status: 429, type: "rate_limit_error" }],
+  ["an unavailable upstream", {
+    errorType: "query", statusCode: 503,
+    message: "Execution failed: Failed to get response from the AI model; retried 5 times (total retry wait time: 16.36 seconds) Last error: 503 upstream temporarily unavailable",
+  }, { status: 529, type: "overloaded_error" }],
+]) {
+  test(`${label} reported after its turn ends still fails the request`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: ".", client, turnTimeoutMs: 1000 });
+    client.session.sendImplementation = async () => {
+      setImmediate(() => {
+        client.session.emit("assistant.turn_start", { turnId: "0" });
+        client.session.emit("assistant.turn_end", { turnId: "0" });
+        client.session.emit("session.error", data);
+        client.session.emit("assistant.idle", {});
+        client.session.emit("session.idle", {});
+      });
+    };
+    await manager.start();
+    try {
+      const error = await manager.execute(request(), {}).then(() => assert.fail("The turn must fail."), (reason) => reason);
+      assert.ok(error instanceof UpstreamError);
+      assert.equal(error.status, expected.status);
+      assert.equal(error.type, expected.type);
+      assert.equal(error.message, data.message);
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+// assistant.idle comes even while background work holds back session.idle.
+for (const idleEvent of ["assistant.idle", "session.idle"]) {
+  test(`a turn that ends with no message completes on ${idleEvent}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: ".", client, turnTimeoutMs: 1000 });
+    client.session.sendImplementation = async () => {
+      setImmediate(() => {
+        client.session.emit("assistant.turn_start", { turnId: "0" });
+        client.session.emit("assistant.turn_end", { turnId: "0" });
+        client.session.emit(idleEvent, {});
+      });
+    };
+    await manager.start();
+    try {
+      const result = await manager.execute(request(), {});
+      assert.equal(result.message.content, "");
+      assert.deepEqual(result.message.toolRequests, []);
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+// The runtime waits out retry-after itself and emits nothing meanwhile, so a
+// long one outlasts the idle timeout. Recorded shape: call_failure, then
+// silence until model.turn_retry.
+for (const [statusCode, expected] of [
+  [429, { status: 429, type: "rate_limit_error" }],
+  [503, { status: 529, type: "overloaded_error" }],
+]) {
+  test(`a turn timed out while the runtime waits to retry an upstream ${statusCode} fails with that error`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const diagnostics = [];
+    const manager = new SessionManager({
+      baseDirectory: ".", client, turnTimeoutMs: 30, onDiagnostic: (event) => diagnostics.push(event),
+    });
+    client.session.sendImplementation = async () => {
+      client.session.emit("assistant.turn_start", { turnId: "0" });
+      client.session.emit("model.call_failure", { source: "top_level", statusCode, failureKind: "api" });
+    };
+    await manager.start();
+    try {
+      const error = await manager.execute(request(), {}).then(() => assert.fail("The turn must fail."), (reason) => reason);
+      assert.ok(error instanceof UpstreamError);
+      assert.equal(error.status, expected.status);
+      assert.equal(error.type, expected.type);
+      assert.equal(error.retryAfterSeconds, null);
+      assert.match(error.message, new RegExp(`^Timed out waiting for the GitHub Copilot model turn\\. .*HTTP ${statusCode}\\.$`));
+      assert.equal(client.session.abortCalls, 1);
+      const timeout = diagnostics.find((event) => event.event === "bridge.turn_timeout");
+      assert.equal(timeout.reason, "timeout");
+      assert.equal(timeout.upstreamRetryStatus, statusCode);
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
+test("the hard duration limit during an upstream retry wait fails with the upstream error", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: ".", client, turnTimeoutMs: 1000, maxTurnDurationMs: 40 });
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.turn_start", { turnId: "0" });
+    client.session.emit("model.call_failure", { source: "top_level", statusCode: 429 });
+  };
+  await manager.start();
+  try {
+    const error = await manager.execute(request(), {}).then(() => assert.fail("The turn must fail."), (reason) => reason);
+    assert.ok(error instanceof UpstreamError);
+    assert.equal(error.status, 429);
+    assert.match(error.message, /^GitHub Copilot turn exceeded the hard duration limit \(40ms\)\. .*HTTP 429\.$/);
+  } finally {
+    await manager.stop();
+  }
+});
+
+for (const [label, emitFailure] of [
+  ["a failure that is not a 429 or 5xx", (session) => session.emit("model.call_failure", { source: "top_level", statusCode: 400 })],
+  ["a transport failure", (session) => session.emit("model.call_failure", { source: "top_level", failureKind: "transport" })],
+  ["a subagent failure", (session) => session.emit("model.call_failure", { source: "subagent", statusCode: 429 }, { agentId: "child" })],
+  ["an MCP sampling failure", (session) => session.emit("model.call_failure", { source: "mcp_sampling", statusCode: 429 })],
+  ["a failure the turn has progressed past", (session) => {
+    session.emit("model.call_failure", { source: "top_level", statusCode: 429 });
+    session.emit("assistant.message_delta", { deltaContent: "recovered" });
+  }],
+  ["a failure whose retried call has started", (session) => {
+    session.emit("model.call_failure", { source: "top_level", statusCode: 429 });
+    session.emit("model.turn_retry", { kind: "turn_retry" });
+    session.emit("model.call_start", { turnId: "0" });
+  }],
+]) {
+  test(`a turn timed out after ${label} stays a bridge timeout`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const manager = new SessionManager({ baseDirectory: ".", client, turnTimeoutMs: 30 });
+    client.session.sendImplementation = async () => {
+      client.session.emit("assistant.turn_start", { turnId: "0" });
+      emitFailure(client.session);
+    };
+    await manager.start();
+    try {
+      const error = await manager.execute(request(), {}).then(() => assert.fail("The turn must fail."), (reason) => reason);
+      assert.ok(!(error instanceof UpstreamError));
+      assert.equal(error.message, "Timed out waiting for the GitHub Copilot model turn.");
+    } finally {
+      await manager.stop();
+    }
+  });
+}
+
 test("a context-limit error for a Claude Code session names its reported token limit", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
   const manager = new SessionManager({ baseDirectory: ".", client });
