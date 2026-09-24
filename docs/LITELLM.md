@@ -2,11 +2,10 @@
 
 > **Language / 언어:** English | [한국어](LITELLM_KO.md)
 
-This document covers putting **this repository's bridge behind a LiteLLM proxy**, so that
-LiteLLM clients reach GitHub Copilot models through `src/server.mjs`. If you only need
-Claude Code talking to the bridge, follow the
-[README](../README.md#direct-sdk-quick-start) instead — LiteLLM adds a hop, not a
-capability.
+This guide puts **this repository's bridge behind a LiteLLM proxy**, so LiteLLM clients
+reach GitHub Copilot models through `src/server.mjs`. If you only need Claude Code talking
+to the bridge, follow the [README](../README.md#direct-sdk-quick-start) instead; LiteLLM
+adds a hop, not a capability.
 
 ## Topology
 
@@ -15,31 +14,31 @@ Direct:  Claude Code -> bridge (src/server.mjs) -> @github/copilot-sdk -> Copilo
 LiteLLM: any client  -> LiteLLM -> bridge (src/server.mjs) -> @github/copilot-sdk -> Copilot model
 ```
 
-LiteLLM is configured with its `anthropic/*` provider and an `api_base` pointing at the
-bridge root. This is **not** LiteLLM's own `github_copilot/*` provider. That provider runs
-its own GitHub device-OAuth flow, keeps its own credentials under
-`~/.config/litellm/github_copilot`, and never touches this repository or
-`@github/copilot-sdk`. Nothing on this page uses it.
+LiteLLM uses its `anthropic/*` provider with `api_base` set to the bridge root. This page
+does **not** use LiteLLM's own `github_copilot/*` provider, which runs its own GitHub
+device-OAuth flow, keeps its own credentials under `~/.config/litellm/github_copilot`, and
+never touches this repository or `@github/copilot-sdk`.
 
-The reason to add the hop: LiteLLM gives you virtual keys, budgets, request logging and an
-OpenAI-shaped surface in front of a bridge that speaks only the Anthropic Messages API, to
-one loopback caller, with one credential.
+LiteLLM adds virtual keys, budgets, request logging and an OpenAI-shaped surface in front
+of a bridge that speaks only the Anthropic Messages API, to one loopback caller, with one
+credential.
 
 ## Verification Scope
 
-LiteLLM is outside this repository's verification scope. The `npm run verify` matrix (6 models x 11 scenarios = 66 slots) starts `src/server.mjs` directly and never starts LiteLLM, so nothing on this page is covered by it — treat this as a configuration reference, not a validated path.
+LiteLLM is outside this repository's verification scope. The `npm run verify` matrix
+(6 models x 11 scenarios = 66 slots) starts `src/server.mjs` directly and never starts
+LiteLLM, so treat this page as a configuration reference, not a validated path.
 
-Everything below about LiteLLM's own wire behaviour is written against the `v1.97.0` that
-`npm run litellm:setup` **pins** (commit `ef84494`, `scripts/setup-litellm.sh`) — a pin, not
-a test result. A different LiteLLM release may append a different path, forward a different
-header set, or reject a different model string. Claims about `src/` are a different matter:
-those are read off this repository's source and cited by file. See
+Statements about LiteLLM's own behaviour are written against `v1.97.0`, the release
+`npm run litellm:setup` pins (commit `ef84494`, `scripts/setup-litellm.sh`). That is a pin,
+not a test result: another release may append a different path, forward different
+headers, or reject different model strings. Statements about `src/` are read from this
+repository's source and name the file. See
 [Validation Scope](ARCHITECTURE.md#validation-scope) for what is covered.
 
 ## What the Bridge Exposes
 
-The `api_base` you give LiteLLM has to line up with a very small surface, all of it in
-`src/server.mjs`:
+The `api_base` you give LiteLLM must match this surface, all of it in `src/server.mjs`:
 
 | Method and path | Auth | Notes |
 |---|---|---|
@@ -50,9 +49,8 @@ The `api_base` you give LiteLLM has to line up with a very small surface, all of
 | `GET /v1/models` | required | Model catalogue |
 | anything else | required | `404` with `not_found_error` — but the auth gate runs first, so a bad credential gets `401` instead |
 
-Authentication accepts **either** `Authorization: Bearer <token>` **or**
-`x-api-key: <token>`. The bridge binds to loopback only, unless `ALLOW_NON_LOOPBACK=1` is
-set.
+Authentication accepts either `Authorization: Bearer <token>` or `x-api-key: <token>`.
+The bridge binds to loopback only, unless `ALLOW_NON_LOOPBACK=1` is set.
 
 ## Prerequisites
 
@@ -72,63 +70,44 @@ All commands below run from the repository root.
 
 ## 1. Start the Persistent Bridge
 
-`bin/claude-ghcp` starts an ephemeral bridge that dies with Claude Code. LiteLLM needs a
-base URL and a token that outlive a single run, so use the daemon instead, and **pin the
-port** — an unpinned daemon picks a free one:
+LiteLLM needs a bridge URL and token that outlive any one Claude Code run, so use the
+persistent bridge and **pin its port**; without a port it picks a free one. This is the
+bridge that every `claude-ghcp` launch except `-p` shares; see
+[Persistent bridge and print mode](../README.md#persistent-bridge-and-print-mode).
 
 ```bash
 export GHCP_BRIDGE_PORT=4142
-node src/bridge-daemon.mjs ensure claude-sonnet-5 "$GHCP_BRIDGE_PORT"
-```
+export GHCP_BRIDGE_URL="http://127.0.0.1:$GHCP_BRIDGE_PORT"   # bridge root, no /v1
 
-`ensure` prints the whole registry as JSON on stdout:
-
-```json
-{"createdAt":"...","configFingerprint":"...","instanceId":"...","model":"claude-sonnet-5","pid":12345,"port":4142,"token":"<48-hex-characters>","version":1,"logPath":"...","settingsPath":"..."}
-```
-
-Only `port` and `token` matter here. `logPath` is where the daemon writes its log;
-`settingsPath` is a fresh per-launch Claude Code settings file that `ensure` allocates on
-every call and that a LiteLLM operator should ignore.
-
-Export the two values LiteLLM needs. Note the **absence of `/v1`** in the URL:
-
-```bash
-export GHCP_BRIDGE_URL="http://127.0.0.1:$GHCP_BRIDGE_PORT"
-
-# Capture the registry, then parse it. `ensure` reports failure on stderr and exits
-# non-zero leaving stdout empty, so piping it straight into the parser would bury the
-# real message under `SyntaxError: Unexpected end of JSON input`.
+# On failure, ensure prints its message on stderr and leaves stdout empty.
 GHCP_REGISTRY="$(node src/bridge-daemon.mjs ensure claude-sonnet-5 "$GHCP_BRIDGE_PORT")"
 if [ -n "$GHCP_REGISTRY" ]; then
   export GHCP_BRIDGE_TOKEN="$(printf '%s' "$GHCP_REGISTRY" \
     | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).token))')"
 else
-  # Fail closed. A token exported by an earlier run survives this failure and now
-  # names a bridge that is gone; every downstream check is a non-empty test, so a
-  # stale value would pass all of them.
+  # Fail closed: a token left over from an earlier run names a bridge that is gone.
   unset GHCP_BRIDGE_TOKEN
   echo "ensure failed; its message is above. GHCP_BRIDGE_TOKEN is now unset." >&2
   false
 fi
 ```
 
-The `else` branch does three things and each one matters. It **unsets**
-`GHCP_BRIDGE_TOKEN` rather than leaving it alone: a token exported by an earlier run
-survives a failed `ensure` and now names a bridge that is gone, and every downstream
-check — including the one in
-[`../scripts/start-litellm.sh`](../scripts/start-litellm.sh) — only tests that the
-variable is non-empty. A surviving stale token therefore starts a gateway that boots
-cleanly and fails on the first request instead of at startup. It writes the reminder to
-stderr. And it ends in `false`, so the whole `if` reports non-zero and a script running
-this under `set -e` stops here. It deliberately does not call `exit`, which would close
-the shell when the block is pasted interactively and would abort the caller when the
-block is sourced.
+`ensure` starts the bridge, or reuses it when it is already running with the same
+configuration, and prints its registry as one JSON line:
 
-The success branch needs no such guard: if `ensure` printed something that is not
-registry JSON, the parser exits non-zero with empty stdout and
-`export GHCP_BRIDGE_TOKEN=""` overwrites the old value with an empty one, which the same
-non-empty checks then reject.
+```json
+{"createdAt":"...","configFingerprint":"...","instanceId":"...","model":"claude-sonnet-5","pid":12345,"port":4142,"token":"<48-hex-characters>","version":1,"leasePath":"...","logPath":"...","settingsPath":"..."}
+```
+
+LiteLLM needs only `port` and `token`. `logPath` is the bridge log. `leasePath` and
+`settingsPath` are per-launch paths for `claude-ghcp`; ignore them.
+
+The `else` branch unsets `GHCP_BRIDGE_TOKEN` because every later check, including
+[`../scripts/start-litellm.sh`](../scripts/start-litellm.sh), only tests that the variable
+is non-empty: a stale token would start a gateway that fails on its first request. It ends
+in `false` rather than `exit`, so it stops a `set -e` script without closing an
+interactive shell. If `ensure` prints something that is not registry JSON, the parser
+fails and the token is exported empty, which the same checks reject.
 
 Confirm the bridge is up before configuring anything else:
 
@@ -140,16 +119,13 @@ curl --silent --show-error --fail \
   "$GHCP_BRIDGE_URL/v1/models"
 ```
 
+The bridge runs in its daemon directory (below), so it does not matter which directory you
+run `ensure` from.
+
 ### Recovering the token later
 
-`./bin/claude-ghcp-status` deliberately prints only `{model, pid, port, running}` — never
-the token. To recover one, either re-run `ensure` or read the registry file.
-
-`ensure` returns the existing registry when the daemon is healthy and its fingerprint still
-matches — but on that same path it first calls `modelAvailable()` and throws
-`GitHub Copilot model is unavailable: <model>` when the model you named is absent from the
-daemon's `/v1/models?all=true` (`src/bridge-daemon.mjs`). A run whose only purpose was to
-recover the token can therefore fail outright. Reading the file has no such failure mode:
+`./bin/claude-ghcp-status` prints `{model, pid, port, retired, running}` and never the
+token. Read the token from the registry file:
 
 | Location | Path |
 |---|---|
@@ -157,44 +133,33 @@ recover the token can therefore fail outright. Reading the file has no such fail
 | macOS default | `~/Library/Caches/claude-code-ghcp-sdk/bridge.json` |
 | Linux default | `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk/bridge.json` |
 
-The directory is `0700` and the registry file is `0600`. Treat the token like a password:
-it grants a caller your GitHub Copilot seat. Stop the daemon with `./bin/claude-ghcp-stop`.
+The directory is `0700` and the file is `0600`. Treat the token like a password: it lets a
+caller use your GitHub Copilot seat.
+
+Re-running `ensure` also returns the token, but it can fail where reading the file cannot.
+Before it returns a running bridge, it checks the model you name against the bridge's
+`/v1/models?all=true` and throws `GitHub Copilot model is unavailable: <model>` if the
+model is absent (`src/bridge-daemon.mjs`).
+
+`./bin/claude-ghcp-stop` stops the bridge and any retired bridges, including the one that
+running `claude-ghcp` sessions share.
 
 ### The `GHCP_BRIDGE_PORT` trap
 
-`bin/claude-ghcp` reads `GHCP_BRIDGE_PORT` into its bridge port, but it only picks a free
-port by itself in ephemeral mode. In persistent mode — `--background`, `--bg`, or the
-`agents` subcommand — an unset `GHCP_BRIDGE_PORT` means it calls `ensure` with **no**
-requested port.
+Every `claude-ghcp` launch except `-p` calls `ensure` with `GHCP_BRIDGE_PORT` (or
+`--bridge-port`) as the requested port, and with no port when neither is set. The
+requested port is part of the configuration fingerprint (`daemonConfigFingerprint` in
+`src/bridge-daemon.mjs`). So a launch from a shell without `GHCP_BRIDGE_PORT=4142`
+replaces your pinned bridge:
 
-The requested port is part of the daemon's configuration fingerprint
-(`daemonConfigFingerprint` in `src/bridge-daemon.mjs`). So if you ran
-`ensure claude-sonnet-5 4142` for LiteLLM and then run `claude-ghcp --background` in
-another shell without the variable, the fingerprints disagree: the launcher stops your
-daemon, starts a new one on a new random port with a **new token**, and LiteLLM gets
-connection refused on `4142`.
+1. The launcher starts a new bridge on a free port with a new token.
+2. Your pinned bridge is retired. It keeps its port and token and keeps answering LiteLLM.
+3. It exits once it has had no request for `RETIRED_IDLE_MS` (default 1 hour) and no
+   launcher that used it is still running. LiteLLM then gets connection refused.
 
-Export `GHCP_BRIDGE_PORT=4142` in **both** shells — before `ensure`, and before the
-launcher — and the fingerprints match.
-
-### The daemon inherits its launch directory
-
-`ensureDaemon` spawns `src/server.mjs` with no `cwd` option, so the daemon inherits the
-working directory of whoever ran `ensure`. That directory is *not* the Copilot data
-directory: `src/session-manager.mjs` constructs its `CopilotClient` with only `mode`,
-`baseDirectory` and `logLevel`, and `baseDirectory` is
-`resolveCopilotHome(process.env.COPILOT_HOME)` — `~/.copilot` by default, never the cwd.
-Nor does `sessionOptions` set a `workingDirectory`, which per `@github/copilot-sdk`'s
-`types.d.ts` leaves the runtime process inheriting the caller's cwd. So the inherited
-directory follows the daemon for its whole life; start `ensure` somewhere that will outlive
-it.
-
-Whatever the SDK raises when a session cannot be constructed, `src/server.mjs` forwards
-`error.message` verbatim and prefixes nothing of its own: a `500` carrying
-`type: "api_error"` for a non-streaming request, an `event: error` frame carrying the same
-`api_error` for a streaming one (`writeSseError` in `src/anthropic.mjs`). Read the message
-itself rather than matching on a fixed string. If the launch directory is the problem, run
-`./bin/claude-ghcp-stop` and re-run `ensure` from a directory that still exists.
+Export `GHCP_BRIDGE_PORT=4142` in both shells, before `ensure` and before the launcher.
+The rest of the fingerprint must match too: the same clone and the same bridge environment
+variables (see [Known Constraints](#known-constraints)).
 
 ## 2. Bridge Backend Mapping
 
@@ -243,22 +208,21 @@ starts, so the mistake surfaces as a startup error rather than a runtime `404`.
 
 ### The `[1m]` context suffix
 
-The bridge strips a `[1m]` or `[NNNk]` suffix before resolving a model
-(`stripContextSuffix` in `src/model-map.mjs`), and the suffix never selects a larger
-backend tier: Claude models stay on the SDK default tier, while GPT-6 (and GPT-5.6) models
-use the long-context tier with or without it. An `anthropic/<id>[1m]` backend string is
-therefore accepted but behaves exactly like `anthropic/<id>`. LiteLLM does no such
-stripping, so a bracketed alias is one it cannot match and it rejects the request upstream
-with a `400 Invalid model name` — LiteLLM behaviour this repository does not verify. Keep
-the brackets out of `model_name` and out of `--litellm-model`.
+Keep brackets out of `model_name` and `--litellm-model`. LiteLLM does not strip a `[1m]`
+or `[NNNk]` suffix, so it cannot match a bracketed alias and rejects the request with
+`400 Invalid model name` (LiteLLM behaviour this repository does not verify).
 
-Claude Code sizes its context window from the model name it is configured with, which on
-this path is the bracket-free alias, so it keeps its default window.
-`src/write-litellm-settings.mjs` sets no context override, and the Direct writer only
-clears an inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. For a 1M window with GPT-6 Astra,
-Sol or Luna, use the Direct path in the [README](../README.md#direct-sdk-quick-start):
-its model-scoped `github-copilot/claude-<id>[1m]` launch and picker IDs carry the window.
-Neither path offers a 1M window for the Claude rows.
+The suffix does nothing on the bridge side either. The bridge strips it before resolving
+the model (`stripContextSuffix` in `src/model-map.mjs`) and picks the SDK tier by model:
+GPT-6 Astra, Sol and Luna, GPT-5.6, Claude Opus 5.5, 5, 4.8 and 4.7, and Claude Sonnet 5
+get the long-context tier when the Copilot catalogue advertises at least 1M tokens
+(`sdkContextOptionsFor`). So `anthropic/<id>[1m]` behaves exactly like `anthropic/<id>`.
+
+Claude Code sizes its own context window from the configured model name. On this path that
+is the bracket-free alias, so Claude Code keeps its default window even when the bridge
+serves a 1M tier; `src/write-litellm-settings.mjs` sets no context override. For a 1M
+window in Claude Code, use the Direct path, whose launch and picker IDs carry a
+model-scoped `[1m]` hint; see [Run Claude Code](../README.md#4-run-claude-code).
 
 ## 3. Start LiteLLM
 
@@ -288,8 +252,8 @@ export LITELLM_MODEL="claude-sonnet-5"
 ```
 
 `LITELLM_MODEL` must match a `model_name` from the config, not the `anthropic/...` backend
-string. `LITELLM_BASE_URL` must not end in `/v1` either — Claude Code appends
-`/v1/messages` the same way LiteLLM does, and `src/write-litellm-settings.mjs` rejects it.
+string. `LITELLM_BASE_URL` must not end in `/v1` either: Claude Code appends `/v1/messages`
+the same way LiteLLM does, and `src/write-litellm-settings.mjs` rejects it.
 The launcher writes provider settings to a mode-`0600` temporary file and removes it when
 Claude Code exits.
 
@@ -326,14 +290,15 @@ Families without an alias fall back to `LITELLM_MODEL`.
   forwards is billed to that seat and governed by that user's organization policy, whoever
   sent it. If several people need a gateway, run a bridge plus a LiteLLM per person, or use
   the Direct SDK path.
-- **The token and port rotate.** `daemonConfigFingerprint` hashes the relevant environment
-  variables, the clone's own absolute path (`implementation.update(rootDir)`),
-  `package.json`, `package-lock.json`, every `src/*.mjs` file, and the requested port.
-  Changing any of them makes `ensure` stop the old daemon and start a new one with a new
-  random token — and a new port if unpinned. Editing anything under `src/` therefore
-  invalidates the token LiteLLM is holding, and so does **moving or renaming the clone**,
-  which changes nothing about the code but still rotates both values. Re-export `GHCP_BRIDGE_TOKEN` and restart
-  LiteLLM after any daemon restart.
+- **A configuration change rotates the token.** `daemonConfigFingerprint` hashes the
+  bridge environment variables (`COPILOT_*`, `MAX_*`, `RETIRED_IDLE_MS`, the other timeout
+  variables, `GH_TOKEN`, `GITHUB_TOKEN`, the proxy variables, `HOME` and the rest matched
+  there), the clone's absolute path, `package.json`, `package-lock.json`, every `src/*.mjs`
+  file, and the requested port. When any of them changes, the next `ensure` or
+  `claude-ghcp` launch on the pinned port stops the bridge and starts a new one on the same
+  port with a new token. Editing a file under `src/`, pulling new commits, and moving or
+  renaming the clone are each enough. Re-export `GHCP_BRIDGE_TOKEN` and restart LiteLLM
+  after every replacement.
 - **`count_tokens` never reaches the bridge.** LiteLLM answers
   `POST /v1/messages/count_tokens` itself with a local estimate, so the bridge's own
   `x-ghcp-token-count-method: estimated` route is unreachable behind LiteLLM. Expect the
@@ -344,76 +309,75 @@ Families without an alias fall back to `LITELLM_MODEL`.
 - **Cost tracking is wrong by construction.** Copilot model IDs are absent from LiteLLM's
   built-in cost map, so dashboard cost is zero or wrong. Reconcile against GitHub Copilot
   AI Credits, not the dashboard.
-- **Sampling controls are ignored.** `temperature`, `top_p`, `max_tokens` and
-  `stop_sequences` are not exposed by the Copilot SDK. `GET /health` reports them under
-  `unsupportedNativeControls`; the bridge logs them as degraded controls and ignores them,
-  whichever front end sends them. LiteLLM will happily accept and forward them. Other
-  accepted fields the bridge does not act on (`thinking`, `top_k`, `metadata` and the rest)
-  are listed under `ignoredRequestFields` and logged as `ignoredFields` beside the controls.
+- **Sampling controls are ignored.** The Copilot SDK does not expose `temperature`,
+  `top_p`, `max_tokens` or `stop_sequences`. LiteLLM forwards them, and the bridge accepts
+  and ignores them whichever front end sends them. `GET /health` lists them under
+  `unsupportedNativeControls`, and a request that sends one writes a
+  `bridge.degraded_controls` line. Other accepted fields the bridge does not act on
+  (`thinking`, `top_k`, `metadata` and the rest) are listed under `ignoredRequestFields`
+  and appear as `ignoredFields` on the same line.
 - **Do not set `forward_llm_provider_auth_headers`.** That setting — a different one from
   `forward_client_headers_to_llm_api` — forwards a client's own `x-api-key` and overrides
   the configured bridge key.
 - **The local setup pins FastAPI `0.139.0`.** `scripts/setup-litellm.sh` installs
-  `litellm[proxy]` and then runs a second `pip install` that overwrites whatever FastAPI
-  that resolved. The pin carries no rationale in the script, and this repository records no
-  test of LiteLLM `v1.97.0` against any other FastAPI release, so the pinned pair is the
-  only combination this page describes.
+  `litellm[proxy]`, then overwrites its FastAPI with `0.139.0`. The script gives no reason
+  for the pin, and this page describes only that pair.
 
 ## Troubleshooting
 
 ### `404` `not_found_error` from the bridge
 
-`api_base` has a path on it. It must be scheme, host and port only — LiteLLM appends
-`/v1/messages`. Anything outside the five routes listed above gets a `404` — but only once
-the request is authenticated: `src/server.mjs` runs the auth gate before the `404`
-fallthrough, so an unknown path presented with a missing or wrong credential comes back as
-`401` `authentication_error` instead.
+`api_base` has a path. Use scheme, host and port only; LiteLLM appends `/v1/messages`.
+The bridge answers `404` for any path outside the routes above, but only after
+authentication: with a missing or wrong credential the same request gets `401`
+`authentication_error`.
 
 ### `Connection refused` from LiteLLM
 
-The daemon is not listening on the port LiteLLM is configured for. The usual cause is the
-`GHCP_BRIDGE_PORT` trap: a `claude-ghcp --background` run in another shell replaced your
-pinned daemon with an unpinned one. Check with `./bin/claude-ghcp-status`, then re-run
-`ensure` with the port exported in both shells.
+No bridge is listening on LiteLLM's port. Usually a `claude-ghcp` launch without
+`GHCP_BRIDGE_PORT` retired your pinned bridge and it has since exited (see
+[The `GHCP_BRIDGE_PORT` trap](#the-ghcp_bridge_port-trap)), or `claude-ghcp-stop` stopped
+it. Check with `./bin/claude-ghcp-status`, export the port in both shells, re-run
+[the `ensure` block](#1-start-the-persistent-bridge), and restart LiteLLM with the new
+token.
 
 ### `401` from the bridge
 
-- The daemon restarted and rotated the token. Re-run `ensure`, re-export
-  `GHCP_BRIDGE_TOKEN`, and restart LiteLLM.
+- The bridge on that port was replaced and has a new token (see
+  [Known Constraints](#known-constraints)). Re-run `ensure`, re-export `GHCP_BRIDGE_TOKEN`,
+  and restart LiteLLM.
 - `GHCP_BRIDGE_TOKEN` was not exported before LiteLLM started; `os.environ/` resolves at
   load time.
 
 ### `400 Invalid model name`
 
-The requested model contains a `[1m]` or `[NNNk]` suffix. LiteLLM does no suffix stripping,
-so this is a LiteLLM-side rejection, not the bridge's. Use a bracket-free `model_name` with
-the suffix after `anthropic/`.
+The requested model has a `[1m]` or `[NNNk]` suffix. LiteLLM rejects it, not the bridge.
+Use a bracket-free `model_name` and `--litellm-model`; see
+[The `[1m]` context suffix](#the-1m-context-suffix).
 
-### `api_error` from the bridge
+### `429`, `529` or another error from the bridge
 
-Which shape you get depends on whether the request was streaming, and LiteLLM streams, so
-the streaming column is the one you will normally hit.
+`errorResponse` in `src/server.mjs` maps failures as the
+[README](../README.md#rate-limits-and-upstream-errors) describes:
 
-| Error raised in the request path | Non-streaming | Streaming |
-|---|---|---|
-| `BridgeRequestError`, `ModelUnavailableError`, `ReasoningEffortUnavailableError` | `400` `invalid_request_error` | `event: error` carrying `api_error` |
-| anything else | `500` `api_error` | `event: error` carrying `api_error` |
+| Failure | Status and type |
+|---|---|
+| Copilot `rate_limit` or `quota` error, or upstream HTTP 429 | `429` `rate_limit_error` |
+| Upstream HTTP 5xx | `529` `overloaded_error` |
+| `BridgeRequestError` (including a context-limit error), `ModelUnavailableError`, `ReasoningEffortUnavailableError` | `400` `invalid_request_error` |
+| Anything else | `500` `api_error` |
 
-On the non-streaming path `src/server.mjs` classifies the error, and those three types —
-`BridgeRequestError` among them — become a `400` `invalid_request_error`; everything else
-becomes a `500` `api_error`.
+LiteLLM streams. The bridge starts a streaming response at the model's first text,
+reasoning or tool-call delta. A failure before that gets the status above. A failure after
+it arrives as an `event: error` frame with the same type, on a response whose status is
+already `200` (`writeSseError` in `src/anthropic.mjs`). The bridge sends no `retry-after`
+header, because the SDK reports no retry time. How LiteLLM relays these to its own client
+is LiteLLM behaviour this repository does not verify.
 
-On the streaming path that classification never runs. `src/server.mjs` short-circuits to
-`writeSseError` and returns before reaching it, and `writeSseError` in
-`src/anthropic.mjs` hardcodes `type: "api_error"`. The HTTP status is already `200` from
-the SSE preamble, so there is no `500` either: the failure arrives only as an
-`event: error` frame. A rejected model name therefore reaches LiteLLM as `api_error`, not
-as the `400` `invalid_request_error` the non-streaming path would have produced.
-
-In both paths the `message` is the underlying error's own, forwarded verbatim — so read
-the message rather than matching on the type or on a fixed string. One recurring cause
-behind LiteLLM is a daemon whose launch directory has since been deleted; see
-[The daemon inherits its launch directory](#the-daemon-inherits-its-launch-directory).
+The `message` is the underlying error's own, forwarded verbatim; read it rather than
+matching on a fixed string. Each failure also writes a content-free
+`bridge.request_failed` line, with status and type, to `bridge.log` in the daemon
+directory.
 
 ### Every conversation interferes with every other one
 

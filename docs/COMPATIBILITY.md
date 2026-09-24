@@ -23,9 +23,9 @@ adding another request translation.
 | Artifacts, cloud ultrareview, routines, Desktop scheduled tasks | Publishing, scheduling, and cloud multi-agent execution are claude.ai services rather than Messages API operations. | Use local files, local agents, and an external scheduler. |
 | Anthropic Analytics, billing, subscription usage, SSO/SCIM | These are Anthropic account and organization APIs. Copilot usage is accounted for by GitHub instead. | Use GitHub Copilot usage and organization reporting. |
 | Anthropic server-side WebSearch, auto-mode classifier, Channels, account-managed MCP connectors | These depend on first-party server components that are not represented in the gateway Messages API. | Use local `WebFetch`, explicit MCP servers, and local permission modes. |
-| Native Anthropic prompt-cache metadata | `cache_control` accounting and cache read/write metadata are produced by the Anthropic model service. | Copilot may apply its own provider cache, but the bridge cannot report Anthropic cache semantics. |
-| Encrypted thinking signatures and Anthropic reasoning blocks | Copilot SDK can expose model-specific reasoning events or summaries, but it cannot mint Anthropic cryptographic thinking signatures. | Forward effort and, where available, expose provider reasoning summaries as non-signed text. |
-| Exact Anthropic sampling semantics | The pinned Copilot SDK `SessionConfig` and `MessageOptions` do not expose native `temperature`, `top_p`, `max_tokens`, `stop_sequences`, or Anthropic `tool_choice`. Prompt-based emulation is not equivalent. | Validate unsupported controls explicitly or provide documented best-effort emulation. |
+| Anthropic prompt caching | `cache_control` breakpoints and the cache they control belong to the Anthropic model service. The Copilot SDK has no cache-breakpoint control, so the markers have no effect. | The bridge reports Copilot's own cache read/write token counts as `cache_read_input_tokens` and `cache_creation_input_tokens`. They describe Copilot's cache, not Anthropic's. |
+| Encrypted thinking signatures and Anthropic reasoning blocks | The Copilot SDK emits provider reasoning events, but it cannot mint the cryptographic signatures that Anthropic thinking blocks carry. | Reasoning effort is forwarded. The request's `thinking` field is ignored, and responses contain no thinking blocks: provider reasoning deltas only keep the turn's idle timer alive. |
+| Exact Anthropic sampling semantics | The pinned Copilot SDK `SessionConfig` and `MessageOptions` do not expose native `temperature`, `top_p`, `max_tokens`, `stop_sequences`, or Anthropic `tool_choice`. Prompt-based emulation is not equivalent. | The four sampling controls are accepted but not applied; see [Unsupported Controls](#unsupported-controls). `tool_choice` is emulated with tool filtering and a system instruction. |
 | Anthropic model availability, safety fallback, and Fable consent | These checks are tied to Anthropic organization policy and billing. | Use the GitHub Copilot model catalog and organization policy. |
 
 ## Implemented Compatibility Work
@@ -48,14 +48,17 @@ bounded compatibility path in this repository:
 - Native inline system instructions (including custom-agent definitions and output
   styles) are forwarded without treating token-budget or cache-control metadata
   changes as conversation rewinds.
-- Request cancellation to `CopilotSession.abort()`
+- Request cancellation: a client disconnect drops a queued request before it
+  starts, and calls `CopilotSession.abort()` on a turn that is already running
 - Live E2E coverage for Edit, Write, NotebookEdit, Bash, permissions, hooks,
   skills, plugins, MCP, multimodal input, worktrees, sessions, streams, cron,
-  and subagents
+  subagents, and the launcher, daemon, and background agents; see
+  [VERIFICATION.md](VERIFICATION.md)
 
-Remaining caveats, such as exact native sampling semantics and crash-atomic
-in-flight recovery, are recorded in the feature coverage matrix. These
-implementations do not change the structural limits above.
+Remaining caveats, such as exact native sampling semantics and recovery of a
+turn that was in flight when the bridge crashed, are listed in the README
+[Support Scope](../README.md#support-scope) table. These implementations do not
+change the structural limits above.
 
 ## IDE Clarification
 
@@ -67,9 +70,29 @@ wrapper or receive equivalent environment settings.
 
 ## Unsupported Controls
 
-When a request asks for provider controls that cannot be represented by the
-Copilot SDK, the bridge should fail explicitly or label the behavior as
-best-effort. It must not silently claim Anthropic-equivalent semantics.
+A request that asks for a control the Copilot SDK cannot represent is either
+rejected or accepted and reported. The bridge never applies an approximation
+and calls it Anthropic-equivalent.
+
+- **Rejected with 400 `invalid_request_error`:** a `tool_choice` that cannot be
+  met (`any` or `tool` with no declared tools, `tool` naming an undeclared tool,
+  or an unknown mode).
+- **Emulated:** `tool_choice: none` removes the tools. `tool_choice: tool` keeps
+  only the named tool, and `tool` and `any` add a system instruction to call it.
+  The model can still answer without a tool call.
+- **Accepted, not applied, and reported:** `temperature`, `top_p`, `max_tokens`,
+  and `stop_sequences`. Rejecting them would fail ordinary Claude Code requests,
+  which always set `max_tokens`. Each request that sets one logs
+  `bridge.degraded_controls`, and `GET /health` lists them as
+  `unsupportedNativeControls`.
+- **Accepted and ignored:** fields nothing downstream reads, such as `thinking`,
+  `top_k`, `metadata`, and `output_config.format`. They are logged as
+  `ignoredFields` on the same diagnostic and listed as `ignoredRequestFields` in
+  `GET /health`.
+
+The report goes to the bridge log and `GET /health` only. The response to
+Claude Code carries no marker, so a caller that needs these guarantees must
+check the bridge, not the response.
 
 Relevant official references:
 

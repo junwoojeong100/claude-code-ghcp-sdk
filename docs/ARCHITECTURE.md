@@ -4,7 +4,7 @@
 
 This document is an implementation and validation reference for maintainers. For installation and running, see the [README](../README.md); for LiteLLM operation, see the [LiteLLM Guide](LITELLM.md).
 
-The core principle is singular: Claude Code owns the UI, session, and tool execution; this repository only swaps the model backend connection.
+Claude Code owns the UI, sessions and tool execution; this repository only replaces the model backend.
 
 ## System Overview
 
@@ -77,6 +77,12 @@ The GitHub Copilot SDK and bridge on the Direct path handle only the model backe
 8. The bridge delivers the result to the SDK session via `handlePendingToolCall`.
 9. The final response is returned to Claude Code in Anthropic Messages format.
 
+Text streams as it arrives; each tool call is written as a whole `tool_use` block
+at the end of the turn. The SSE stream keeps at most one content block open, so
+each `content_block_stop` precedes the next `content_block_start`. User text that
+Claude Code sends beside tool results (Skill reminders, messages queued in the
+TUI) is appended to the last tool result, so the model reads it in the same turn.
+
 ## Session and Model Mapping
 
 ### Session Isolation
@@ -100,7 +106,7 @@ tool-result text, preserving the discovered tool identity through the SDK.
 
 The Copilot SDK session ID is determined by a bridge-instance namespace plus
 the Claude session, agent, resolved model, tool schema signature, and system
-prompt signature. A persistent daemon can resume evicted sessions within the
+prompt signature. The persistent bridge can resume evicted sessions within the
 same bridge process. After a process restart, the bridge performs bounded cold
 history replay instead of reusing provider state from an earlier process; this
 prevents cross-run conversation leakage.
@@ -110,12 +116,14 @@ by `SESSION_OPERATION_TIMEOUT_MS` (60 seconds by default). Caller cancellation
 and shutdown reach these waits, and cancelling a queued request does not let its
 successor overtake an active turn. Failed setup advances the session generation;
 late replies are discarded and cleaned up rather than installed in the cache.
-The persistent daemon's configuration fingerprint includes this deadline.
+The persistent bridge's configuration fingerprint includes this deadline.
 
 The turn's idle deadline is distinct from its hard duration limit. Root text,
 reasoning and tool-input deltas rearm the idle timer; empty deltas and subagent
 traffic do not. The hard cap bounds even an endlessly streaming turn. Both
-deadlines are included in daemon configuration fingerprints.
+deadlines are part of the persistent bridge's configuration fingerprint. A
+timeout while the Copilot runtime waits to retry an upstream 429 or 5xx fails as
+that upstream error; see [Upstream Errors](#upstream-errors).
 
 ### Copilot Runtime MCP Servers
 
@@ -126,8 +134,8 @@ loads the Copilot CLI configuration for every SDK session — the user
 `github-mcp-server` — even in `mode: "empty"`. Because `availableTools` exposes
 only `custom:*` tools, none of those servers can reach the model.
 
-At startup the bridge calls `mcp.discover` with its working directory to learn
-the exact registered names. A plugin server is named by its config key, such as
+At startup the bridge calls `mcp.discover` with its working directory (the
+daemon directory, for the persistent bridge) to learn the exact registered names. A plugin server is named by its config key, such as
 `azure` for azmcp, not by its executable. The bridge adds `github-mcp-server`,
 which discovery does not report, and passes the list as `disabledMcpServers` on
 every SDK session create and resume. An empty `mcpServers` map was tested and
@@ -180,6 +188,18 @@ Code's one-token validation request through the bridge. This was exercised
 with the installed CLI's native `supportedModels()`, `setModel()` and
 `getContextUsage()` control requests, not inferred from a bridge response alone.
 
+Subagents without a model follow `CLAUDE_CODE_SUBAGENT_MODEL`, which the gateway
+settings (`src/claude-gateway-env.mjs`) set to the launch model when it is not a
+family model and blank otherwise. They also set
+`CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP=1`: without it Claude Code caps
+Explore's inherited model at the `opus` family whenever the main model is not
+named haiku, sonnet or opus, which sent a GPT session's Explore to Opus. Checked
+live with Claude Code 2.1.281 on `gpt-6-luna` and `gpt-6-astra`: an Explore
+subagent and a general-purpose subagent with no model both requested the launch
+model (`github-copilot/claude-gpt-6-<name>`), `bridge.turn_completed`
+`servedModels` showed Copilot serving every root and subagent turn with that
+model, and the run had no failures.
+
 Gateway discovery remains enabled for compatible clients, but `/v1/models`
 returns only primary non-built-in entries (currently the three GPT-6 models),
 deduplicated by backend ID.
@@ -198,7 +218,7 @@ Claude Opus 5.5 and Claude Sonnet 5 keep their native Claude Code IDs with the
 same hint (`claude-opus-5-5[1m]`, `claude-sonnet-5[1m]`); behind a gateway,
 Claude Code budgets the bare IDs at 200K. Explicitly selected Claude Opus 5, 4.8
 and 4.7 get the hint too.
-Temporary settings clear inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` instead of
+The launch settings clear inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` instead of
 pinning a global startup window. Claude Haiku 4.5 retains Claude Code's native
 200K gateway window; switching from a 1M row back to Haiku restores 200K.
 Native auto-compaction and explicit smaller windows remain active.
@@ -246,11 +266,14 @@ Sessions are created and resumed with the selected `reasoningEffort`. If the eff
 
 | File | Role |
 |---|---|
-| `bin/claude-ghcp` | Direct bridge lifecycle and temporary settings management |
+| `bin/claude-ghcp` | Direct launcher: picks the persistent or print-mode bridge and writes per-launch settings |
 | `bin/claude-litellm` | Temporary settings management for external LiteLLM |
 | `bin/claude-current` | Pass-through to the original Claude Code provider |
 | `src/server.mjs` | Loopback Anthropic Messages HTTP/SSE server |
+| `src/bridge-daemon.mjs` | Persistent bridge: registry, fingerprint, leases, retirement, status and stop |
+| `src/retirement.mjs` | When a retired bridge may exit |
 | `src/session-manager.mjs` | Copilot SDK session and tool handoff |
+| `src/upstream-errors.mjs` | Copilot rate-limit and upstream-failure mapping to 429/529 |
 | `src/anthropic.mjs` | Messages request/response translation |
 | `src/model-map.mjs` | Claude Code and Copilot model ID translation |
 | `src/write-launch-settings.mjs` | Generates mode `0600` settings for the Direct path |
@@ -277,7 +300,9 @@ The following list describes the implementation scope, not the E2E validation sc
 - Actual post-call SDK usage and provider finish-reason mapping
 - Bounded cold-history replay and history-shrink reconciliation
 - State split diagnostics, LRU/TTL eviction, and history-event cache invalidation
-- Persistent loopback bridge lifecycle for background agents and agent view
+- A shared persistent loopback bridge for every launch except print mode, and
+  retirement of a replaced bridge while its sessions finish
+- Copilot rate limits and upstream 5xx returned as retryable 429/529 errors
 - Bounded `tool_choice` filtering/prompt emulation
 - Safe full-schema fallback for large MCP tool sets
 
@@ -296,14 +321,112 @@ The following list describes the implementation scope, not the E2E validation sc
 ### Network and Credentials
 
 - The Direct launch script binds the bridge to `127.0.0.1` only.
-- Foreground launches generate a random bridge token and delete it on exit.
-  Background launches use a persistent loopback daemon with a `0600` registry,
-  atomic lock, health check, stale cleanup, and explicit status/stop commands.
+- Print mode (`-p`/`--print`) starts a private bridge with a random token and
+  stops it on exit. Every other launch uses the
+  [persistent bridge](#persistent-bridge-and-retirement), whose `0600` registry
+  holds its port and token.
+- The bridge requires its key in `Authorization: Bearer` or `x-api-key`. It
+  compares SHA-256 digests with `timingSafeEqual` and checks both headers on
+  every request, so timing reveals neither where a guess differs nor which header
+  held the key. Without `BRIDGE_API_KEY` it refuses to start unless
+  `BRIDGE_ALLOW_UNAUTHENTICATED=1`.
 - The bridge uses the Copilot CLI login credentials. It does not read or copy Anthropic credentials into the project.
+
+### Persistent Bridge and Retirement
+
+Every launch except print mode shares one loopback bridge started by
+`src/bridge-daemon.mjs ensure`. Print mode runs start to finish inside the
+launcher, but any interactive session can be handed to Claude Code's own daemon
+with `/background`, and that job keeps calling the bridge, and is respawned from
+its `--settings` file, after the launcher has exited.
+
+- **Reuse.** `ensure` reuses the registered bridge when its PID is alive, its
+  `/health` reports the registered `instanceId`, and its configuration
+  fingerprint matches. The fingerprint (`daemonConfigFingerprint`) covers the
+  bridge's environment variables (`COPILOT_*`, `MAX_*`, the timeout variables,
+  `RETIRED_IDLE_MS`, proxy and token variables, `HOME`), the checkout's absolute
+  path, `package.json`, `package-lock.json`, every `src/*.mjs`, and the requested
+  port. The model is not part of it.
+- **Per launch.** `ensure` returns the registry plus a settings path under
+  `settings/` and a lease path `leases/<instanceId>.<random>.pid`. The launcher
+  writes its shell's PID into the lease. Settings files older than 24 hours are
+  deleted by a later `ensure`.
+- **Replacement.** On a mismatch, a bridge that advertises
+  `capabilities.retirement` is retired: its record moves to `retired/` and it
+  gets `SIGUSR2`. It keeps serving the sessions that hold its port and token, and
+  exits once it has no request in flight, has been idle for `RETIRED_IDLE_MS`
+  (default 1 hour), and no lease naming it holds a live PID; it checks every 30
+  seconds. A bridge without that capability is stopped instead, as is one on the
+  port the new launch pins. The settings files of a retired bridge stay until the
+  24-hour reaper; a stopped bridge's are deleted.
+- **Status and stop.** `claude-ghcp-status` prints
+  `{model, pid, port, retired, running}` and never the token.
+  `claude-ghcp-stop` stops the current bridge and every retired one, and deletes
+  the leases, `bridge.log` and the settings files.
+- **Working directory.** The bridge runs in the daemon directory
+  (`$GHCP_DAEMON_DIR`, or the platform cache directory), not in the project that
+  started it. That project's directory could be deleted under the bridge, and
+  runtime MCP discovery would otherwise read its workspace configuration for
+  every other project's sessions.
 
 ### Logging
 
-The bridge does not directly log request bodies, prompts, tool arguments, tool results, or credentials. Default logging is limited to startup metadata and SDK or bridge errors. Temporary log files created by the launch scripts are deleted on exit.
+The bridge does not log request bodies, prompts, tool arguments, tool results,
+or credentials. Besides startup metadata and errors, it writes content-free
+diagnostics as one JSON object per stderr line, whatever `LOG_LEVEL` says. The
+verification harness parses them, so event and field names are a contract:
+
+| Event | Records |
+|---|---|
+| `bridge.turn_completed` | Requested and resolved model, `servedModels`, root or subagent, token counts, stop reason, tool-use count |
+| `bridge.request_failed` | HTTP status, error type, `retryAfterSeconds`, whether streaming had started |
+| `bridge.degraded_controls` | Unsupported sampling controls, plus accepted fields the bridge ignores as `ignoredFields` |
+| `bridge.turn_timeout`, `bridge.turn_aborted` | Turn stage and recent event types; see [Validation Scope](#validation-scope) |
+| `bridge.session_operation_failed` | A session create, resume or effort change that failed or timed out |
+
+`GET /health` lists the same unsupported controls and ignored fields as
+`unsupportedNativeControls` and `ignoredRequestFields`. Print mode's bridge log is
+deleted on exit. The persistent bridge appends to `bridge.log` in the daemon
+directory until `claude-ghcp-stop` deletes it.
+
+### Upstream Errors
+
+Errors leave the bridge as follows (`errorResponse` in `src/server.mjs`,
+`sessionError` in `src/upstream-errors.mjs`):
+
+| Failure | Response |
+|---|---|
+| `session.error` with `errorType` `rate_limit` or `quota`, or `statusCode` 429 | 429 `rate_limit_error` |
+| `session.error` with a 5xx `statusCode` | 529 `overloaded_error` |
+| `BridgeRequestError` (including a context-limit error), `ModelUnavailableError`, `ReasoningEffortUnavailableError` | 400 `invalid_request_error` |
+| Client disconnect | 499 `client_closed_request` |
+| Anything else | 500 `api_error` |
+
+Claude Code retries 429 and 529. A failure after the SSE stream has started is
+sent as an `event: error` frame with the same error type. SDK error events carry
+no retry time, so a real upstream failure gets no `retry-after` header.
+
+The Copilot runtime retries an upstream 429 or 5xx by itself first, waiting out
+any upstream `retry-after`, and emits nothing while it waits. When its retries
+run out it ends the turn before it reports `session.error`, so a root turn that
+ended without a message waits for that error or for the idle that follows.
+While a top-level `model.call_failure` with a 429 or 5xx `statusCode` has been
+followed by neither progress nor `model.call_start`, an idle or hard timeout
+fails with that upstream error, and `bridge.turn_timeout` records it as
+`upstreamRetryStatus`.
+
+Measured with Claude Code 2.1.281 and Claude Haiku 4.5 by pointing the runtime's
+`COPILOT_API_URL` at a local proxy that failed inference: the runtime made 6
+attempts (about 50 s for 429, about 17 s for 503), the bridge returned 429
+`rate_limit_error` and 529 `overloaded_error`, and Claude Code's retry about 0.5 s
+later succeeded. A 90 s upstream `retry-after` was waited out by the runtime,
+about 95 s with no events.
+
+`BRIDGE_TEST_FAULTS` is a verification seam, not a feature:
+`BRIDGE_TEST_FAULTS="rate_limit:1,overloaded:1"` fails that many requests that
+declare tools, in the listed order, before they reach Copilot. The kinds are
+`rate_limit`, `overloaded` and `context_limit`, and each goes through the same
+mapping as a real failure.
 
 ## Known Constraints
 
@@ -313,7 +436,8 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
   messages, tools, attachments, `output_config.effort`, `tool_choice`, and
   whether streaming is enabled. Native `max_tokens`, `temperature`, `top_p`,
   and `stop_sequences` semantics are not exposed by the Copilot SDK and are
-  reported as degraded controls.
+  reported as degraded controls; other accepted fields the bridge does not act
+  on (`thinking`, `top_k`, `metadata`, ...) are reported as ignored fields.
 - The Claude Code gateway contract is an open contract to which new headers and body fields may be added. Because this bridge translates to Copilot SDK format rather than forwarding to an Anthropic upstream unchanged, new Claude Code capabilities are not automatically supported and require per-release compatibility review.
 - Extended-thinking signatures, encrypted reasoning content, reasoning summaries, server tools, citations, and prompt-cache metadata do not round-trip completely.
 - Initial image/document content blocks are translated by the bridge. Binary image/document
@@ -330,8 +454,7 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
   General message retries are not deduplicated without a stable provider request
   identifier, and process-crash recovery during an in-flight external tool call
   remains best-effort.
-- Background mode and agent view are supported through the persistent bridge
-  daemon. Remote Control remains unavailable.
+- Background mode, `/background` and agent view use the persistent bridge.
 - Remote Control is disabled by the Claude Code constraint that applies when a custom `ANTHROPIC_BASE_URL` is used. Cloud/web sessions and cloud ultrareview are outside the local bridge path.
 - Claude Code's structured-output validator/retry works through the bridge and
   is covered by live E2E. Native Claude `tool_reference` blocks are not
@@ -357,10 +480,14 @@ The bridge does not directly log request bodies, prompts, tool arguments, tool r
 - Runtime MCP discovery and `disabledMcpServers` on SDK session create and
   resume, including the discovery-failure and timeout fallback
 - Inherited history recovery for forked subagents and pending tool-call handoff with `agentId`
-- Gateway routing values in the Direct/LiteLLM temporary settings
+- Gateway routing values in the Direct/LiteLLM settings, including the subagent
+  and Explore model settings
 - Mode `0600`, argument handling, and provider detection for LiteLLM settings
 - Request cancellation, state eviction, bounded replay, actual usage, strict
   model selection, request policy, daemon registry, and tool-result idempotency
+- Persistent-bridge retirement and leases, upstream 429/5xx mapping and the
+  turn-timeout variant, one-open-block SSE nesting, folding sibling user text
+  into the last tool result, and CLI entry points reached through a symlink
 - Explicit zero usage is preserved in JSON and SSE instead of replaced with an
   estimate. Only missing/null usage uses the existing fallback; a zero Claude
   Code result-envelope total input count (including cache) still fails live verification.
