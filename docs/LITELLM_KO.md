@@ -7,12 +7,14 @@
 Copilot 모델을 씁니다.
 
 브리지 하나는 GitHub Copilot 좌석(seat) 하나입니다. 게이트웨이를 거치는 모든 요청은 어느
-가상 키로 보냈든 운영자의 좌석으로 과금되고, 운영자 조직의 정책을 따릅니다.
+가상 키로 보냈든 운영자의 좌석으로 과금되고, 운영자 조직의 정책을 따릅니다. 그래서 README는
+팀이 함께 쓰는 게이트웨이를 부적합으로 봅니다([적합한 용도](../README_KO.md#적합한-용도)).
 
-LiteLLM은 가상 키와 요청 로그를 더합니다. 대신 Direct 경로에 있는 세 가지를 잃습니다.
-Claude Code의 1M 컨텍스트 창, `/model` 목록에 나오는 브리지의 모델 목록, 브리지 자체의
-토큰 계산입니다. LiteLLM의 비용 추적과 예산은 Copilot 모델에서 맞지 않습니다. 자세한
-내용은 [Direct 경로와 다른 점](#direct-경로와-다른-점)을 보세요.
+LiteLLM은 가상 키와 요청 로그를 더할 수 있습니다. 다만 가상 키에는 PostgreSQL 데이터베이스가
+필요하며, 이 구성에는 데이터베이스가 없습니다([4단계](#4-claude-code-연결)). 이 경로는 Direct
+경로에 있는 세 가지를 잃습니다. Claude Code의 1M 컨텍스트 창, `/model` 목록에 나오는 브리지의
+모델 목록, 브리지 자체의 토큰 계산입니다. LiteLLM의 비용 추적과 예산은 Copilot 모델에서 맞지
+않습니다. 자세한 내용은 [Direct 경로와 다른 점](#direct-경로와-다른-점)을 보세요.
 
 이 경로는 처음부터 끝까지 검증하지 않았습니다. [검증하지 않은 것](#검증하지-않은-것)을
 보세요. Claude Code에서 Copilot 모델만 쓰면 된다면
@@ -27,30 +29,37 @@ LiteLLM 자체의 `github_copilot/*` 공급자는 이 저장소를 쓰지 않는
 
 ## 기존 게이트웨이에 연결
 
-다른 사람이 운영하는 게이트웨이의 URL과 키를 받았다면 이 절을 따르세요. Claude Code,
-Node.js, Git, `curl`이 필요합니다. 브리지는 운영자의 컴퓨터에서 실행되므로 `npm install`과
-`copilot login`은 필요하지 않습니다.
+다른 사람이 운영하는 게이트웨이의 URL과 키를 받았다면 이 절을 따르세요. macOS 또는
+Linux(런처가 bash 스크립트입니다), Claude Code, Node.js, Git, `curl`이 필요합니다. 브리지는
+운영자의 컴퓨터에서 실행되므로 `npm install`과 `copilot login`은 필요하지 않습니다. 한
+터미널에서 순서대로 실행하되, 예시 값 대신 게이트웨이의 루트 URL(`/v1` 없음)과 받은 키를
+넣으세요. 저장소를 이미 복제했다면 다시 복제하지 말고 해당 저장소 루트로 이동하세요.
 
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
 cd claude-code-ghcp-sdk
 
-export LITELLM_BASE_URL="https://litellm.example.com"   # /v1 없음
+export LITELLM_BASE_URL="https://litellm.example.com"
 export LITELLM_API_KEY="<받은 가상 키>"
 
-curl --silent --show-error --fail \
-  -H "Authorization: Bearer $LITELLM_API_KEY" \
-  "$LITELLM_BASE_URL/v1/models"
+printf 'Authorization: Bearer %s\n' "$LITELLM_API_KEY" |
+  curl --silent --show-error --fail -H @- "$LITELLM_BASE_URL/v1/models"
 ```
 
-목록의 `id` 값이 게이트웨이가 제공하는 별칭입니다. 이 값이 `LITELLM_MODEL`에 넣을 수 있는
-값입니다. `LITELLM_MODEL`의 기본값은 `claude-sonnet-5`이므로, 게이트웨이에 그 이름의
-별칭이 없으면 실패합니다.
+`curl`이 성공하고 모델 목록을 반환할 때만 계속하세요. 연결 실패라면 게이트웨이 URL을,
+401이라면 운영자에게 받은 키를 확인하세요. 목록 조회는 게이트웨이 접근 확인이지 모델 응답
+확인이 아닙니다. 목록의 `id`가 `LITELLM_MODEL`에 넣을 수 있는 별칭입니다.
+`claude-sonnet-5`가 없다면 아래 값을 목록에 나온 별칭으로 바꾸세요.
 
 ```bash
 export LITELLM_MODEL="claude-sonnet-5"
 ./bin/claude-litellm
 ```
+
+Claude Code 안에서 `OK라고 답해줘`를 입력하세요. 답이 오면 게이트웨이를 거쳐 요청 하나가
+완료된 것입니다. 이 문서의 모든 기능을 확인한 것은 아닙니다. 프롬프트는 운영자의 Copilot
+사용량을 소비합니다. `/exit`로 클라이언트를 종료해도 운영자의 게이트웨이는 멈추지 않습니다.
+요청이 실패하면 [문제 해결](#문제-해결)부터 확인하세요.
 
 규칙은 두 가지입니다.
 
@@ -70,8 +79,18 @@ export LITELLM_HAIKU_MODEL="claude-haiku-4.5"
 
 설정하지 않은 계열 별칭은 기본 별칭(`LITELLM_MODEL`)을 씁니다. `--litellm-base-url`과
 `--litellm-model` 옵션은 환경 변수보다 우선합니다. `claude-litellm`은 `--model`,
-`--settings`, `--ghcp-model`을 거부합니다. Claude Code용 공급자 설정은 권한이 `0600`인
-임시 파일에 쓰고, Claude Code가 끝나면 지웁니다.
+`--settings`, `--ghcp-model`을 거부합니다.
+
+`claude-litellm`은 받은 키와 게이트웨이 URL을 포함한 Claude Code용 공급자 설정을 권한이
+`0600`인 파일에 씁니다.
+
+- print 모드 실행(`--background`나 `--bg` 없는 `-p`)은 임시 파일을 쓰고, Claude Code가
+  끝나면 지웁니다.
+- 나머지 실행은 파일을 `${XDG_STATE_HOME:-~/.local/state}/claude-code-ghcp-sdk/litellm-settings/`에
+  남깁니다. 런처가 끝난 뒤 Claude Code가 `/background` 작업을 이 파일로 다시 시작하기
+  때문입니다. print 모드가 아닌 다음 실행이 그곳에서 7일이 지난 파일을 지우며, 그 밖에는
+  아무것도 지우지 않습니다. 키를 더 이상 그곳에 두고 싶지 않으면 이 디렉터리를 직접
+  지우세요. 지운 파일을 아직 쓰는 `/background` 작업은 다시 시작하지 못합니다.
 
 ## 게이트웨이 운영
 
@@ -82,7 +101,9 @@ export LITELLM_HAIKU_MODEL="claude-haiku-4.5"
 [README 준비 사항](../README_KO.md#준비-사항),
 [Direct 빠른 시작](../README_KO.md#빠른-시작-direct-sdk)의 1단계와 2단계(`npm install`,
 `copilot login`), 그리고 `uv`가 필요합니다. `uv`는 설치 스크립트가 Python 3.13 환경을
-만들 때 씁니다. 모든 명령은 저장소 루트에서 실행하세요.
+만들 때 씁니다. 모든 명령은 저장소 루트에서 실행하세요. **터미널 A**는 브리지와 LiteLLM
+서버용으로, **터미널 B**는 클라이언트용으로 씁니다. 서버 명령은 포그라운드에서 계속
+실행되므로, 실행 중인 터미널 A에 클라이언트 명령을 붙여 넣지 마세요.
 
 ### 1. 셸 프로필에 브리지 포트 고정
 
@@ -90,12 +111,15 @@ export LITELLM_HAIKU_MODEL="claude-haiku-4.5"
 `agents` 없이 쓴 `-p`)을 빼고 모두 공유 백그라운드 브리지 하나를 씁니다
 ([백그라운드 브리지](../README_KO.md#백그라운드-브리지)). 다른 포트를 요청하거나 포트를
 지정하지 않은 실행은 게이트웨이의 브리지를 교체합니다. 이 체크아웃의 `bin/`이 PATH에 있으면
-그냥 `claude`로 실행해도 마찬가지입니다. 다음 줄을 셸 프로필(예: `~/.zshrc`)에 추가하고 새
-셸을 여세요.
+그냥 `claude`로 실행해도 마찬가지입니다. 다음 줄을 셸 프로필(예: `~/.zshrc`)에 추가하세요.
 
 ```bash
 export GHCP_BRIDGE_PORT=4142
 ```
+
+프로필을 고쳐도 이미 열려 있는 셸에는 적용되지 않습니다. 터미널 A와 `claude`나
+`claude-ghcp`를 실행할 모든 터미널을 다시 열거나, 열어 둘 터미널마다 같은 `export` 줄을
+실행하세요.
 
 `GHCP_BRIDGE_PORT`가 설정되어 있으면 print 모드 실행은 전용 브리지를 같은 포트에 띄웁니다.
 게이트웨이의 브리지가 그 포트를 쓰고 있으면 이 실행은
@@ -108,22 +132,38 @@ GHCP_BRIDGE_PORT= ./bin/claude-ghcp -p "..."
 
 다른 `--bridge-port`를 지정해도 됩니다.
 
+핵심 검증기는 빈 루프백 포트에 슬롯 전용 Direct 브리지를 직접 시작하며, 이 게이트웨이나
+공유 런처 데몬을 쓰지 않습니다. 6개 모델 전체 실행 명령과 한계는
+[테스트](TESTING_KO.md)에 있습니다. 핵심 결과가 LiteLLM 경로를 검증하는 것은 아닙니다.
+
 ### 2. 브리지를 시작하고 토큰 받기
 
-다른 터미널과 환경이 같은 평범한 셸에서 실행하세요. 이 셸의 브리지 변수가 다른 터미널과
+**터미널 A**에서 저장소 루트로 이동하세요. 1단계의 `GHCP_BRIDGE_PORT=4142`를 포함해
+다른 터미널과 환경이 같은 평범한 셸을 쓰세요. 이 셸의 브리지 변수가 다른 터미널과
 다르면, 다음에 `claude`를 실행할 때 이 브리지가 교체됩니다
 ([브리지가 교체될 때](#브리지가-교체될-때)).
 
 ```bash
-export GHCP_BRIDGE_URL="http://127.0.0.1:$GHCP_BRIDGE_PORT"   # 브리지 루트, /v1 없음
-GHCP_BRIDGE_TOKEN="$(node src/bridge-daemon.mjs ensure claude-sonnet-5 "$GHCP_BRIDGE_PORT" \
-  | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).token')" \
-  && export GHCP_BRIDGE_TOKEN || unset GHCP_BRIDGE_TOKEN
+if [ -z "$GHCP_BRIDGE_PORT" ]; then
+  echo "GHCP_BRIDGE_PORT가 비어 있습니다. 1단계를 마친 뒤 새 셸을 여세요." >&2
+else
+  export GHCP_BRIDGE_URL="http://127.0.0.1:$GHCP_BRIDGE_PORT"
+  unset GHCP_BRIDGE_TOKEN
+  BRIDGE_JSON="$(node src/bridge-daemon.mjs ensure claude-sonnet-5 "$GHCP_BRIDGE_PORT")" &&
+    export GHCP_BRIDGE_TOKEN="$(printf '%s' "$BRIDGE_JSON" |
+      node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).token))')"
+fi
 ```
 
-`ensure`는 브리지를 시작하거나, 설정이 같은 브리지가 이미 실행 중이면 그것을 다시 쓰고,
-JSON 한 줄을 출력합니다. 그 안의 `token` 필드가 브리지 자격 증명입니다. `ensure`가
-실패하면 이유를 출력하고, `GHCP_BRIDGE_TOKEN`은 설정되지 않은 상태로 남습니다.
+이 블록은 `GHCP_BRIDGE_URL`을 `/v1` 없는 브리지 루트로 설정하고 `ensure`를 실행합니다.
+`ensure`는 브리지를 시작하거나, 설정이 같은 브리지가 이미 실행 중이면 그것을 다시 쓰고, JSON
+한 줄을 돌려줍니다. 블록은 그 안의 `token` 필드, 즉 브리지 자격 증명을 `GHCP_BRIDGE_TOKEN`에
+넣습니다. 어느 로컬 사용자든 프로세스의 인수를 읽을 수 있으므로 JSON은 인수가 아니라
+파이프로 `node`에 넘깁니다. 같은 이유로 이 안내의 `curl` 확인은 모두 셸 내장 명령 `printf`가
+쓴 키 헤더를 표준 입력(`-H @-`)으로 읽습니다. 성공하면 블록은 아무것도 출력하지 않으며,
+아래 확인으로 브리지를 점검합니다.
+`GHCP_BRIDGE_PORT`가 비어 있으면 위 메시지를 출력하고 아무것도 시작하지 않습니다.
+`ensure`가 실패하면 이유를 출력하고, `GHCP_BRIDGE_TOKEN`은 설정되지 않은 상태로 남습니다.
 
 모델 인자에는 Copilot 계정으로 쓸 수 있는 모델을 넣어야 하며, `ensure`가 이를 확인합니다.
 이 인자는 LiteLLM이 제공할 수 있는 별칭을 제한하지 않습니다.
@@ -133,10 +173,13 @@ JSON 한 줄을 출력합니다. 그 안의 `token` 필드가 브리지 자격 �
 ```bash
 curl --silent --show-error --fail "$GHCP_BRIDGE_URL/health"
 
-curl --silent --show-error --fail \
-  -H "x-api-key: $GHCP_BRIDGE_TOKEN" \
-  "$GHCP_BRIDGE_URL/v1/models?all=true"
+printf 'x-api-key: %s\n' "$GHCP_BRIDGE_TOKEN" |
+  curl --silent --show-error --fail -H @- "$GHCP_BRIDGE_URL/v1/models?all=true"
 ```
+
+첫 호출은 `"ok": true`가 담긴 JSON을, 두 번째는 모델 목록을 반환해야 합니다. 하나라도
+실패하면 여기서 멈추고 [문제 해결](#문제-해결)을 확인하세요. 이 단계는 브리지와 토큰이
+동작하는지 확인하며 모델 응답까지 확인하지는 않습니다.
 
 두 번째 호출은 Copilot 카탈로그에 있는 모델 ID를 모두 보여 줍니다. LiteLLM 설정 파일에서
 `anthropic/` 뒤에 쓰는 값이 이 ID입니다. `./bin/ghcp-models`는 브리지를 거치지 않고 같은
@@ -146,13 +189,22 @@ Code의 `/model` 탐색이 쓰는 GPT-6 행을 최대 세 개만 보여 주므�
 `GET /health`와 `HEAD /api/hello`를 뺀 모든 브리지 경로는 토큰이 필요하며, 토큰은
 `x-api-key`나 `Authorization: Bearer`로 보냅니다. 토큰이 있으면 누구나 사용자의 Copilot
 좌석을 쓸 수 있으므로 비밀번호처럼 다루세요([보안 경계](ARCHITECTURE_KO.md#보안-경계)).
+export한 `GHCP_BRIDGE_TOKEN`은 이 셸에서 실행한 `claude`나 `claude-ghcp`에 영향을 주지
+않습니다. 두 런처는 실행하는 명령마다 자신의 토큰을 따로 설정합니다.
 
 ### 3. LiteLLM 설치와 시작
 
-2단계와 같은 셸에서 실행하세요.
+**터미널 A**의 2단계와 같은 셸에서 로컬 런타임을 최초 한 번 설치하세요.
+`npm run litellm:setup`은 LiteLLM v1.97.0을 `.runtime/`에 내려받고 그곳에 마스터 키를
+만듭니다.
 
 ```bash
-npm run litellm:setup   # 최초 1회: LiteLLM v1.97.0을 .runtime/에 설치하고 마스터 키 생성
+npm run litellm:setup
+```
+
+설치가 실패하면 오류를 해결한 뒤 계속하세요. 성공했다면 서버를 시작합니다.
+
+```bash
 npm run litellm:start
 ```
 
@@ -167,29 +219,46 @@ LiteLLM은 `127.0.0.1:4000`에서 요청을 받습니다. 주소는 `LITELLM_HOS
 `LITELLM_PORT`로, 설정 파일은 `LITELLM_CONFIG`로 바꿉니다. 이 터미널은 열어 두세요.
 LiteLLM이 준비되면 `Application startup complete`를 출력합니다.
 
-LiteLLM은 시작할 때 토큰을 한 번만 읽습니다. 브리지가 교체될 때마다 새 토큰으로 LiteLLM을
-다시 시작하세요(Ctrl-C 후 `npm run litellm:start`).
+LiteLLM은 시작할 때 터미널 A의 셸에서 토큰을 한 번만 읽습니다. 브리지가 교체될 때마다
+터미널 A에서 Ctrl-C를 누르고, 새 토큰을 받은 뒤 `npm run litellm:start`를 실행하세요.
 [브리지가 교체될 때](#브리지가-교체될-때)를 보세요.
 
 ### 4. Claude Code 연결
 
-두 번째 터미널에서 실행하세요.
+**터미널 B**에서 터미널 A와 같은 저장소 루트로 이동하세요. 터미널 A는 실행 중인 채로
+두세요. 로컬 키를 읽고 게이트웨이 접근을 확인합니다.
 
 ```bash
 export LITELLM_BASE_URL="http://127.0.0.1:4000"
 export LITELLM_API_KEY="$(tr -d '\n' < .runtime/litellm-master-key)"
 export LITELLM_MODEL="claude-sonnet-5"
 
+printf 'Authorization: Bearer %s\n' "$LITELLM_API_KEY" |
+  curl --silent --show-error --fail -H @- "$LITELLM_BASE_URL/v1/models"
+```
+
+목록에 `claude-sonnet-5`가 있을 때만 계속하세요. 키 파일이 없다면 터미널 B의 체크아웃
+위치와 3단계 설치 성공 여부를 확인하세요. 연결 또는 HTTP 오류는 터미널 A의 출력과
+[문제 해결](#문제-해결)을 확인하세요.
+
+```bash
 ./bin/claude-litellm
 ```
 
-[기존 게이트웨이에 연결](#기존-게이트웨이에-연결)의 내용이 모두 그대로 적용됩니다. URL은
-로컬 주소를, 키는 마스터 키를 씁니다.
+`OK라고 답해줘`로 실제 응답 하나를 확인하고 `/exit`로 클라이언트를 종료하세요.
+Copilot 사용량을 소비하며, 전체 경로의 호환성을 모두 확인한 것은 아닙니다.
+[기존 게이트웨이에 연결](#기존-게이트웨이에-연결)의 규칙도 적용됩니다. 이 실행이 설정
+파일을 어디에 남기는지도 그 절에 있습니다. 여기서는 그 파일에 마스터 키가 들어 있습니다.
 
-마스터 키는 게이트웨이 전체를 제어하므로, 다른 사람에게는
-[가상 키](https://docs.litellm.ai/docs/proxy/virtual_keys)를 발급하세요. `LITELLM_HOST`를
-네트워크 주소로 설정해야만 다른 사람이 게이트웨이에 접속할 수 있습니다. 그렇게 하면 그들이
-보내는 모든 요청이 사용자의 Copilot 좌석을 씁니다.
+이 프로젝트는 게이트웨이 공유를 권하지 않습니다. 누가 보내든 게이트웨이를 거치는 모든 요청은
+사용자의 Copilot 좌석 하나와 사용자 조직의 정책으로 실행됩니다
+([적합한 용도](../README_KO.md#적합한-용도)). `LITELLM_HOST`를 네트워크 주소로 설정해야만
+다른 사람이 게이트웨이에 접속할 수 있습니다. 그래도 공유한다면 게이트웨이 전체를 제어하는
+마스터 키는 절대 건네지 말고, 사람마다
+[가상 키](https://docs.litellm.ai/docs/proxy/virtual_keys)를 발급하세요. 가상 키에는
+`DATABASE_URL`로 지정한 PostgreSQL 데이터베이스가 필요하며, 데이터베이스가 없으면 LiteLLM의
+`/key/generate`가 `DB not connected`로 실패합니다. 예제 설정 파일과 `npm run litellm:start`는
+데이터베이스를 준비하지 않으며, 이 저장소는 데이터베이스 구성을 테스트하지 않습니다.
 
 ### 5. 선택: 설정 파일 변경
 
@@ -221,21 +290,52 @@ general_settings:
 
 ### 6. 중지
 
-LiteLLM 터미널에서 Ctrl-C를 누르세요. `./bin/claude-ghcp-stop`은 브리지와 아직 실행 중인
-교체된 브리지를 모두 중지하고 `bridge.log`를 지웁니다. 이 브리지들을 쓰던 이 컴퓨터의 모든
-`claude`, `claude-ghcp` 세션(print 모드 실행 제외)은 연결이 끊깁니다. 재부팅한 뒤 브리지와
-LiteLLM은 스스로 다시 시작하지 않으므로 2단계와 3단계를 다시 하세요.
+터미널 A에서 Ctrl-C를 눌러 LiteLLM을 멈추세요.
+
+브리지도 멈추려면 먼저 필요한 `bridge.log` 내용을 보관한 뒤([진단 가이드](DIAGNOSTICS_KO.md))
+`./bin/claude-ghcp-stop`을 실행하세요. 이 명령은 브리지와 아직 실행 중인 교체된 브리지를
+모두 중지하고 `bridge.log`와 실행별 설정 파일을 지웁니다. 이 브리지들을 쓰던 이 컴퓨터의 모든
+`claude`, `claude-ghcp` 세션(print 모드 실행 제외)은 연결이 끊깁니다. `claude-litellm`이
+남긴 설정 파일은 건드리지 않으며, 그 파일에는 실행할 때 쓴 LiteLLM 키가 들어 있습니다
+([위치](#기존-게이트웨이에-연결)).
+
+재부팅한 뒤 브리지와 LiteLLM은 스스로 다시 시작하지 않습니다. 게이트웨이를 다시 시작하려면
+터미널 A를 열어 2단계를 다시 실행한 뒤 같은 셸에서 `npm run litellm:start`를 실행하세요.
+설치는 다시 할 필요가 없습니다.
+
+서비스를 중지해도 1단계 설정이나 `.runtime/` 및 그 안의 마스터 키는 지워지지 않습니다.
+게이트웨이 운영을 마쳤다면 셸 프로필에 추가한 `GHCP_BRIDGE_PORT=4142` 줄을 지우고,
+아직 열려 있는 모든 터미널에서 `unset GHCP_BRIDGE_PORT`를 실행하세요. 게이트웨이를 다시
+운영할 계획이면 프로필 설정을 유지하세요.
+
+게이트웨이를 다시 운영할 계획이면 `.runtime/`도 그대로 두세요. 지우려면 먼저 터미널 A에서
+Ctrl-C로 LiteLLM을 멈추고, `.runtime/` 안에 직접 추가한 파일 중 남길 것을 다른 곳에
+복사하세요. 그런 다음 이 체크아웃의 루트에서 아래 명령을 실행하세요. 이 체크아웃의
+`.runtime/`만 마스터 키까지 함께 지웁니다.
+
+```bash
+[ -f scripts/setup-litellm.sh ] && rm -rf .runtime
+```
+
+그 뒤에는 `npm run litellm:setup`을 다시 실행할 때까지 `npm run litellm:start`가 시작하지
+않습니다. 설치는 LiteLLM을 다시 내려받고 새 마스터 키를 만들므로, 설치 후 터미널 B에서
+`LITELLM_API_KEY`를 다시 읽으세요. `claude-litellm`이 남긴 설정 파일에는 이전 마스터 키가
+그대로 있으므로, 사본을 남기지 않으려면
+`${XDG_STATE_HOME:-~/.local/state}/claude-code-ghcp-sdk/litellm-settings/`도 지우세요.
 
 ## 브리지가 교체될 때
 
 포트 4142의 브리지가 사라지거나 새 토큰을 받으면 게이트웨이가 멈춥니다. LiteLLM은 시작할
-때 읽은 토큰을 계속 쓰므로, 어느 경우든 마지막에 LiteLLM을 다시 시작해야 합니다.
+때 읽은 토큰을 계속 쓰므로, 아래 해결 방법은 모두 터미널 A에서 이 순서로 실행하세요.
+LiteLLM이 아직 실행 중이면 Ctrl-C를 누르고, 표에 나온 대로 토큰을 받은 뒤(2단계 또는
+`bridge.json`) `npm run litellm:start`를 실행합니다. LiteLLM은 자신을 시작한 셸에서만
+토큰을 읽으므로, 터미널 B에서 토큰을 export해도 효과가 없습니다.
 
 | 원인 | LiteLLM이 받는 것 | 해결 |
 |---|---|---|
-| `GHCP_BRIDGE_PORT=4142` 없이, 또는 다른 `--bridge-port`로 실행한 `claude`나 `claude-ghcp`(`-p` 제외). 이 체크아웃의 `bin/`이 PATH에 있으면 그냥 실행한 `claude`도 해당합니다. | 처음에는 아무 일도 없습니다. 그 실행은 다른 포트에 새 브리지를 띄우고, 이전 브리지는 계속 LiteLLM에 응답합니다. 이전 브리지는 그 브리지에서 시작한 런처가 모두 끝나고 `RETIRED_IDLE_MS`(기본 1시간) 동안 요청이 없으면 종료합니다. LiteLLM의 요청도 요청으로 치므로, LiteLLM이 그만큼 쉬고 난 뒤에 종료합니다. 그때부터 포트 4142로 가는 LiteLLM의 연결은 거부됩니다. | 게이트웨이 셸에서 2단계를 다시 실행하고 LiteLLM을 다시 시작하세요. 같은 일이 생기지 않도록 1단계를 하세요. |
-| 브리지 설정이 바뀐 뒤 포트 4142로 실행한 런처나 `ensure`. 코드를 고치거나 `git pull`로 `src/*.mjs`, `package.json`, `package-lock.json`이 바뀐 경우, 옮기거나 이름을 바꾼 체크아웃 또는 두 번째 체크아웃에서 실행한 경우, `LOG_LEVEL`, `COPILOT_*`, `HOME` 같은 브리지 변수를 새로 설정하거나 지우거나 값을 바꾼 경우입니다. | 곧바로 `401 authentication_error`와 `Invalid bridge credential.` 메시지를 받습니다. 이전 브리지는 중지되고, 포트 4142의 새 브리지는 토큰이 다릅니다. | 아래 `bridge.json`에서 새 토큰을 읽어 `GHCP_BRIDGE_TOKEN`에 넣고(`export`) LiteLLM을 다시 시작하세요. |
-| `./bin/claude-ghcp-stop` 실행 또는 재부팅 | 포트 4142로 가는 연결이 거부됩니다. | 2단계를 다시 실행하고 LiteLLM을 다시 시작하세요. |
+| `GHCP_BRIDGE_PORT=4142` 없이, 또는 다른 `--bridge-port`로 실행한 `claude`나 `claude-ghcp`(`-p` 제외). 이 체크아웃의 `bin/`이 PATH에 있으면 그냥 실행한 `claude`도 해당합니다. | 처음에는 아무 일도 없습니다. 그 실행은 다른 포트에 새 브리지를 띄우고, 이전 브리지는 계속 LiteLLM에 응답합니다. 이전 브리지는 그 브리지에서 시작한 런처가 모두 끝나고 `RETIRED_IDLE_MS`(기본 1시간) 동안 요청이 없으면 종료합니다. LiteLLM의 요청도 요청으로 치므로, LiteLLM이 그만큼 쉬고 난 뒤에 종료합니다. 그때부터 포트 4142로 가는 LiteLLM의 연결은 거부됩니다. | 터미널 A에서 LiteLLM이 실행 중이면 Ctrl-C를 누르고, 2단계를 다시 실행한 뒤 `npm run litellm:start`를 실행하세요. 같은 일이 생기지 않도록 모든 터미널에 1단계의 `export`를 적용하세요. |
+| 브리지 설정이 바뀐 뒤 포트 4142로 실행한 런처나 `ensure`. 코드를 고치거나 `git pull`로 `src/*.mjs`, `package.json`, `package-lock.json`이 바뀐 경우, 옮기거나 이름을 바꾼 체크아웃 또는 두 번째 체크아웃에서 실행한 경우, `LOG_LEVEL`, `COPILOT_*`, `HOME` 같은 브리지 변수를 새로 설정하거나 지우거나 값을 바꾼 경우입니다. | 곧바로 `401 authentication_error`와 `Invalid bridge credential.` 메시지를 받습니다. 이전 브리지는 중지되고, 포트 4142의 새 브리지는 토큰이 다릅니다. | 터미널 A에서 LiteLLM이 실행 중이면 Ctrl-C를 누르고, 아래 `bridge.json`에서 새 토큰을 읽어 `GHCP_BRIDGE_TOKEN`에 넣은(`export`) 뒤 `npm run litellm:start`를 실행하세요. |
+| `./bin/claude-ghcp-stop` 실행 또는 재부팅 | 포트 4142로 가는 연결이 거부됩니다. | 터미널 A에서 LiteLLM이 실행 중이면 Ctrl-C를 누르고, 2단계를 다시 실행한 뒤 `npm run litellm:start`를 실행하세요. |
 
 `./bin/claude-ghcp-status`로 어느 경우인지 구분할 수 있습니다. `port`가 4142가 아니면 첫
 번째 경우이고, `"running": false`이면 세 번째 경우입니다. 이 명령은 토큰을 출력하지
@@ -249,8 +349,11 @@ LiteLLM은 스스로 다시 시작하지 않으므로 2단계와 3단계를 다�
 | macOS | `~/Library/Caches/claude-code-ghcp-sdk/bridge.json` |
 | Linux | `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk/bridge.json` |
 
+터미널 A에서 Ctrl-C를 누른 뒤, macOS에서는 다음 명령으로 토큰을 읽고 이어서
+`npm run litellm:start`를 실행하세요. Linux이거나 `GHCP_DAEMON_DIR`를 설정했다면 경로를 위
+표의 경로로 바꾸세요.
+
 ```bash
-# macOS 경로입니다. 다른 시스템에서는 위 표의 경로를 쓰세요.
 export GHCP_BRIDGE_TOKEN="$(node -pe \
   'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).token' \
   ~/Library/Caches/claude-code-ghcp-sdk/bridge.json)"
@@ -280,12 +383,12 @@ export GHCP_BRIDGE_TOKEN="$(node -pe \
   모두에서 효과가 없습니다. [적용하지 않는 요청 값](COMPATIBILITY_KO.md#적용하지-않는-요청-값)을
   보세요.
 - **오류.** 브리지는 Direct 경로와 같은 상태 코드를 돌려줍니다.
-  [업스트림 오류](ARCHITECTURE_KO.md#업스트림-오류)와
+  [업스트림 오류](DIAGNOSTICS_KO.md#업스트림-오류)와
   [요청 한도와 타임아웃](../README_KO.md#요청-한도와-타임아웃)을 보세요. 스트리밍 요청이
   첫 텍스트, 추론, 도구 호출 조각을 보내기 전에 실패하면 그 HTTP 상태 코드를 받습니다.
   그 뒤에 실패하면 상태 코드가 이미 `200`인 응답 안에서 같은 오류 유형의 `event: error`
   프레임을 받습니다. 실패한 `/v1/messages` 요청마다 데몬 디렉터리의 `bridge.log`에
-  `bridge.request_failed` 줄이 남습니다([로그](ARCHITECTURE_KO.md#로그)).
+  `bridge.request_failed` 줄이 남습니다([로그](DIAGNOSTICS_KO.md#로그)).
 
 ## 검증하지 않은 것
 
@@ -295,7 +398,7 @@ export GHCP_BRIDGE_TOKEN="$(node -pe \
 다루는 테스트는 없습니다. 이 문서가 LiteLLM 자체의 동작(만드는 URL, 전달하는 헤더, 거부하는
 이름, `count_tokens` 응답 방식, 비용 계산 방식)에 관해 쓴 내용은 `npm run litellm:setup`이
 설치하는 v1.97.0 기준이며 검증하지 않았습니다. LiteLLM이 브리지의 `429`나 `529`를
-클라이언트에 그대로 넘기는지, 먼저 재시도하는지도 검증하지 않았습니다. 매트릭스가 검증하는
+클라이언트에 그대로 넘기는지, 먼저 재시도하는지도 검증하지 않았습니다. 핵심 실측 시나리오의
 범위는 [되는 것과 안 되는 것](../README_KO.md#되는-것과-안-되는-것)을 보세요.
 
 ## 문제 해결
@@ -303,12 +406,12 @@ export GHCP_BRIDGE_TOKEN="$(node -pe \
 ### `GHCP_BRIDGE_URL is required: the bridge root, with no /v1 suffix.`
 
 `npm run litellm:start`를 [2단계](#2-브리지를-시작하고-토큰-받기)의 변수가 없는 셸에서
-실행했습니다. 2단계를 실행한 셸에서 다시 실행하세요.
+실행했습니다. 2단계를 실행한 셸인 터미널 A에서 다시 실행하세요.
 
 ### `GHCP_BRIDGE_TOKEN is required: the token printed by bridge-daemon ensure.`
 
-`npm run litellm:start`를 다른 셸에서 실행했거나, 2단계의 `ensure`가 실패해 토큰이 비어
-있습니다. 2단계를 실행한 셸에서 다시 실행하세요. 그 셸에도 토큰이 없다면
+`npm run litellm:start`를 터미널 A가 아닌 셸에서 실행했거나, 2단계의 `ensure`가 실패해
+토큰이 비어 있습니다. 터미널 A에서 다시 실행하세요. 터미널 A에도 토큰이 없다면 터미널 A에서
 [2단계](#2-브리지를-시작하고-토큰-받기)를 다시 실행하고 `ensure`가 출력하는 이유를
 확인하세요.
 
@@ -330,10 +433,10 @@ LiteLLM이 쓰는 포트에서 요청을 받는 브리지가 없어 연결이 �
 
 ### `401` `authentication_error`: `Invalid bridge credential.`
 
-LiteLLM이 이전 토큰을 쓰고 있습니다. 포트 4142의 브리지가 교체되었거나, 다른 셸에서
-설정한 토큰으로 LiteLLM을 시작한 경우입니다. `bridge.json`에서 현재 토큰을 읽어
-`GHCP_BRIDGE_TOKEN`에 넣고 LiteLLM을 다시 시작하세요.
-[브리지가 교체될 때](#브리지가-교체될-때)를 보세요.
+LiteLLM이 이전 토큰을 쓰고 있습니다. 포트 4142의 브리지가 교체되었거나, 터미널 A가 아닌
+셸에서 다른 토큰으로 LiteLLM을 시작한 경우입니다. 터미널 A에서 LiteLLM이 실행 중이면
+Ctrl-C를 누르고, `bridge.json`에서 현재 토큰을 읽어 `GHCP_BRIDGE_TOKEN`에 넣은 뒤
+`npm run litellm:start`를 실행하세요. [브리지가 교체될 때](#브리지가-교체될-때)를 보세요.
 
 ### LiteLLM이 보낸 `400 Invalid model name`
 
@@ -371,10 +474,15 @@ LiteLLM이 이전 토큰을 쓰고 있습니다. 포트 4142의 브리지가 교
 
 ### 포트 4000이 이미 사용 중이라 LiteLLM이 시작하지 않음
 
-다른 포트로 LiteLLM을 시작하고, 클라이언트가 그 포트를 쓰게 하세요.
+**터미널 A**에서 다른 포트로 LiteLLM을 시작하고 실행 중인 채로 두세요.
 
 ```bash
 LITELLM_PORT=4001 npm run litellm:start
+```
+
+**터미널 B**에서 해당 포트로 바꾼 뒤 4단계의 모델 목록 확인과 클라이언트 실행을 반복하세요.
+
+```bash
 export LITELLM_BASE_URL="http://127.0.0.1:4001"
 ```
 

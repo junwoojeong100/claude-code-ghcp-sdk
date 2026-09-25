@@ -1200,6 +1200,7 @@ for (const [label, usageEvents, inputTokens, outputTokens] of [
       startSse(sse);
       new AnthropicSseStream(sse, { id: "msg_usage", inputTokens: 321 }).finish(result);
       const events = sseEvents(sse);
+      // Claude Code keeps this estimate over a zero delta.
       assert.equal(events.find((event) => event.type === "message_start").message.usage.input_tokens, 321);
       assert.deepEqual(events.find((event) => event.type === "message_delta").usage, expected);
     } finally {
@@ -1576,16 +1577,17 @@ test("evicts the least-recent idle state when the state limit is exceeded", asyn
   }
 });
 
-test("does not evict a state with a pending external tool call", async () => {
+test("evicts idle states before a state with a pending external tool call", async () => {
   const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
   const pendingSession = new FakeSession();
   const idleSession = new FakeSession();
-  const sessions = [pendingSession, idleSession];
+  const newestSession = new FakeSession();
+  const sessions = [pendingSession, idleSession, newestSession];
   client.createSessionImplementation = async () => sessions.shift();
   const manager = new SessionManager({
     baseDirectory: "/tmp",
     preferredModel: "gpt-5.6-sol",
-    maxStates: 1,
+    maxStates: 2,
     client,
   });
   const toolBody = {
@@ -1621,8 +1623,12 @@ test("does not evict a state with a pending external tool call", async () => {
     await manager.execute(request(), {
       "x-claude-code-session-id": "session-2",
     });
+    await manager.execute(request(), {
+      "x-claude-code-session-id": "session-3",
+    });
     assert.equal(pendingSession.disconnectCalls, 0);
     assert.equal(idleSession.disconnectCalls, 1);
+    assert.equal(newestSession.disconnectCalls, 0);
   } finally {
     await manager.stop();
   }
@@ -3995,4 +4001,386 @@ test("keeps an undeclared tool call Copilot registered before the turn ended", a
   } finally {
     await manager.stop();
   }
+});
+
+function conversation(...contents) {
+  return { ...request(), messages: contents.map((content, index) => ({ role: index % 2 ? "assistant" : "user", content })) };
+}
+
+// Each created FakeSession, resumable by the session ID it was created with.
+function trackSessions(client) {
+  const sessions = [];
+  const resumed = [];
+  client.createSessionImplementation = async () => {
+    const session = new FakeSession();
+    sessions.push(session);
+    return session;
+  };
+  client.resumeSession = async (sessionId) => {
+    resumed.push(sessionId);
+    return sessions[client.created.findIndex((config) => config.sessionId === sessionId)];
+  };
+  return { sessions, resumed };
+}
+
+test("a state resumed after idle eviction still reconciles a rewind", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const { sessions, resumed } = trackSessions(client);
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    stateIdleTtlMs: 100, onDiagnostic: (event) => diagnostics.push(event) });
+  const headers = { "x-claude-code-session-id": "resume-rewind" };
+  await manager.start();
+  try {
+    await manager.execute(conversation("u1"), headers);
+    await manager.execute(conversation("u1", "a1", "u2"), headers);
+    [...manager.states.values()][0].lastUsedAt = 0;
+    await manager.execute(conversation("u1", "a1", "u3-after-rewind"), headers);
+    assert.deepEqual(resumed, [client.created[0].sessionId]);
+    assert.deepEqual(diagnostics.filter((event) => event.event === "bridge.history_reconciled").map((event) => event.reason),
+      ["history_diverged"]);
+    assert.deepEqual(sessions[0].sendCalls.map((call) => call.prompt), ["u1", "u2"], "the rewound turn never reaches the old session");
+    assert.equal(sessions.length, 2);
+    assert.match(sessions[1].sendCalls[0].prompt, /^<prior_conversation>[\s\S]*ASSISTANT: a1[\s\S]*u3-after-rewind$/);
+    [...manager.states.values()][0].lastUsedAt = 0;
+    await manager.execute(conversation("u1", "a1", "u3-after-rewind", "a3", "u4"), headers);
+    assert.deepEqual(resumed, [client.created[0].sessionId, client.created[1].sessionId]);
+    assert.equal(sessions.length, 2, "an unchanged continuation still resumes");
+    assert.equal(sessions[1].sendCalls.at(-1).prompt, "u4");
+  } finally { await manager.stop(); }
+});
+
+test("a history Copilot reduced stays refused after idle eviction", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const old = client.session;
+  const resumed = [];
+  client.resumeSession = async (sessionId) => { resumed.push(sessionId); return old; };
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    stateIdleTtlMs: 100, onDiagnostic: (event) => diagnostics.push(event) });
+  const headers = { "x-claude-code-session-id": "resume-reduced" };
+  await manager.start();
+  try {
+    await manager.execute(request(), headers);
+    old.emit("session.compaction_start", { tokenLimit: 272000, currentTokens: 273000, trigger: "threshold" });
+    old.emit("session.compaction_complete", { success: true, tokenLimit: 272000, tokensRemoved: 50000, messagesRemoved: 3 });
+    [...manager.states.values()][0].lastUsedAt = 0;
+    await assert.rejects(manager.execute(request(), headers), /prompt is too long: .* at 272000 input tokens/);
+    assert.equal(old.sendCalls.length, 1, "do not send the next prompt into reduced upstream history");
+    assert.deepEqual(resumed, []);
+    assert.deepEqual(client.deleted, [client.created[0].sessionId]);
+    assert.ok(diagnostics.some((event) => event.event === "bridge.context_limit" &&
+      event.phase === "between_requests" && event.tokenLimit === 272000));
+    client.session = new FakeSession();
+    assert.equal((await manager.execute(conversation("Compacted retained history"), headers)).message.content, "ok");
+    assert.equal(client.created.length, 2);
+  } finally { await manager.stop(); }
+});
+
+test("a side call on an unrelated history keeps the main SDK turn waiting on a tool result", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-terra" }]);
+  const main = new FakeSession();
+  const helper = new FakeSession();
+  const queued = [main, helper];
+  client.createSessionImplementation = async () => queued.shift() ?? new FakeSession();
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    onDiagnostic: (event) => diagnostics.push(event) });
+  const headers = { "x-claude-code-session-id": "side-call" };
+  const tools = [{ name: "Bash", input_schema: { type: "object", properties: {} } }];
+  main.sendImplementation = async () => {
+    main.emit("assistant.message", { content: "", toolRequests: [{ toolCallId: "tu1", name: "Bash", arguments: {} }] });
+    main.emit("external_tool.requested", { requestId: "request-tu1", toolCallId: "tu1", toolName: "Bash" });
+  };
+  main.handlePendingToolCallImplementation = async () => {
+    main.emit("assistant.message", { content: "listed", toolRequests: [] });
+    main.emit("session.idle");
+    return { success: true };
+  };
+  await manager.start();
+  try {
+    await manager.execute({ ...request(), tools, messages: [{ role: "user", content: "run ls" }] }, headers);
+    await manager.execute({ model: "gpt-5.6-terra", system: "Generate a title", tools: [],
+      messages: [{ role: "user", content: "Write a title" }] }, headers);
+    const result = await manager.execute({ ...request(), tools, messages: [
+      { role: "user", content: "run ls" },
+      { role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "a.txt" }] },
+    ] }, headers);
+    assert.equal(result.message.content, "listed");
+    assert.equal(main.handledToolCalls.length, 1);
+    assert.equal(main.abortCalls, 0);
+    assert.deepEqual(client.deleted, []);
+    assert.equal(client.created.length, 2);
+    assert.ok(!diagnostics.some((event) => event.event === "bridge.history_reconciled"));
+  } finally { await manager.stop(); }
+});
+
+test("a model switch A to B to A still replays B's turn after its states are evicted", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-terra" }]);
+  const { sessions, resumed } = trackSessions(client);
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    maxStates: 1, stateIdleTtlMs: 100, onDiagnostic: (event) => diagnostics.push(event) });
+  const a = conversation("u1");
+  const b = { ...conversation("u1", "a1", "Only in B: deployment target is ORCHID."), model: "gpt-5.6-terra" };
+  const back = conversation("u1", "a1", "Only in B: deployment target is ORCHID.", "noted", "What is the deployment target?");
+  await manager.start();
+  try {
+    // Carried: A is resumed from its evicted transcript and still sees B's turn as missed.
+    const carried = { "x-claude-code-session-id": "switch-carried" };
+    await manager.execute(a, carried);
+    await manager.execute(b, carried);
+    for (const state of manager.states.values()) state.lastUsedAt = 0;
+    await manager.execute(back, carried);
+    assert.deepEqual(resumed, [client.created[0].sessionId]);
+    assert.deepEqual(diagnostics.filter((event) => event.event === "bridge.history_reconciled").map((event) => event.reason),
+      ["identity_stale"]);
+    assert.equal(sessions.length, 3);
+    assert.match(sessions[2].sendCalls[0].prompt, /Only in B: deployment target is ORCHID/);
+    assert.deepEqual(sessions[0].sendCalls.map((call) => call.prompt), ["u1"]);
+
+    // Pruned: once nothing of the family can resume, its head goes and A starts fresh.
+    const pruned = { "x-claude-code-session-id": "switch-pruned" };
+    await manager.execute(a, pruned);
+    await manager.execute(b, pruned);
+    const prunedFamily = "switch-pruned:root";
+    for (let index = 0; index < manager.maxStates * 5 + 1; index += 1) {
+      await manager.execute(request(), { "x-claude-code-session-id": `filler-${index}` });
+    }
+    assert.equal(manager.familyHeads.has(prunedFamily), false);
+    assert.ok(![...manager.evictedStates.values()].some((entry) => entry.familyKey === prunedFamily));
+    const created = sessions.length;
+    const resumes = resumed.length;
+    await manager.execute(back, pruned);
+    assert.equal(resumed.length, resumes, "nothing of the pruned family is resumed");
+    assert.equal(sessions.length, created + 1);
+    assert.match(sessions.at(-1).sendCalls[0].prompt, /Only in B: deployment target is ORCHID/);
+  } finally { await manager.stop(); }
+});
+
+const ORCHID = "Only in B: deployment target is ORCHID.";
+const titleCall = { model: "gpt-5.6-mini", system: "Generate a title", tools: [], messages: [{ role: "user", content: "Write a title" }] };
+const onTerra = (body) => ({ ...body, model: "gpt-5.6-terra" });
+
+const back = conversation("u1", "a1", ORCHID, "noted", "What is the deployment target?");
+for (const [name, steps, final = back] of [
+  ["a tool-less side call", [conversation("u1"), onTerra(conversation("u1", "a1", ORCHID)), titleCall]],
+  ["an edit of B's last prompt", [conversation("u1"), onTerra(conversation("u1", "a1", ORCHID)),
+    onTerra(conversation("u1", "a1", ORCHID, "noted", "b-u3"))]],
+  ["a failed A turn", ["fail", conversation("u1"), onTerra(conversation("u1"))], conversation("u1", ORCHID, "What is the deployment target?")],
+  ["a rewind of A's reply and an edit of B's last prompt", [conversation("u1"), onTerra(conversation("u1")),
+    onTerra(conversation("u1", ORCHID, "b-u2"))], conversation("u1", ORCHID, "What is the deployment target?")],
+]) {
+  test(`a model switch A to B to A replays B's turn after ${name}`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-terra" }, { id: "gpt-5.6-mini" }]);
+    const { sessions } = trackSessions(client);
+    const diagnostics = [];
+    const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+      onDiagnostic: (event) => diagnostics.push(event) });
+    const headers = { "x-claude-code-session-id": `switch-${name}` };
+    const create = client.createSessionImplementation;
+    let failNext = false;
+    client.createSessionImplementation = async (config) => {
+      const session = await create(config);
+      // Acknowledged first, so the failed state stays cached.
+      if (failNext) session.sendImplementation = async () => {
+        session.sendImplementation = null;
+        setImmediate(() => session.emit("session.error", { errorType: "query", message: "upstream failed" }));
+      };
+      failNext = false;
+      return session;
+    };
+    await manager.start();
+    try {
+      for (const step of steps) {
+        if (step === "fail") { failNext = true; continue; }
+        if (failNext) await assert.rejects(manager.execute(step, headers));
+        else await manager.execute(step, headers);
+      }
+      await manager.execute(final, headers);
+      assert.deepEqual(sessions[0].sendCalls.map((call) => call.prompt), ["u1"]);
+      assert.deepEqual(diagnostics.filter((event) => event.event === "bridge.history_reconciled").map((event) => event.reason),
+        ["identity_stale"]);
+      assert.match(sessions.at(-1).sendCalls[0].prompt, /^<prior_conversation>[\s\S]*ORCHID[\s\S]*What is the deployment target\?$/);
+    } finally { await manager.stop(); }
+  });
+}
+
+test("a model switch A to B to A replays B's interrupted turn", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-terra" }]);
+  const { sessions } = trackSessions(client);
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    onDiagnostic: (event) => diagnostics.push(event) });
+  const headers = { "x-claude-code-session-id": "switch-interrupted" };
+  const create = client.createSessionImplementation;
+  const controller = new AbortController();
+  client.createSessionImplementation = async (config) => {
+    const session = await create(config);
+    // Copilot acknowledges B's prompt and starts replying before Esc.
+    if (sessions.length === 2) session.sendImplementation = async () => {
+      session.sendImplementation = null;
+      setImmediate(() => { session.emit("assistant.message_delta", { deltaContent: "Noted" }); controller.abort(); });
+    };
+    return session;
+  };
+  await manager.start();
+  try {
+    await manager.execute(conversation("u1"), headers);
+    await assert.rejects(manager.execute(onTerra(conversation("u1", "a1", ORCHID)), headers, { signal: controller.signal }),
+      { name: "AbortError" });
+    await manager.execute(conversation("u1", "a1", ORCHID, "Noted",
+      "[Request interrupted by user]\n\nWhat is the deployment target?"), headers);
+    assert.deepEqual(sessions[0].sendCalls.map((call) => call.prompt), ["u1"]);
+    assert.deepEqual(diagnostics.filter((event) => event.event === "bridge.history_reconciled").map((event) => event.reason),
+      ["identity_stale"]);
+    assert.match(sessions.at(-1).sendCalls[0].prompt, /^<prior_conversation>[\s\S]*ORCHID[\s\S]*What is the deployment target\?$/);
+  } finally { await manager.stop(); }
+});
+
+test("a tool-less side call alone leaves the main state reused", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-mini" }]);
+  const { sessions } = trackSessions(client);
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    onDiagnostic: (event) => diagnostics.push(event) });
+  const headers = { "x-claude-code-session-id": "side-call-alone" };
+  await manager.start();
+  try {
+    await manager.execute(conversation("u1"), headers);
+    await manager.execute(titleCall, headers);
+    await manager.execute(conversation("u1", "a1", "u2"), headers);
+    assert.deepEqual(sessions[0].sendCalls.map((call) => call.prompt), ["u1", "u2"]);
+    assert.equal(sessions.length, 2);
+    assert.ok(!diagnostics.some((event) => event.event === "bridge.history_reconciled"));
+  } finally { await manager.stop(); }
+});
+
+test("family turn records stay bounded while an old state of the family stays resumable", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-terra" }]);
+  const { sessions } = trackSessions(client);
+  const diagnostics = [];
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client,
+    onDiagnostic: (event) => diagnostics.push(event) });
+  const headers = { "x-claude-code-session-id": "many-side-calls" };
+  await manager.start();
+  try {
+    await manager.execute(conversation("u1"), headers);
+    for (let index = 0; index < 40; index += 1) {
+      await manager.execute({ ...titleCall, model: "gpt-5.6-terra", system: `Side call ${index}` }, headers);
+    }
+    assert.ok(manager.familyHeads.get("many-side-calls:root").turns.size <= 16);
+    await manager.execute(conversation("u1", "a1", "u2"), headers);
+    assert.deepEqual(diagnostics.filter((event) => event.event === "bridge.history_reconciled").map((event) => event.reason),
+      ["identity_stale"], "a dropped record replays instead of risking a missed sibling turn");
+    assert.match(sessions.at(-1).sendCalls[0].prompt, /^<prior_conversation>[\s\S]*a1[\s\S]*u2$/);
+  } finally { await manager.stop(); }
+});
+
+test("family bookkeeping stays bounded as subagent families come and go", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  trackSessions(client);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client, maxStates: 2 });
+  await manager.start();
+  try {
+    for (let index = 0; index < 40; index += 1) {
+      await manager.execute(request(), { "x-claude-code-session-id": "parent", "x-claude-code-agent-id": `agent-${index}` });
+    }
+    assert.equal(manager.states.size, 2);
+    assert.equal(manager.evictedStates.size, 8);
+    assert.equal(manager.familyHeads.size, 10);
+    assert.equal(manager.familyQueues.size, 0);
+    assert.equal(new Set(client.created.map((config) => config.sessionId)).size, 40);
+  } finally { await manager.stop(); }
+  assert.equal(manager.familyHeads.size, 0);
+  assert.equal(manager.evictedStates.size, 0);
+});
+
+for (const [failure, arrange] of [
+  ["rejected", (session) => { session.sendImplementation = async () => { throw new Error("transport failure"); }; }],
+  ["timed-out unacknowledged", (session) => { session.sendImplementation = () => new Promise(() => {}); }],
+]) {
+  test(`a ${failure} cold-replay send is replayed again on retry`, async () => {
+    const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+    const { sessions } = trackSessions(client);
+    const create = client.createSessionImplementation;
+    client.createSessionImplementation = async (config) => {
+      const session = await create(config);
+      if (sessions.length === 1) arrange(session);
+      return session;
+    };
+    const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client, turnTimeoutMs: 30 });
+    const headers = { "x-claude-code-session-id": `replay-${failure}` };
+    const body = conversation("the deploy target is ORCHID", "noted", "what is the deploy target?");
+    await manager.start();
+    try {
+      await assert.rejects(manager.execute(body, headers));
+      assert.equal((await manager.execute(body, headers)).message.content, "ok");
+      assert.equal(sessions.length, 2);
+      assert.match(sessions[1].sendCalls[0].prompt, /^<prior_conversation>[\s\S]*ORCHID[\s\S]*what is the deploy target\?$/);
+      assert.deepEqual(client.deleted, [client.created[0].sessionId]);
+    } finally { await manager.stop(); }
+  });
+}
+
+test("abandoned pending tool calls cannot push MAX_STATES past its bound", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const { sessions } = trackSessions(client);
+  const create = client.createSessionImplementation;
+  client.createSessionImplementation = async (config) => {
+    const session = await create(config);
+    if (sessions.length <= 5) {
+      session.sendImplementation = async () => {
+        session.emit("assistant.message", { content: "", toolRequests: [{ toolCallId: `tool-${sessions.length}`, name: "Read", arguments: {} }] });
+        session.emit("external_tool.requested", { requestId: `request-${sessions.length}`, toolCallId: `tool-${sessions.length}`, toolName: "Read" });
+      };
+    }
+    return session;
+  };
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client, maxStates: 2 });
+  const toolBody = { ...request(), tools: [{ name: "Read", input_schema: { type: "object", properties: {} } }] };
+  await manager.start();
+  try {
+    for (let index = 0; index < 5; index += 1) {
+      const result = await manager.execute(toolBody, { "x-claude-code-session-id": `abandoned-${index}` });
+      assert.equal(result.message.toolRequests.length, 1);
+    }
+    for (const state of manager.states.values()) state.lastUsedAt = 0;
+    await manager.execute(request(), { "x-claude-code-session-id": "fresh-session" });
+    assert.equal(manager.states.size, 2);
+    assert.ok([...manager.states.values()].some((state) => state.identity.familyKey === "fresh-session:root"));
+    assert.equal(sessions[5].disconnectCalls, 0, "the state that just served a request is kept");
+    for (const index of [0, 1, 2, 3]) {
+      assert.equal(sessions[index].abortCalls, 1);
+      assert.ok(client.deleted.includes(client.created[index].sessionId));
+    }
+    assert.equal(sessions[4].disconnectCalls, 0);
+  } finally { await manager.stop(); }
+});
+
+test("a tool call repeated across message chunks is returned once", async () => {
+  const client = new FakeClient([{ id: "gpt-5.6-sol" }]);
+  const manager = new SessionManager({ baseDirectory: "/tmp", preferredModel: "gpt-5.6-sol", client });
+  const tools = [{ name: "Read", input_schema: { type: "object", properties: {} } }];
+  client.session.sendImplementation = async () => {
+    client.session.emit("assistant.turn_start", { turnId: "turn-1" });
+    for (const chunkIndex of [0, 1]) {
+      client.session.emit("assistant.message", { content: "", chunkIndex, chunkCount: 2,
+        toolRequests: [{ toolCallId: "tool-1", name: "Read", arguments: { file_path: `/tmp/${chunkIndex}` } }] });
+    }
+    client.session.emit("external_tool.requested", { requestId: "request-1", toolCallId: "tool-1", toolName: "Read" });
+    client.session.emit("assistant.turn_end", { turnId: "turn-1" });
+  };
+  await manager.start();
+  try {
+    const result = await manager.execute({ ...request(), tools }, {});
+    assert.deepEqual(result.message.toolRequests.map((tool) => tool.toolCallId), ["tool-1"]);
+    assert.deepEqual(result.message.toolRequests[0].arguments, { file_path: "/tmp/0" }, "the first occurrence wins");
+    const response = fakeResponse();
+    writeJsonMessage(response, { id: "msg", model: result.model, message: result.message, inputTokens: 1, usage: result.usage });
+    const body = JSON.parse(response.chunks.at(-1));
+    assert.deepEqual(body.content.filter((block) => block.type === "tool_use").map((block) => block.id), ["tool-1"]);
+    assert.equal(body.stop_reason, "tool_use");
+  } finally { await manager.stop(); }
 });

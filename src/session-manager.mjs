@@ -21,6 +21,7 @@ import {
 } from "./model-map.mjs";
 import { applyRequestPolicy, BridgeRequestError } from "./request-policy.mjs";
 import { sessionError, UpstreamError } from "./upstream-errors.mjs";
+import { readVerificationModelState, verificationEffort } from "./verification-observer.mjs";
 
 const CONTINUATION_PROMPT =
   "Continue from the prior conversation and follow the current system instructions.";
@@ -52,6 +53,10 @@ const PENDING_TOOL_UNREGISTERED = "pending_tool_unregistered";
 // so a bounded number of dropped call ids is remembered to ignore it.
 const MAX_DROPPED_TOOL_CALLS = 64;
 const MAX_RECENT_TURN_EVENTS = 8;
+// Normally evicted states remembered per MAX_STATES slot, so they can resume.
+const EVICTED_STATES_PER_STATE = 4;
+// Sibling turns remembered per family; states older than a dropped one replay.
+const MAX_FAMILY_TURNS = 16;
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -308,6 +313,11 @@ function historySnapshot(messages = []) {
   }));
 }
 
+// Comparing against a sibling's history, any tool-result update counts as a
+// continuation: mistaking a side call for one costs a replay, the reverse
+// loses the sibling's turn.
+const ANY_TOOL_ID = Object.freeze({ has: () => true });
+
 function historiesDiverged(previous, current, knownToolIds = new Set()) {
   if (!previous) return false;
   if (current.length < previous.length) return true;
@@ -330,6 +340,24 @@ function historiesDiverged(previous, current, knownToolIds = new Set()) {
   return false;
 }
 
+// Claude Code may later clear or merge a tool result, which is still the same turn.
+function sharedPrefixLength(previous, current) {
+  let index = 0;
+  while (index < previous.length && index < current.length && (previous[index].hash === current[index].hash ||
+    (previous[index].role === "user" && current[index].role === "user" && current[index].toolResultIds.length > 0 &&
+      previous[index].toolResultIds.join("\0") === current[index].toolResultIds.join("\0")))) index += 1;
+  return index;
+}
+
+// A sibling turn continued the conversation past what a state has seen when
+// the incoming history keeps more of the sibling's history than that, or all
+// of it, so the sibling's reply follows. Only the state's own snapshot counts
+// as seen: a rewind may have replaced its reply with the sibling's.
+function siblingContinued(snapshot, seen, current) {
+  return sharedPrefixLength(snapshot, current) > seen ||
+    (snapshot.length >= seen && !historiesDiverged(snapshot, current, ANY_TOOL_ID));
+}
+
 export class SessionManager {
   constructor({
     baseDirectory,
@@ -341,6 +369,7 @@ export class SessionManager {
     maxStates = DEFAULT_MAX_STATES,
     maxToolResults = DEFAULT_MAX_TOOL_RESULTS,
     onDiagnostic,
+    verifyObservation = false,
     abortTimeoutMs = DEFAULT_ABORT_TIMEOUT_MS,
     cleanupTimeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
     sessionOperationTimeoutMs = DEFAULT_SESSION_OPERATION_TIMEOUT_MS,
@@ -367,6 +396,7 @@ export class SessionManager {
     this.sessionOperationTimeoutMs = sessionOperationTimeoutMs;
     this.shutdownController = new AbortController();
     this.onDiagnostic = onDiagnostic || (() => {});
+    this.verifyObservation = verifyObservation === true;
     this.pendingToolWaitMs = pendingToolWaitMs;
     this.stateIdleTtlMs = stateIdleTtlMs;
     this.mcpDiscoveryTimeoutMs = mcpDiscoveryTimeoutMs;
@@ -375,8 +405,7 @@ export class SessionManager {
     this.anonymousSessionId = randomUUID();
     this.familyQueues = new Map();
     this.familyHeads = new Map();
-    this.knownSessionIds = new Set();
-    this.sessionGenerations = new Map();
+    this.evictedStates = new Map();
     this.stateCreations = new Map();
     this.stateEvictions = new Map();
     this.states = new Map();
@@ -387,8 +416,6 @@ export class SessionManager {
     await this.client.start();
     this.models = await this.client.listModels();
     this.disabledMcpServers = await this.#mcpServersToDisable();
-    const sessions = await this.client.listSessions().catch(() => []);
-    this.knownSessionIds = new Set(sessions.map((session) => session.sessionId));
   }
 
   // The runtime starts every user, workspace and plugin MCP server for each SDK
@@ -448,6 +475,7 @@ export class SessionManager {
     );
     await Promise.allSettled(this.stateEvictions.values());
     this.familyHeads.clear();
+    this.evictedStates.clear();
     await this.client.stop();
   }
 
@@ -462,8 +490,8 @@ export class SessionManager {
   // The error a request in this Claude Code session would get once Copilot
   // starts reducing history, with the token limit its latest state reported.
   contextLimitErrorFor(headers) {
-    const key = this.familyHeads.get(claudeSessionFamily(headers, this.anonymousSessionId));
-    return contextLimitError(this.states.get(key)?.contextLimit);
+    const family = this.familyHeads.get(claudeSessionFamily(headers, this.anonymousSessionId));
+    return contextLimitError(this.states.get(family?.lastKey)?.contextLimit);
   }
 
   resolveReasoningEffort(modelId, requested) {
@@ -494,6 +522,7 @@ export class SessionManager {
     const tracked = run.catch(() => {}).finally(() => {
       if (this.familyQueues.get(familyKey) === tracked) {
         this.familyQueues.delete(familyKey);
+        this.#pruneFamily(familyKey);
       }
     });
     this.familyQueues.set(familyKey, tracked);
@@ -561,7 +590,6 @@ export class SessionManager {
     await bestEffortWithin(() => abortSession(session), this.cleanupTimeoutMs);
     await bestEffortWithin(() => disconnectSession(session), this.cleanupTimeoutMs);
     await bestEffortWithin(() => deleteClientSession(this.client, sessionId), this.cleanupTimeoutMs);
-    this.knownSessionIds.delete(sessionId);
   }
 
   async #executeForFamily(body, headers, { onReady, onEvent, signal, diagnostics }) {
@@ -591,11 +619,16 @@ export class SessionManager {
       throw contextLimitError(tokenLimit);
     }
     const currentHistory = historySnapshot(body.messages);
-    const familyHead = this.familyHeads.get(state.identity.familyKey);
+    const family = this.familyHeads.get(state.identity.familyKey);
     // The family queue serializes identity changes. A cached or resumed state
-    // from before a sibling's successful turn has not seen that sibling's work,
-    // even when its old transcript still matches a prefix of this request.
-    const staleIdentity = !state.fresh && familyHead && familyHead !== state.identity.key;
+    // has not seen any sibling turn Copilot accepted since its own last request,
+    // even when its old transcript still matches a prefix of this request. A
+    // side call on an unrelated history (a title, WebFetch processing) is not
+    // part of this conversation, so it leaves the state alone.
+    const since = state.familySeq ?? 0;
+    const staleIdentity = !state.fresh && Boolean(family) && (since < family.floor ||
+      [...family.turns].some(([key, turn]) => key !== state.identity.key && turn.seq > since &&
+        siblingContinued(turn.snapshot, state.historySnapshot?.length ?? 0, currentHistory)));
     const knownToolIds = new Set([
       ...state.pendingByToolCallId.keys(),
       ...state.completedToolCalls.keys(),
@@ -625,6 +658,7 @@ export class SessionManager {
       });
     }
     state.historySnapshot = currentHistory;
+    state.familySeq = family?.seq ?? 0;
     state.lastUsedAt = Date.now();
     onReady?.({ model: state.model });
     if (state.firstTurnReserved) {
@@ -639,8 +673,14 @@ export class SessionManager {
     state.queue = run.catch(() => {});
     try {
       const result = await run;
-      this.familyHeads.set(state.identity.familyKey, state.identity.key);
+      this.#recordFamilyTurn(state, currentHistory);
       return result;
+    } catch (error) {
+      // Copilot took the turn, so Claude Code may keep its prompt and partial reply.
+      if (diagnostics.rpc.send.acknowledged || diagnostics.rpc.toolResult.acknowledged) {
+        this.#recordFamilyTurn(state, currentHistory, { succeeded: false });
+      }
+      throw error;
     } finally {
       state.activeTurns -= 1;
       state.lastUsedAt = Date.now();
@@ -649,7 +689,7 @@ export class SessionManager {
           deletePersisted: true,
         });
       }
-      await this.#enforceStateLimit();
+      await this.#enforceStateLimit(state.identity.key);
     }
   }
 
@@ -670,6 +710,11 @@ export class SessionManager {
     if (existing) return existing;
     const inFlight = this.stateCreations.get(key);
     if (inFlight) return inFlight;
+    const carried = this.evictedStates.get(key);
+    this.evictedStates.delete(key);
+    // Copilot reduced this history before the state was evicted; the caller
+    // refuses it exactly as it would for the live state.
+    if (carried?.contextReduction) return { identity, model, contextReduction: carried.contextReduction };
 
     const sibling = [...this.states.values()].find(
       (state) => state.identity.familyKey === identity.familyKey,
@@ -688,10 +733,6 @@ export class SessionManager {
     const creation = (async () => {
     const tools = createSdkTools(body.tools);
     const contextOptions = sdkContextOptionsFor(this.models.find((entry) => entry.id === model));
-    const generation = this.sessionGenerations.get(key) || 0;
-    const sessionId = `claude-ghcp-${hash(
-      `${this.anonymousSessionId}:${key}:${generation}`,
-    ).slice(0, 32)}`;
     const sessionOptions = {
       model,
       ...contextOptions,
@@ -711,37 +752,36 @@ export class SessionManager {
     };
 
     let session;
+    let sessionId;
     let resumed = false;
-    const waitForSession = (operation, invoke) => this.#sessionOperation(operation, invoke, {
+    const waitForSession = (operation, id, invoke) => this.#sessionOperation(operation, invoke, {
       signal,
       diagnostics,
-      onAbandoned: (lateSession) => this.#discardSession(lateSession, sessionId),
+      onAbandoned: (lateSession) => this.#discardSession(lateSession, id),
     });
-    try {
-      if (this.knownSessionIds.has(sessionId)) {
-        try {
-          session = await waitForSession("session.resume", () => this.client.resumeSession(sessionId, {
-            ...sessionOptions,
-            continuePendingWork: true,
-          }));
-          resumed = true;
-        } catch (error) {
-          if (error.name === "AbortError" || error instanceof SessionOperationTimeoutError) throw error;
-          this.knownSessionIds.delete(sessionId);
-        }
-      }
-
-      if (!session) {
-        session = await waitForSession("session.create", () => this.client.createSession({
-          sessionId,
+    // Only a session this process evicted with a known transcript is resumed,
+    // so the request can still be checked against that transcript.
+    if (carried) {
+      try {
+        session = await waitForSession("session.resume", carried.sessionId, () => this.client.resumeSession(carried.sessionId, {
           ...sessionOptions,
+          continuePendingWork: true,
         }));
-        this.knownSessionIds.add(sessionId);
+        sessionId = carried.sessionId;
+        resumed = true;
+      } catch (error) {
+        if (error.name === "AbortError" || error instanceof SessionOperationTimeoutError) throw error;
       }
-    } catch (error) {
-      this.knownSessionIds.delete(sessionId);
-      this.sessionGenerations.set(key, generation + 1);
-      throw error;
+    }
+
+    if (!session) {
+      // Never reused, so neither a late abandoned session nor another bridge
+      // process can collide with it.
+      sessionId = `claude-ghcp-${randomUUID().replaceAll("-", "")}`;
+      session = await waitForSession("session.create", sessionId, () => this.client.createSession({
+        sessionId,
+        ...sessionOptions,
+      }));
     }
 
     const state = {
@@ -753,13 +793,13 @@ export class SessionManager {
       sessionId,
       fresh: !resumed,
       firstTurnReserved: true,
-      generation,
       identity,
       // The tool signature is part of the state key, so the declared names
       // never change for the lifetime of this state.
       declaredToolNames: new Set(tools.map((tool) => tool.name)),
       droppedToolCallIds: new Set(),
-      historySnapshot: null,
+      historySnapshot: resumed ? carried.historySnapshot : null,
+      familySeq: resumed ? carried.familySeq : undefined,
       lastUsedAt: Date.now(),
       queue: Promise.resolve(),
       pendingByToolCallId: new Map(),
@@ -835,6 +875,23 @@ export class SessionManager {
   async #executeLocked(state, body, reasoningEffort, onEvent, signal, diagnostics) {
     if (signal?.aborted) throw createAbortError();
     await this.#applyReasoningEffort(state, reasoningEffort, signal, diagnostics);
+    if (this.verifyObservation) {
+      const observation = await readVerificationModelState(state.session, signal);
+      emitTurnDiagnostic(this.onDiagnostic, {
+        event: "bridge.verify_model_state",
+        requestId: diagnostics.requestId,
+        responseId: diagnostics.responseId,
+        sessionId: state.session.sessionId ?? null,
+        model: state.model,
+        requestedEffort: verificationEffort(body),
+        appliedEffort: reasoningEffort ?? null,
+        requestedContextTier: state.contextOptions.contextTier ?? null,
+        ...observation,
+      });
+      // Only observation failures are tolerated; real cancellation still stops
+      // the request, including a cached tool-result response.
+      if (signal?.aborted) throw createAbortError();
+    }
     const input = extractTurnInput(body);
     const send = (options) => diagnostics.call("send", () => state.session.send(options));
 
@@ -1046,15 +1103,23 @@ export class SessionManager {
         prompt = `<prior_conversation>\n${prior.text}\n</prior_conversation>\n\n${prompt || CONTINUATION_PROMPT}`;
       }
     }
+    const replaying = state.fresh;
     state.fresh = false;
 
-    return this.#waitForTurn(
-      state,
-      () => send({ prompt: prompt || CONTINUATION_PROMPT, attachments }),
-      onEvent,
-      signal,
-      diagnostics,
-    );
+    try {
+      return await this.#waitForTurn(
+        state,
+        () => send({ prompt: prompt || CONTINUATION_PROMPT, attachments }),
+        onEvent,
+        signal,
+        diagnostics,
+      );
+    } catch (error) {
+      // Copilot may never have taken the replay, so the retry must replay it
+      // into a new session instead of sending only its newest prompt.
+      if (replaying && !diagnostics.rpc.send.acknowledged) state.invalidated = true;
+      throw error;
+    }
   }
 
   async #applyReasoningEffort(state, reasoningEffort, signal, diagnostics) {
@@ -1402,10 +1467,15 @@ export class SessionManager {
   }
 
   #combineMessages(messages) {
+    // A repeated call id is one call, so the JSON body, the SSE body, the stop
+    // reason and bridge.turn_completed.toolUses all count it once.
+    const seen = new Set();
     return {
       ...messages.at(-1),
       content: messages.map((message) => message.content || "").join(""),
-      toolRequests: messages.flatMap((message) => message.toolRequests || []),
+      toolRequests: messages.flatMap((message) => message.toolRequests || []).filter((request) =>
+        typeof request?.toolCallId !== "string" ||
+        (!seen.has(request.toolCallId) && Boolean(seen.add(request.toolCallId)))),
       outputTokens: messages.reduce(
         (total, message) => total + (message.outputTokens || 0),
         0,
@@ -1539,47 +1609,92 @@ export class SessionManager {
         state.pendingRequestWaiters.size === 0 &&
         now - state.lastUsedAt >= this.stateIdleTtlMs
       ) {
-        await this.#evictState(key, state);
+        await this.#evictIdleState(key, state);
       }
     }
   }
 
   async #enforceStateLimit(protectedKey) {
     if (this.states.size <= this.maxStates) return;
+    const idle = (state) =>
+      state.pendingByToolCallId.size === 0 && state.pendingRequestWaiters.size === 0;
     const candidates = [...this.states.entries()]
-      .filter(
-        ([key, state]) =>
-          key !== protectedKey &&
-          state.activeTurns === 0 &&
-          state.pendingByToolCallId.size === 0 &&
-          state.pendingRequestWaiters.size === 0,
-      )
+      .filter(([key, state]) => key !== protectedKey && state.activeTurns === 0)
       .sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt);
-    while (this.states.size > this.maxStates && candidates.length) {
-      const [key, state] = candidates.shift();
-      await this.#evictState(key, state);
+    // Idle states go first. A tool call Claude Code never answers (Esc, /clear,
+    // exit) would otherwise pin its state for the life of the bridge, so past
+    // them the least recently used pending-only states are discarded; a late
+    // result then cold-replays into a new session.
+    for (const [key, state] of [
+      ...candidates.filter(([, state]) => idle(state)),
+      ...candidates.filter(([, state]) => !idle(state)),
+    ]) {
+      if (this.states.size <= this.maxStates) break;
+      if (state.activeTurns > 0) continue;
+      if (idle(state)) await this.#evictIdleState(key, state);
+      else await this.#evictState(key, state, { abort: true, deletePersisted: true });
     }
+  }
+
+  // Normal eviction keeps a resumable session, remembered with the transcript
+  // it holds, and remembers a history Copilot reduced so it stays refused.
+  #evictIdleState(key, state) {
+    const resumable = !state.fresh && !state.contextReduction && Boolean(state.historySnapshot);
+    return this.#evictState(key, state, { deletePersisted: !resumable, carry: true });
+  }
+
+  // A sibling turn matters only to a state of the family that can still
+  // continue, cached or resumable, and whose own last request came before it.
+  #recordFamilyTurn(state, snapshot, { succeeded = true } = {}) {
+    const { familyKey, key } = state.identity;
+    const family = this.familyHeads.get(familyKey) ?? { seq: 0, floor: 0, turns: new Map() };
+    this.familyHeads.set(familyKey, family);
+    family.seq += 1;
+    if (succeeded) family.lastKey = key;
+    family.turns.delete(key);
+    family.turns.set(key, { seq: family.seq, snapshot });
+    state.familySeq = family.seq;
+    const oldest = Math.min(...[...this.states.values(), ...this.evictedStates.values()]
+      .filter((entry) => (entry.identity?.familyKey ?? entry.familyKey) === familyKey && entry.familySeq !== undefined)
+      .map((entry) => entry.familySeq));
+    for (const [turnKey, turn] of family.turns) {
+      if (turn.seq > oldest && family.turns.size <= MAX_FAMILY_TURNS) break;
+      family.turns.delete(turnKey);
+      if (turn.seq > oldest) family.floor = turn.seq;
+    }
+  }
+
+  // Family turns only matter to a state that can still continue, cached or
+  // resumable. Any other next state is fresh and replays.
+  #pruneFamily(familyKey) {
+    if (this.familyQueues.has(familyKey)) return;
+    for (const { identity } of this.states.values()) if (identity.familyKey === familyKey) return;
+    for (const entry of this.evictedStates.values()) if (entry.familyKey === familyKey) return;
+    this.familyHeads.delete(familyKey);
   }
 
   async #evictState(
     key,
     state,
-    { abort = false, deletePersisted = false } = {},
+    { abort = false, deletePersisted = false, carry = false } = {},
   ) {
     const existingEviction = this.stateEvictions.get(key);
     if (existingEviction) return existingEviction;
     if (this.states.get(key) !== state) return;
 
     this.states.delete(key);
-    if (deletePersisted) {
-      this.sessionGenerations.set(
-        key,
-        Math.max(
-          this.sessionGenerations.get(key) || 0,
-          state.generation + 1,
-        ),
-      );
+    const { familyKey } = state.identity;
+    if (carry && (!deletePersisted || state.contextReduction)) {
+      this.evictedStates.set(key, deletePersisted
+        ? { familyKey, contextReduction: state.contextReduction }
+        : { familyKey, sessionId: state.sessionId, historySnapshot: state.historySnapshot, familySeq: state.familySeq });
+      for (const [evictedKey, entry] of this.evictedStates) {
+        if (this.evictedStates.size <= this.maxStates * EVICTED_STATES_PER_STATE) break;
+        this.evictedStates.delete(evictedKey);
+        this.#pruneFamily(entry.familyKey);
+      }
     }
+    this.#pruneFamily(familyKey);
     const eviction = (async () => {
       for (const waiters of state.pendingRequestWaiters.values()) {
         for (const waiter of waiters) {
@@ -1602,7 +1717,6 @@ export class SessionManager {
           () => deleteClientSession(this.client, state.sessionId),
           this.cleanupTimeoutMs,
         );
-        this.knownSessionIds.delete(state.sessionId);
       }
     })();
     this.stateEvictions.set(key, eviction);

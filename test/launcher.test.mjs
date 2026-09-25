@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,8 +67,9 @@ test("claude-litellm exposes a separate gateway launcher", () => {
   assert.match(result.stdout, /default: claude-sonnet-5/);
 });
 
-test("claude-litellm passes temporary gateway settings to upstream Claude", () => {
+function runLitellm(t, args, env = {}) {
   const fixtureDir = mkdtempSync(path.join(tmpdir(), "claude-litellm-launcher-"));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
   const fakeClaude = path.join(fixtureDir, "claude");
   const capturedSettings = path.join(fixtureDir, "captured-settings.json");
   const capturedSettingsPath = path.join(fixtureDir, "settings-path.txt");
@@ -93,41 +95,107 @@ test("claude-litellm passes temporary gateway settings to upstream Claude", () =
     ].join("\n"),
   );
   chmodSync(fakeClaude, 0o755);
+  const stateHome = path.join(fixtureDir, "state");
+  const result = spawnSync(path.join(rootDir, "bin", "claude-litellm"), args, {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CAPTURE_PATH: capturedSettings,
+      CAPTURE_SETTINGS_PATH: capturedSettingsPath,
+      CLAUDE_CODE_BIN: "",
+      HOME: fixtureDir,
+      LITELLM_API_KEY: "sk-test-only",
+      LITELLM_BASE_URL: "https://litellm.example.com",
+      LITELLM_MODEL: "",
+      PATH: `${path.join(rootDir, "bin")}:${fixtureDir}:${process.env.PATH}`,
+      XDG_STATE_HOME: stateHome,
+      ...env,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(userSettingsPath, "utf8"), userSettings);
+  return {
+    fixtureDir,
+    result,
+    settings: JSON.parse(readFileSync(capturedSettings, "utf8")),
+    settingsPath: readFileSync(capturedSettingsPath, "utf8"),
+    stateDir: path.join(stateHome, "claude-code-ghcp-sdk", "litellm-settings"),
+  };
+}
 
-  try {
-    const result = spawnSync(
-      path.join(rootDir, "bin", "claude-litellm"),
-      [],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          CAPTURE_PATH: capturedSettings,
-          CAPTURE_SETTINGS_PATH: capturedSettingsPath,
-          CLAUDE_CODE_BIN: "",
-          HOME: fixtureDir,
-          LITELLM_API_KEY: "sk-test-only",
-          LITELLM_BASE_URL: "https://litellm.example.com",
-          LITELLM_MODEL: "",
-          PATH: `${path.join(rootDir, "bin")}:${fixtureDir}:${process.env.PATH}`,
-        },
-      },
-    );
+test("claude-litellm passes gateway settings to upstream Claude", (t) => {
+  const { result, settings } = runLitellm(t, []);
 
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, "upstream-ok no-flicker=1\n");
-    const settings = JSON.parse(readFileSync(capturedSettings, "utf8"));
-    assert.equal(settings.env.ANTHROPIC_BASE_URL, "https://litellm.example.com");
-    assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-test-only");
-    assert.equal(settings.env.ANTHROPIC_MODEL, "claude-sonnet-5");
-    assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
-    const temporarySettingsPath = readFileSync(capturedSettingsPath, "utf8");
-    assert.equal(existsSync(temporarySettingsPath), false);
-    assert.equal(readFileSync(userSettingsPath, "utf8"), userSettings);
-  } finally {
-    rmSync(fixtureDir, { recursive: true, force: true });
+  assert.equal(result.stdout, "upstream-ok no-flicker=1\n");
+  assert.equal(settings.env.ANTHROPIC_BASE_URL, "https://litellm.example.com");
+  assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-test-only");
+  assert.equal(settings.env.ANTHROPIC_MODEL, "claude-sonnet-5");
+  assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "");
+  assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "");
+});
+
+// Claude Code's daemon respawns a /background or --background job from the
+// --settings path it started with, after the launcher has exited. The file
+// carries the LiteLLM key, so it stays private to the user.
+test("claude-litellm keeps settings that a background job restarts from", (t) => {
+  for (const args of [[], ["--background", "task"], ["-p", "--bg", "task"]]) {
+    const { settingsPath, stateDir } = runLitellm(t, args);
+    assert.equal(existsSync(settingsPath), true, args.join(" "));
+    assert.equal(path.dirname(settingsPath), stateDir);
+    assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
+    assert.equal(statSync(stateDir).mode & 0o777, 0o700);
+    assert.equal(statSync(path.dirname(stateDir)).mode & 0o777, 0o700);
   }
+  // Without XDG_STATE_HOME the state directory falls back to ~/.local/state.
+  const { fixtureDir, settingsPath } = runLitellm(t, [], { XDG_STATE_HOME: "" });
+  assert.equal(
+    path.dirname(settingsPath),
+    path.join(fixtureDir, ".local", "state", "claude-code-ghcp-sdk", "litellm-settings"),
+  );
+});
+
+test("claude-litellm removes the settings file of a print-mode run", (t) => {
+  const { settingsPath, stateDir } = runLitellm(t, ["-p", "hello"]);
+  // Nothing respawns a print-mode run, so its key must not linger.
+  assert.equal(existsSync(settingsPath), false);
+  assert.equal(existsSync(stateDir), false);
+});
+
+test("claude-litellm reaps only its settings files older than 7 days", (t) => {
+  const stateHome = mkdtempSync(path.join(tmpdir(), "claude-litellm-state-"));
+  t.after(() => rmSync(stateHome, { recursive: true, force: true }));
+  const stateDir = path.join(stateHome, "claude-code-ghcp-sdk", "litellm-settings");
+  mkdirSync(stateDir, { recursive: true });
+  const stale = path.join(stateDir, "stale.json");
+  const live = path.join(stateDir, "live.json");
+  const seconds = Date.now() / 1000;
+  const day = 24 * 60 * 60;
+  for (const [file, age] of [[stale, 8 * day], [live, 6 * day]]) {
+    writeFileSync(file, "{}\n", { mode: 0o600 });
+    utimesSync(file, seconds - age, seconds - age);
+  }
+
+  const { settingsPath } = runLitellm(t, [], { XDG_STATE_HOME: stateHome });
+
+  assert.equal(existsSync(stale), false);
+  // A background job can sit idle for days; one inside the window stays.
+  assert.equal(existsSync(live), true);
+  assert.equal(existsSync(settingsPath), true);
+});
+
+// -p --bg keeps its key file, and a print-mode run reaps nothing, so the help
+// and .env.example must not promise otherwise.
+test("claude-litellm help and .env.example state when the key file is removed", () => {
+  const help = spawnSync(path.join(rootDir, "bin", "claude-litellm"), ["--help"], {
+    encoding: "utf8",
+  }).stdout.replace(/\s+/g, " ");
+  const env = readFileSync(path.join(rootDir, ".env.example"), "utf8").replace(/\s*\n#\s*/g, " ");
+  assert.match(help, /print-mode run \(-p without --background or --bg\) removes it/);
+  assert.match(help, /each launch other than print mode first removes files there older than 7 days/);
+  assert.match(env, /claude-litellm print-mode run \(-p without --background or --bg\) it holds the settings file/);
+  assert.match(env, /claude-litellm launches other than print mode \(-p without --background or --bg\) keep/);
+  assert.match(env, /Each such launch deletes the ones older than 7 days/);
+  assert.doesNotMatch(env, /A later claude-litellm launch deletes/);
 });
 
 test("claude-litellm rejects a wrapper as CLAUDE_CODE_BIN", () => {
@@ -242,16 +310,28 @@ test("both resolvers skip another checkout's launcher", (t) => {
 
 // The launcher polls the bridge from curl while spawnSync blocks this
 // process's event loop, so the stub bridge has to answer from its own process.
-async function fakeBridge(t, instanceId) {
+// With token, /v1/models requires that x-api-key; with healthLimit, /health
+// answers 503 once it has answered that many times.
+async function fakeBridge(t, instanceId, { token = "", healthLimit = 0 } = {}) {
   const child = spawn(
     process.execPath,
     [
       "-e",
       [
         'const http = require("node:http");',
-        "const [instanceId, model] = process.argv.slice(1);",
+        "const [instanceId, model, token, healthLimit] = process.argv.slice(1);",
+        "let healthAnswers = 0;",
         "const server = http.createServer((request, response) => {",
-        '  const body = request.url.startsWith("/health")',
+        '  const health = request.url.startsWith("/health");',
+        "  if (health && Number(healthLimit) && ++healthAnswers > Number(healthLimit)) {",
+        "    response.writeHead(503);",
+        "    return response.end();",
+        "  }",
+        '  if (!health && token && request.headers["x-api-key"] !== token) {',
+        "    response.writeHead(401);",
+        "    return response.end();",
+        "  }",
+        "  const body = health",
         "    ? { instanceId, ok: true }",
         "    : { data: [{ backend_id: model, id: model }] };",
         '  response.writeHead(200, { "content-type": "application/json" });',
@@ -263,6 +343,8 @@ async function fakeBridge(t, instanceId) {
       ].join("\n"),
       instanceId,
       bridgeModel,
+      token,
+      String(healthLimit),
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
@@ -296,6 +378,7 @@ function launcherFixture(t) {
       "done",
       // Whatever lease the launcher took is only on disk while this runs.
       'cat "$GHCP_DAEMON_DIR"/leases/*.pid > "$CAPTURE_LEASE_PATH" 2>/dev/null || true',
+      'printf "%s" "$PATH" > "$CAPTURE_PATH_ENV"',
       "",
     ].join("\n"),
   );
@@ -308,6 +391,7 @@ function launcherFixture(t) {
   return {
     ...process.env,
     CAPTURE_LEASE_PATH: path.join(fixtureDir, "leases.txt"),
+    CAPTURE_PATH_ENV: path.join(fixtureDir, "path.txt"),
     CAPTURE_SETTINGS_PATH: path.join(fixtureDir, "settings-path.txt"),
     CLAUDE_CODE_BIN: "",
     GHCP_DAEMON_DIR: daemonDir,
@@ -340,10 +424,16 @@ function launcherFixture(t) {
 // reuse path this test exists to cover genuinely cannot be reached.
 const BACKGROUND_LAUNCH_ATTEMPTS = 3;
 
-async function runBackgroundLauncher(t, launchArgs = ["--background"]) {
+async function runBackgroundLauncher(
+  t,
+  launchArgs = ["--background"],
+  { bridge = {}, seed = () => {}, status = 0 } = {},
+) {
   for (let attempt = 1; ; attempt += 1) {
     const instanceId = "instance-background";
-    const { pid, port } = await fakeBridge(t, instanceId);
+    // The token the launcher can only have taken from ensure's JSON, so a
+    // probe or settings file that lost it on the way is caught here.
+    const { pid, port } = await fakeBridge(t, instanceId, { token: "test-only", ...bridge });
     const env = launcherFixture(t);
     const paths = daemonPaths(env);
     // A matching fingerprint over a live PID whose /health echoes that
@@ -359,6 +449,7 @@ async function runBackgroundLauncher(t, launchArgs = ["--background"]) {
       port,
       token: "test-only",
     });
+    seed(paths);
 
     const result = spawnSync(
       path.join(rootDir, "bin", "claude-ghcp"),
@@ -382,7 +473,8 @@ async function runBackgroundLauncher(t, launchArgs = ["--background"]) {
       );
       continue;
     }
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, status, result.stderr);
+    if (status !== 0) return { result };
     return {
       launcherPid: result.pid,
       leasesDuringRun: readFileSync(env.CAPTURE_LEASE_PATH, "utf8"),
@@ -402,6 +494,8 @@ test("claude-ghcp keeps background settings after the launcher exits", async (t)
   assert.equal(path.dirname(settingsPath), paths.settings);
   const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
   assert.equal(settings.env.ANTHROPIC_BASE_URL, `http://127.0.0.1:${port}`);
+  // Reached the writer through GHCP_BRIDGE_TOKEN rather than argv.
+  assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "test-only");
 });
 
 test("claude-ghcp keeps surviving settings private to the user", async (t) => {
@@ -458,23 +552,195 @@ test("claude-ghcp removes the settings file of a print-mode bridge", async (t) =
   // creates one either way -- but ensureDaemon cannot run without leaving
   // bridge.log behind in the daemon directory, so an empty directory does.
   assert.deepEqual(readdirSync(daemonPaths(env).base), []);
+  // Claude Code, and the Bash tool, hooks and MCP servers it starts, see the
+  // caller's PATH: this repository's devDependency binaries (playwright and
+  // the like) must not shadow the user's own.
+  assert.equal(readFileSync(env.CAPTURE_PATH_ENV, "utf8"), env.PATH);
 });
-// Every startup probe in bin/claude-ghcp is bounded, and the launcher states a
-// worst-case ceiling that callers budget against (scripts/verify/drivers.mjs
-// spawns it under a 180s spawnSync cap). Until this test existed nothing held
-// those bounds down: deleting both --max-time flags and inflating
-// HEALTH_DEADLINE to 99999 left the suite at 152/152 green, and the fetch probe
-// had no bound at all -- against a port that is bound but silent it was still
-// pending at 30s, so the stated ceiling was arithmetic about a wait that could
-// not honour it. Rather than restate the numbers here, this parses them back
-// out of the script and re-adds them, so the comment's figure is the assertion.
+
+// The shared daemon log is only ever appended to, so its head is the oldest
+// bridges' output and the failure being reported is at its end.
+test("claude-ghcp shows the end of the shared bridge log when the bridge stops answering", async (t) => {
+  const lines = Array.from({ length: 200 }, (_, index) => `bridge log line ${index + 1}`);
+  const { result } = await runBackgroundLauncher(t, [], {
+    // ensure's own probe gets its answer; the launcher's confirmation does not.
+    bridge: { healthLimit: 1 },
+    seed: (paths) => writeFileSync(paths.log, `${lines.join("\n")}\n`),
+    status: 1,
+  });
+
+  assert.match(result.stderr, /Timed out waiting for the GHCP bridge/);
+  assert.match(result.stderr, /bridge log line 200\n/);
+  assert.doesNotMatch(result.stderr, /bridge log line 1\n/);
+});
+
+// A process's arguments are readable by every local user, and the persistent
+// bridge's token stays valid for as long as that bridge runs.
+test("claude-ghcp never passes the bridge token as an argument", () => {
+  const script = readFileSync(path.join(rootDir, "bin", "claude-ghcp"), "utf8");
+  const code = script.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  const uses = [...code.matchAll(/\$\{?BRIDGE_TOKEN\}?/g)];
+  // The private bridge, the model probe and the settings writer all need it.
+  assert.equal(uses.length, 3, uses.map(({ index }) => code.slice(index - 40, index + 20)).join("\n---\n"));
+  for (const { index } of uses) {
+    assert.match(
+      code.slice(Math.max(0, index - 40), index),
+      /(?:^|\s)[A-Z_][A-Z0-9_]*="$/,
+      `$BRIDGE_TOKEN is used outside an environment assignment:\n${code.slice(index - 60, index + 30)}`,
+    );
+  }
+});
+
+// npm link and ~/.local/bin expose launchers through symlinks, so each one has
+// to find its checkout from the link's target, not from where the link sits.
+test("launchers work when run through a symlink", (t) => {
+  const fixtureDir = mkdtempSync(path.join(tmpdir(), "claude-ghcp-launcher-"));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+  const linkBin = path.join(fixtureDir, "prefix", "bin");
+  const hopDir = path.join(fixtureDir, "hop");
+  for (const dir of [linkBin, hopDir]) mkdirSync(dir, { recursive: true });
+  for (const name of ["claude", "claude-ghcp", "claude-litellm", "claude-current", "claude-ghcp-status"]) {
+    // Two hops, the second one relative.
+    symlinkSync(path.join(rootDir, "bin", name), path.join(hopDir, name));
+    symlinkSync(path.join("..", "..", "hop", name), path.join(linkBin, name));
+  }
+  const realClaude = path.join(fixtureDir, "real-claude");
+  writeFileSync(realClaude, "#!/usr/bin/env bash\nprintf 'upstream:%s\\n' \"$*\"\n");
+  chmodSync(realClaude, 0o755);
+  const env = {
+    ...process.env,
+    CLAUDE_CODE_BIN: realClaude,
+    GHCP_DAEMON_DIR: path.join(fixtureDir, "daemon"),
+  };
+  const run = (name, args) => {
+    const result = spawnSync(path.join(linkBin, name), args, { encoding: "utf8", env });
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+    return result.stdout;
+  };
+
+  assert.match(run("claude", ["--help"]), /^Usage: claude-ghcp /);
+  assert.match(run("claude-ghcp", ["--help"]), /^Usage: claude-ghcp /);
+  assert.match(run("claude-litellm", ["--help"]), /^Usage: claude-litellm /);
+  assert.equal(run("claude-current", ["--version"]), "upstream:--version\n");
+  assert.equal(JSON.parse(run("claude-ghcp-status", [])).running, false);
+
+  // The others would start or stop a bridge or reach Copilot, so they are only
+  // checked for the same resolution step.
+  for (const name of readdirSync(path.join(rootDir, "bin"))) {
+    if (name.startsWith(".") || name === "resolve-claude.sh") continue;
+    assert.match(
+      readFileSync(path.join(rootDir, "bin", name), "utf8"),
+      /while \[\[ -L "\$SCRIPT_PATH" \]\]; do[\s\S]*?done\nROOT_DIR="\$\(cd -P "\$\(dirname "\$SCRIPT_PATH"\)\/\.\." && pwd\)"/,
+      name,
+    );
+  }
+});
+
+// The private -p bridge's shutdown awaits the SDK's client.stop(), which can
+// hang on a wedged Copilot runtime, so the launcher's wait for it has to end
+// on its own. PATH puts a node in front whose src/server.mjs is a stub bridge
+// that ignores SIGTERM; every other node command runs the real node.
+test("claude-ghcp ends a print-mode bridge that ignores SIGTERM", (t) => {
+  const env = launcherFixture(t);
+  const fixtureDir = path.dirname(env.CAPTURE_PATH_ENV);
+  const wrapperDir = path.join(fixtureDir, "node-wrapper");
+  mkdirSync(wrapperDir);
+  const pidFile = path.join(fixtureDir, "bridge.pid");
+  const stubborn = path.join(fixtureDir, "stubborn-bridge.cjs");
+  writeFileSync(stubborn, [
+    'const http = require("node:http");',
+    'process.on("SIGTERM", () => {});',
+    'require("node:fs").writeFileSync(process.env.STUBBORN_PID_PATH, String(process.pid));',
+    "const model = process.env.GHCP_MODEL;",
+    "http.createServer((request, response) => {",
+    '  const body = request.url.startsWith("/health") ? { ok: true } : { data: [{ backend_id: model, id: model }] };',
+    '  response.writeHead(200, { "content-type": "application/json" });',
+    "  response.end(JSON.stringify(body));",
+    '}).listen(Number(process.env.PORT), "127.0.0.1");',
+  ].join("\n"));
+  writeFileSync(path.join(wrapperDir, "node"), [
+    "#!/usr/bin/env bash",
+    'if [[ "${1:-}" == */src/server.mjs ]]; then exec "$REAL_NODE" "$STUBBORN_BRIDGE"; fi',
+    'exec "$REAL_NODE" "$@"',
+    "",
+  ].join("\n"));
+  chmodSync(path.join(wrapperDir, "node"), 0o755);
+
+  const started = Date.now();
+  const result = spawnSync(path.join(rootDir, "bin", "claude-ghcp"), ["-p", "hello"], {
+    encoding: "utf8",
+    env: {
+      ...env,
+      PATH: `${wrapperDir}:${env.PATH}`,
+      REAL_NODE: process.execPath,
+      STUBBORN_BRIDGE: stubborn,
+      STUBBORN_PID_PATH: pidFile,
+    },
+    // An unbounded wait would outlive this; SIGKILL, because the launcher's
+    // own trap would wait again on SIGTERM.
+    killSignal: "SIGKILL",
+    timeout: 90_000,
+  });
+  const elapsed = Date.now() - started;
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  try {
+    assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stderr}`);
+    assert.ok(elapsed < 60_000, `the launcher took ${elapsed}ms to give up on its bridge`);
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+});
+
+// npm run doctor has to probe the real Claude Code, not this repository's
+// bin/claude, which would start (or fail to start) the persistent bridge just
+// to print a version. No copilot is on PATH, so that wrong path fails at once
+// instead of reaching bridge-daemon.mjs; the hanging npm checks that one stuck
+// probe cannot stall the whole report, even one that ignores SIGTERM. It ends
+// itself after ~30s, and in 1s steps, so no probe outlives a failing run long.
+test("npm run doctor probes the real Claude Code and bounds each probe", (t) => {
+  const fixtureDir = mkdtempSync(path.join(tmpdir(), "claude-ghcp-doctor-"));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+  symlinkSync(process.execPath, path.join(fixtureDir, "node"));
+  writeFileSync(path.join(fixtureDir, "claude"), "#!/bin/sh\necho 9.9.9\n");
+  writeFileSync(
+    path.join(fixtureDir, "npm"),
+    "#!/bin/sh\ntrap '' TERM\ni=0\nwhile [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done\n",
+  );
+  for (const name of ["claude", "npm"]) chmodSync(path.join(fixtureDir, name), 0o755);
+  const { scripts } = JSON.parse(readFileSync(path.join(rootDir, "package.json"), "utf8"));
+
+  const started = Date.now();
+  const result = spawnSync("/bin/sh", ["-c", scripts.doctor], {
+    cwd: rootDir,
+    encoding: "utf8",
+    env: {
+      CLAUDE_CODE_BIN: "",
+      GHCP_DAEMON_DIR: path.join(fixtureDir, "daemon"),
+      HOME: fixtureDir,
+      MAX_STATES: "not-a-number",
+      PATH: `${path.join(rootDir, "bin")}:${fixtureDir}:/usr/bin:/bin`,
+    },
+    killSignal: "SIGKILL",
+    timeout: 60_000,
+  });
+
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.claude.version, "9.9.9", result.stderr);
+  assert.equal(report.npm.ok, false);
+  assert.ok(Date.now() - started < 25_000, "a hanging probe stalled the report");
+});
+// Parse every startup bound from the launcher and check that their sum
+// matches its documented worst-case ceiling, including a silent health port.
 test("claude-ghcp bounds every startup probe and states the true ceiling", () => {
   const script = readFileSync(path.join(rootDir, "bin", "claude-ghcp"), "utf8");
 
   const deadline = script.match(/HEALTH_DEADLINE=\$\(\(SECONDS \+ (\d+(?:\.\d+)?)\)\)/);
   assert.ok(deadline, "the health wait no longer sets a HEALTH_DEADLINE ceiling");
 
-  const sleep = script.match(/^\s*sleep (\d+(?:\.\d+)?)$/m);
+  const sleep = script.slice(deadline.index).match(/^\s*sleep (\d+(?:\.\d+)?)$/m);
   assert.ok(sleep, "the health loop no longer sleeps a known interval");
 
   // Both probes hit a port that may be bound but silent, so an uncapped curl
@@ -517,12 +783,6 @@ test("claude-ghcp bounds every startup probe and states the true ceiling", () =>
     script.includes(`${worstCase}s worst case`),
     `the launcher's bounds now add to ${worstCase}s, which is not the ceiling the file claims`,
   );
-  // The same figure is spent against the driver's 180s spawnSync cap a few
-  // lines below, and a ceiling that disagrees with itself is the bug this pins.
-  assert.ok(
-    script.includes(`180 - ${worstCase} leaves`),
-    `the budget arithmetic does not subtract the real ${worstCase}s ceiling from the caller's 180s cap`,
-  );
 });
 
 // The static assertion above proves the AbortSignal is written down; this
@@ -534,7 +794,7 @@ test("claude-ghcp's model probe gives up on a bound-but-silent bridge", async (t
   // The real probe body, lifted out of the real script, so this cannot drift
   // into testing a copy.
   const script = readFileSync(path.join(rootDir, "bin", "claude-ghcp"), "utf8");
-  const probe = script.match(/if ! node -e '\n([\s\S]*?)\n' "http/);
+  const probe = script.match(/if ! GHCP_BRIDGE_TOKEN="\$BRIDGE_TOKEN" node -e '\n([\s\S]*?)\n' "http/);
   assert.ok(probe, "could not find the node -e model probe in bin/claude-ghcp");
 
   // Accepts the connection, then writes nothing, ever. Nothing here reads from
@@ -564,10 +824,12 @@ test("claude-ghcp's model probe gives up on a bound-but-silent bridge", async (t
       "-e",
       probe[1],
       `http://127.0.0.1:${port}/v1/models?all=true`,
-      "test-only",
       bridgeModel,
     ],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    {
+      env: { ...process.env, GHCP_BRIDGE_TOKEN: "test-only" },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
   );
   let stderr = "";
   child.stderr.on("data", (chunk) => {

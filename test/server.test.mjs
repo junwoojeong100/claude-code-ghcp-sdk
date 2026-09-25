@@ -781,3 +781,27 @@ for (const stream of [false, true]) {
     assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_/);
   });
 }
+
+for (const hang of [false, true]) {
+  test(`shutdown ${hang ? "is forced out at a bounded deadline when manager.stop() hangs" : "exits 0 as soon as manager.stop() settles"}`, async (t) => {
+    const before = new Set(process.listeners("SIGTERM"));
+    const { manager } = await offlineServer(t, { CLEANUP_TIMEOUT_MS: "100" });
+    const shutdown = process.listeners("SIGTERM").find((listener) => !before.has(listener));
+    const diagnostics = captureDiagnostics(t);
+    const exits = [];
+    t.mock.method(process, "exit", (code) => { exits.push(code); });
+    t.mock.method(manager, "stop", () => hang ? new Promise(() => {}) : Promise.resolve());
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    // Default 5s abort budget, 5 cleanup budgets and the SDK's 2 x 10s.
+    const deadlineMs = 5000 + 5 * 100 + 20_000;
+    const done = shutdown();
+    if (!hang) await done;
+    else await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(deadlineMs - 1);
+    assert.deepEqual(exits, hang ? [] : [0]);
+    t.mock.timers.tick(1);
+    assert.deepEqual(exits, hang ? [1] : [0]);
+    assert.deepEqual(diagnostics.filter((event) => event.event === "bridge.shutdown_forced"),
+      hang ? [{ event: "bridge.shutdown_forced", deadlineMs }] : []);
+  });
+}

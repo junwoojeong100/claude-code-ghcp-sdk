@@ -7,11 +7,14 @@ including Claude Code through `./bin/claude-litellm`, use GitHub Copilot models.
 
 One bridge is one GitHub Copilot seat. Every request through the gateway, whichever
 virtual key sends it, is billed to the operator's seat and follows the operator's
-organization policy.
+organization policy. That is why the README rates a gateway shared by a team as not
+suitable ([Is it right for you?](../README.md#is-it-right-for-you)).
 
-LiteLLM adds virtual keys and request logging. The path loses three things the Direct path
-has: Claude Code's 1M context window, the bridge's model list in `/model`, and the bridge's
-own token counting. LiteLLM's cost tracking and budgets are wrong for Copilot models. See
+LiteLLM can add virtual keys and request logging; virtual keys also need a PostgreSQL
+database, which this setup does not include ([step 4](#4-connect-claude-code)). The path
+loses three things the Direct path has: Claude Code's 1M context window, the bridge's model
+list in `/model`, and the bridge's own token counting. LiteLLM's cost tracking and budgets
+are wrong for Copilot models. See
 [What Differs from the Direct Path](#what-differs-from-the-direct-path).
 
 This path is not tested end to end; see [What Is Not Tested](#what-is-not-tested). If you
@@ -29,29 +32,37 @@ not use this repository.
 ## Connect to an Existing Gateway
 
 Use this section when someone else runs the gateway and gave you its URL and a key. You
-need Claude Code, Node.js, Git and `curl`. You do not need `npm install` or
-`copilot login`, because the operator's machine runs the bridge.
+need macOS or Linux (the launcher is a bash script), Claude Code, Node.js, Git and `curl`.
+You do not need `npm install` or `copilot login`, because the operator's machine runs the
+bridge. Run the commands in one terminal, with your gateway's root URL (no `/v1`) and your
+key in place of the examples. If you already cloned this repository, enter its root instead
+of cloning again.
 
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
 cd claude-code-ghcp-sdk
 
-export LITELLM_BASE_URL="https://litellm.example.com"   # no /v1
+export LITELLM_BASE_URL="https://litellm.example.com"
 export LITELLM_API_KEY="<your virtual key>"
 
-curl --silent --show-error --fail \
-  -H "Authorization: Bearer $LITELLM_API_KEY" \
-  "$LITELLM_BASE_URL/v1/models"
+printf 'Authorization: Bearer %s\n' "$LITELLM_API_KEY" |
+  curl --silent --show-error --fail -H @- "$LITELLM_BASE_URL/v1/models"
 ```
 
-The `id` values in that list are the aliases the gateway serves. They are the valid values
-for `LITELLM_MODEL`. `LITELLM_MODEL` defaults to `claude-sonnet-5`, which fails if the
-gateway has no alias by that name.
+Continue only if `curl` succeeds and returns a model list. A connection failure means you
+should check the gateway URL; a 401 means you should check the key with the operator.
+The list checks gateway access, not whether a model can answer. Its `id` values are valid
+aliases for `LITELLM_MODEL`. Replace `claude-sonnet-5` below if that alias is not listed.
 
 ```bash
 export LITELLM_MODEL="claude-sonnet-5"
 ./bin/claude-litellm
 ```
+
+In Claude Code, ask `Reply with OK`. A reply confirms one request through your gateway,
+not every feature on this page. Prompts consume the operator's Copilot allowance. Use
+`/exit` to leave the client; this does not stop the operator's gateway. If a request fails,
+start with [Troubleshooting](#troubleshooting).
 
 Two rules apply:
 
@@ -72,8 +83,19 @@ export LITELLM_HAIKU_MODEL="claude-haiku-4.5"
 
 An unset family alias uses the main alias (`LITELLM_MODEL`). The flags
 `--litellm-base-url` and `--litellm-model` override the variables. `claude-litellm`
-refuses `--model`, `--settings` and `--ghcp-model`. It writes Claude Code's provider
-settings to a mode-`0600` temporary file and deletes the file when Claude Code exits.
+refuses `--model`, `--settings` and `--ghcp-model`.
+
+`claude-litellm` writes Claude Code's provider settings, your key and the gateway URL
+included, to a mode-`0600` file:
+
+- A print-mode run (`-p` without `--background` or `--bg`) uses a temporary file and
+  deletes it when Claude Code exits.
+- Every other launch keeps its file in
+  `${XDG_STATE_HOME:-~/.local/state}/claude-code-ghcp-sdk/litellm-settings/`, because
+  Claude Code restarts a `/background` job from it after the launcher has exited. The
+  next launch other than print mode deletes files there older than 7 days; nothing
+  else removes them. Delete that directory yourself when you no longer want your key
+  stored there. A `/background` job still using a deleted file cannot restart.
 
 ## Run a Gateway
 
@@ -84,7 +106,9 @@ machine as the bridge, because the bridge that `ensure` starts always listens on
 You need the [README requirements](../README.md#requirements), steps 1 and 2 of the
 [Direct quick start](../README.md#quick-start-direct-sdk) (`npm install` and
 `copilot login`), and `uv`, which setup uses to create a Python 3.13 environment. Run every
-command from the repository root.
+command from the repository root. Use **terminal A** for the bridge and LiteLLM server,
+and **terminal B** for the client. The server command stays in the foreground; do not
+paste the client commands into terminal A while it is running.
 
 ### 1. Pin the bridge port in your shell profile
 
@@ -93,11 +117,15 @@ without `--background` or `agents`), uses one shared background bridge
 ([The background bridge](../README.md#the-background-bridge)). A launch that asks for
 another port, or for none, replaces the gateway's bridge. A plain `claude` counts when this
 checkout's `bin/` is on your PATH. Add this line to your shell profile (for example
-`~/.zshrc`) and open a new shell:
+`~/.zshrc`):
 
 ```bash
 export GHCP_BRIDGE_PORT=4142
 ```
+
+A profile edit reaches only shells opened afterwards. Reopen terminal A and every terminal
+you will use for `claude` or `claude-ghcp`, or run the same `export` line in each one you
+keep open.
 
 With `GHCP_BRIDGE_PORT` exported, a print-mode run starts its private bridge on the same
 port. While the gateway's bridge holds that port, the run fails with
@@ -109,22 +137,37 @@ GHCP_BRIDGE_PORT= ./bin/claude-ghcp -p "..."
 
 Passing another `--bridge-port` also works.
 
+The core verifier starts its own direct, slot-local bridges on free loopback ports;
+it does not use this gateway or the shared launcher daemon. Its all-six command and
+limits are in [Testing](TESTING.md). A core result does not verify the LiteLLM path.
+
 ### 2. Start the bridge and capture its token
 
-Run this in an ordinary shell, one with the same environment your other terminals get. If
-its bridge variables differ from theirs, your next `claude` launch replaces this bridge
+In **terminal A**, enter the repository root. Use an ordinary shell with the environment
+your other terminals get, including `GHCP_BRIDGE_PORT=4142` from step 1. If its bridge
+variables differ from theirs, your next `claude` launch replaces this bridge
 ([When the Bridge Is Replaced](#when-the-bridge-is-replaced)).
 
 ```bash
-export GHCP_BRIDGE_URL="http://127.0.0.1:$GHCP_BRIDGE_PORT"   # the bridge root, no /v1
-GHCP_BRIDGE_TOKEN="$(node src/bridge-daemon.mjs ensure claude-sonnet-5 "$GHCP_BRIDGE_PORT" \
-  | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).token')" \
-  && export GHCP_BRIDGE_TOKEN || unset GHCP_BRIDGE_TOKEN
+if [ -z "$GHCP_BRIDGE_PORT" ]; then
+  echo "GHCP_BRIDGE_PORT is not set: do step 1, then open a new shell." >&2
+else
+  export GHCP_BRIDGE_URL="http://127.0.0.1:$GHCP_BRIDGE_PORT"
+  unset GHCP_BRIDGE_TOKEN
+  BRIDGE_JSON="$(node src/bridge-daemon.mjs ensure claude-sonnet-5 "$GHCP_BRIDGE_PORT")" &&
+    export GHCP_BRIDGE_TOKEN="$(printf '%s' "$BRIDGE_JSON" |
+      node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).token))')"
+fi
 ```
 
+The block sets `GHCP_BRIDGE_URL` to the bridge root, with no `/v1`, and runs `ensure`.
 `ensure` starts the bridge, or reuses the running one if its configuration matches, and
-prints one JSON line. Its `token` field is the bridge credential. If `ensure` fails, it
-prints the reason and `GHCP_BRIDGE_TOKEN` is left unset.
+returns one JSON line; the block stores its `token` field, the bridge credential, in
+`GHCP_BRIDGE_TOKEN`. The JSON reaches `node` through a pipe, not as an argument, because
+any local user can read a process's arguments. For the same reason every `curl` check in
+this guide reads its key header from stdin (`-H @-`), written by the shell builtin `printf`.
+On success the block prints nothing, and the checks below confirm the bridge. If
+`GHCP_BRIDGE_PORT` is empty, the block prints the message above and starts nothing. If `ensure` fails, it prints the reason and `GHCP_BRIDGE_TOKEN` is left unset.
 
 The model argument must be a model your Copilot account can use, and `ensure` checks it.
 It does not limit which aliases LiteLLM can serve.
@@ -134,10 +177,13 @@ Check the bridge:
 ```bash
 curl --silent --show-error --fail "$GHCP_BRIDGE_URL/health"
 
-curl --silent --show-error --fail \
-  -H "x-api-key: $GHCP_BRIDGE_TOKEN" \
-  "$GHCP_BRIDGE_URL/v1/models?all=true"
+printf 'x-api-key: %s\n' "$GHCP_BRIDGE_TOKEN" |
+  curl --silent --show-error --fail -H @- "$GHCP_BRIDGE_URL/v1/models?all=true"
 ```
+
+The first call must return JSON with `"ok": true`; the second must return a model list.
+If either fails, stop here and use [Troubleshooting](#troubleshooting). These checks confirm
+the bridge and token work, not a completed model response.
 
 The second call lists every model ID in your Copilot catalogue. Those IDs are what goes
 after `anthropic/` in the LiteLLM config. `./bin/ghcp-models` prints the same IDs, except
@@ -148,13 +194,22 @@ check models against it.
 Every bridge route except `GET /health` and `HEAD /api/hello` needs the token, sent as
 `x-api-key` or `Authorization: Bearer`. Anyone with the token can use your Copilot seat, so
 treat it like a password ([Security Boundaries](ARCHITECTURE.md#security-boundaries)).
+The exported `GHCP_BRIDGE_TOKEN` does not affect `claude` or `claude-ghcp` launched from
+this shell: they set their own token for each command they run.
 
 ### 3. Install and start LiteLLM
 
-In the same shell as step 2:
+In **terminal A**, in the same shell as step 2, install the local runtime once.
+`npm run litellm:setup` downloads LiteLLM v1.97.0 into `.runtime/` and creates a master key
+there:
 
 ```bash
-npm run litellm:setup   # once: LiteLLM v1.97.0 into .runtime/, plus a master key
+npm run litellm:setup
+```
+
+If setup fails, resolve the error before continuing. When it succeeds, start the server:
+
+```bash
 npm run litellm:start
 ```
 
@@ -169,29 +224,47 @@ LiteLLM listens on `127.0.0.1:4000`. `LITELLM_HOST` and `LITELLM_PORT` change th
 and `LITELLM_CONFIG` changes the config file. Keep this terminal open. It prints
 `Application startup complete` when LiteLLM is ready.
 
-LiteLLM reads the token once, at startup. Whenever the bridge is replaced, restart LiteLLM
-(Ctrl-C, then `npm run litellm:start`) with the new token; see
-[When the Bridge Is Replaced](#when-the-bridge-is-replaced).
+LiteLLM reads the token once, at startup, from terminal A's shell. Whenever the bridge is
+replaced, restart it in terminal A: press Ctrl-C, get the new token, then run
+`npm run litellm:start`; see [When the Bridge Is Replaced](#when-the-bridge-is-replaced).
 
 ### 4. Connect Claude Code
 
-In a second terminal:
+In **terminal B**, enter the same repository root as terminal A. Keep terminal A running.
+Load the local key and check gateway access:
 
 ```bash
 export LITELLM_BASE_URL="http://127.0.0.1:4000"
 export LITELLM_API_KEY="$(tr -d '\n' < .runtime/litellm-master-key)"
 export LITELLM_MODEL="claude-sonnet-5"
 
+printf 'Authorization: Bearer %s\n' "$LITELLM_API_KEY" |
+  curl --silent --show-error --fail -H @- "$LITELLM_BASE_URL/v1/models"
+```
+
+Continue only when the list contains `claude-sonnet-5`. If the key file is missing, check
+that terminal B is in the right checkout and step 3 succeeded. For connection or HTTP
+errors, inspect terminal A and [Troubleshooting](#troubleshooting).
+
+```bash
 ./bin/claude-litellm
 ```
 
-Everything in [Connect to an Existing Gateway](#connect-to-an-existing-gateway) applies,
-with the local URL and the master key.
+Ask `Reply with OK` to check one real response, then use `/exit` to leave the client.
+This consumes Copilot allowance and does not establish full end-to-end compatibility.
+The rules in [Connect to an Existing Gateway](#connect-to-an-existing-gateway) also apply.
+That section also says where this launch keeps its settings file, which here holds the
+master key.
 
-The master key controls the whole gateway, so give other people
-[virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys) instead. Other people can
-reach the gateway only if you set `LITELLM_HOST` to a network address. Every request they
-send then uses your Copilot seat.
+This project does not recommend sharing the gateway: every request anyone sends through it
+runs on your one Copilot seat and your organization's policy
+([Is it right for you?](../README.md#is-it-right-for-you)). Others can reach it only if you
+set `LITELLM_HOST` to a network address. If you share it anyway, never hand out the master
+key, which controls the whole gateway; give each person a
+[virtual key](https://docs.litellm.ai/docs/proxy/virtual_keys) instead. Virtual keys need a
+PostgreSQL database set with `DATABASE_URL`; without one, LiteLLM's `/key/generate` fails
+with `DB not connected`. The example config and `npm run litellm:start` set up no database,
+and this repository does not test one.
 
 ### 5. Optional: change the config
 
@@ -223,22 +296,54 @@ general_settings:
 
 ### 6. Stop
 
-Press Ctrl-C in the LiteLLM terminal. `./bin/claude-ghcp-stop` stops the bridge, along with
-any replaced bridge that is still running, and deletes `bridge.log`. Every `claude` or
-`claude-ghcp` session on this machine that uses those bridges (all but print-mode runs)
-loses its connection. Neither the bridge nor LiteLLM starts again by itself after a reboot,
-so repeat steps 2 and 3.
+Press Ctrl-C in terminal A to stop LiteLLM.
+
+To stop the bridge as well, first save any `bridge.log` lines you need
+([Diagnostics](DIAGNOSTICS.md)), then run `./bin/claude-ghcp-stop`. It stops the bridge and
+any replaced bridge that is still running, and deletes `bridge.log` and the per-launch
+settings files. Every `claude` or `claude-ghcp` session on this machine that uses those
+bridges (all but print-mode runs) loses its connection. It does not touch the settings
+files `claude-litellm` keeps, which hold the LiteLLM key they were launched with
+([where](#connect-to-an-existing-gateway)).
+
+Neither the bridge nor LiteLLM starts again by itself after a reboot. To restart the
+gateway, open terminal A, repeat step 2 there, then run `npm run litellm:start` in the same
+shell. Setup does not need to run again.
+
+Stopping services does not undo step 1 or remove `.runtime/` and its master key. If you
+are finished operating the gateway, remove the `GHCP_BRIDGE_PORT=4142` line you added to
+your shell profile and run `unset GHCP_BRIDGE_PORT` in every terminal still open. Keep the
+profile setting if you intend to restart the gateway.
+
+Keep `.runtime/` too if you will run the gateway again. To remove it, first stop LiteLLM
+(Ctrl-C in terminal A) and copy out any file you added under `.runtime/` yourself. Then run
+this from the root of this checkout; it deletes only this checkout's `.runtime/`, master
+key included:
+
+```bash
+[ -f scripts/setup-litellm.sh ] && rm -rf .runtime
+```
+
+Afterwards, `npm run litellm:start` refuses to start until you run `npm run litellm:setup`
+again. Setup downloads LiteLLM again and creates a new master key, so reload
+`LITELLM_API_KEY` in terminal B after it. The settings files that `claude-litellm` kept
+still contain the old master key; delete
+`${XDG_STATE_HOME:-~/.local/state}/claude-code-ghcp-sdk/litellm-settings/` as well if you
+want no copy of it left.
 
 ## When the Bridge Is Replaced
 
 The gateway breaks when the bridge on port 4142 goes away or gets a new token. LiteLLM
-keeps the token it read at startup, so every fix ends with a LiteLLM restart.
+keeps the token it read at startup, so run every fix below in terminal A, in this order:
+press Ctrl-C if LiteLLM is still running, get the token as the row says (step 2 or
+`bridge.json`), then run `npm run litellm:start`. LiteLLM reads the token only from the
+shell that starts it, so exporting it in terminal B has no effect.
 
 | Cause | What LiteLLM gets | Fix |
 |---|---|---|
-| A `claude` or `claude-ghcp` launch (not `-p`) without `GHCP_BRIDGE_PORT=4142`, or with another `--bridge-port`. A plain `claude` counts when this checkout's `bin/` is on your PATH. | Nothing at first. The launch starts a new bridge on another port, and the old bridge keeps answering LiteLLM. The old bridge exits once no launcher that started on it is still running and it has had no request for `RETIRED_IDLE_MS` (1 hour by default). LiteLLM's own requests count, so this happens after LiteLLM has been idle that long. From then on, LiteLLM's connections to port 4142 are refused. | Re-run step 2 in the gateway shell, then restart LiteLLM. Do step 1 so it does not happen again. |
-| A launch or `ensure` on port 4142 after the bridge's configuration changed: an edit or a pull that changes `src/*.mjs`, `package.json` or `package-lock.json`, a launch from a moved, renamed or second clone, or a bridge variable such as `LOG_LEVEL`, `COPILOT_*` or `HOME` that is set, unset or changed. | `401 authentication_error` with `Invalid bridge credential.`, at once. The old bridge is stopped, and the new bridge on port 4142 has a new token. | Read the new token from `bridge.json` (below), export it as `GHCP_BRIDGE_TOKEN`, then restart LiteLLM. |
-| `./bin/claude-ghcp-stop`, or a reboot | Its connections to port 4142 are refused. | Re-run step 2, then restart LiteLLM. |
+| A `claude` or `claude-ghcp` launch (not `-p`) without `GHCP_BRIDGE_PORT=4142`, or with another `--bridge-port`. A plain `claude` counts when this checkout's `bin/` is on your PATH. | Nothing at first. The launch starts a new bridge on another port, and the old bridge keeps answering LiteLLM. The old bridge exits once no launcher that started on it is still running and it has had no request for `RETIRED_IDLE_MS` (1 hour by default). LiteLLM's own requests count, so this happens after LiteLLM has been idle that long. From then on, LiteLLM's connections to port 4142 are refused. | In terminal A, press Ctrl-C if LiteLLM is still running, re-run step 2, then run `npm run litellm:start`. Apply step 1's `export` in every terminal so it does not happen again. |
+| A launch or `ensure` on port 4142 after the bridge's configuration changed: an edit or a pull that changes `src/*.mjs`, `package.json` or `package-lock.json`, a launch from a moved, renamed or second clone, or a bridge variable such as `LOG_LEVEL`, `COPILOT_*` or `HOME` that is set, unset or changed. | `401 authentication_error` with `Invalid bridge credential.`, at once. The old bridge is stopped, and the new bridge on port 4142 has a new token. | In terminal A, press Ctrl-C if LiteLLM is still running, export the new token from `bridge.json` (below) as `GHCP_BRIDGE_TOKEN`, then run `npm run litellm:start`. |
+| `./bin/claude-ghcp-stop`, or a reboot | Its connections to port 4142 are refused. | In terminal A, press Ctrl-C if LiteLLM is still running, re-run step 2, then run `npm run litellm:start`. |
 
 `./bin/claude-ghcp-status` tells the rows apart. A `port` other than 4142 means the first
 row. `"running": false` means the third. It never prints the token.
@@ -251,8 +356,10 @@ The token is in `bridge.json`, in the bridge's daemon directory:
 | macOS | `~/Library/Caches/claude-code-ghcp-sdk/bridge.json` |
 | Linux | `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk/bridge.json` |
 
+In terminal A, after pressing Ctrl-C, run this on macOS, then `npm run litellm:start`. On
+Linux, or with `GHCP_DAEMON_DIR` set, replace the path with the one from the table:
+
 ```bash
-# macOS path shown; use the path from the table for your system.
 export GHCP_BRIDGE_TOKEN="$(node -pe \
   'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).token' \
   ~/Library/Caches/claude-code-ghcp-sdk/bridge.json)"
@@ -282,13 +389,13 @@ counts as a configuration change is in
 - **Sampling controls.** `temperature`, `top_p`, `max_tokens` and `stop_sequences` have no
   effect on either path; see [Unsupported Controls](COMPATIBILITY.md#unsupported-controls).
 - **Errors.** The bridge returns the same statuses as on the Direct path; see
-  [Upstream Errors](ARCHITECTURE.md#upstream-errors) and
+  [Upstream Errors](DIAGNOSTICS.md#upstream-errors) and
   [Rate limits and timeouts](../README.md#rate-limits-and-timeouts). On a streamed request,
   a failure before the first streamed text, reasoning or tool-call delta gets that HTTP
   status. A failure after it arrives as an `event: error` frame with the same error type, on
   a response whose status is already `200`. Each failed `/v1/messages` request writes a
   `bridge.request_failed` line to `bridge.log` in the daemon directory
-  ([Logging](ARCHITECTURE.md#logging)).
+  ([Logging](DIAGNOSTICS.md#logging)).
 
 ## What Is Not Tested
 
@@ -299,7 +406,7 @@ the example config. Everything this page says about LiteLLM's own behaviour (the
 builds, the headers it forwards, the names it rejects, how it answers `count_tokens`, how it
 prices requests) is written for v1.97.0, the version `npm run litellm:setup` installs, and
 is not tested. Whether LiteLLM passes a bridge `429` or `529` to its client unchanged, or
-retries it first, is not tested either. For what the matrix does cover, see
+retries it first, is not tested either. For the six-scenario live suite's scope, see
 [What works and what does not](../README.md#what-works-and-what-does-not).
 
 ## Troubleshooting
@@ -307,14 +414,15 @@ retries it first, is not tested either. For what the matrix does cover, see
 ### `GHCP_BRIDGE_URL is required: the bridge root, with no /v1 suffix.`
 
 `npm run litellm:start` ran in a shell without the variables from
-[step 2](#2-start-the-bridge-and-capture-its-token). Run it in the shell where you ran
-step 2.
+[step 2](#2-start-the-bridge-and-capture-its-token). Run it in terminal A, the shell where
+you ran step 2.
 
 ### `GHCP_BRIDGE_TOKEN is required: the token printed by bridge-daemon ensure.`
 
-Either `npm run litellm:start` ran in another shell, or step 2's `ensure` failed and left
-the token unset. Run it in the step 2 shell. If the token is missing there too, re-run
-[step 2](#2-start-the-bridge-and-capture-its-token) and read the reason `ensure` prints.
+Either `npm run litellm:start` ran in a shell other than terminal A, or step 2's `ensure`
+failed and left the token unset. Run it in terminal A. If the token is missing there too,
+re-run [step 2](#2-start-the-bridge-and-capture-its-token) in terminal A and read the reason
+`ensure` prints.
 
 ### `GHCP_BRIDGE_URL must not end in /v1; LiteLLM appends /v1/messages.`
 
@@ -335,8 +443,9 @@ stopped or the machine rebooted. Both fixes are in
 ### `401` `authentication_error`: `Invalid bridge credential.`
 
 LiteLLM is using an old token. Either the bridge on 4142 was replaced, or LiteLLM was
-started with a token exported in another shell. Export the current token from
-`bridge.json` and restart LiteLLM; see
+started with a different token in a shell other than terminal A. In terminal A, press
+Ctrl-C if LiteLLM is still running, export the current token from `bridge.json` as
+`GHCP_BRIDGE_TOKEN`, then run `npm run litellm:start`; see
 [When the Bridge Is Replaced](#when-the-bridge-is-replaced).
 
 ### `400 Invalid model name` from LiteLLM
@@ -373,10 +482,16 @@ requests one at a time, as one conversation.
 
 ### LiteLLM does not start because port 4000 is in use
 
-Start LiteLLM on another port and point the client at it:
+In **terminal A**, start LiteLLM on another port and leave it running:
 
 ```bash
 LITELLM_PORT=4001 npm run litellm:start
+```
+
+In **terminal B**, point the client at that port before repeating step 4's model-list check
+and client launch:
+
+```bash
 export LITELLM_BASE_URL="http://127.0.0.1:4001"
 ```
 
