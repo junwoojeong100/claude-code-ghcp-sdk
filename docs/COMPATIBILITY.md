@@ -10,108 +10,109 @@ applied.
 
 ## Feature Lookup
 
-Status:
+Statuses describe implementation support, not a live pass. **Supported** means the
+bridge supports it or Claude Code handles it locally; **differs** points to the
+row's limitations. **Expected** is client behavior expected to keep working that
+the live matrix does not check; its last column is always `no`. **Not supported**
+and **Not possible** are explained in the row and under
+[Structural Limits](#structural-limits).
 
-- **Works**: behaves as it does with Anthropic.
-- **Works, differs**: works, with the difference noted in the row.
-- **Works, not verified live**: expected to work unchanged, but no live check
-  covers it.
-- **Not supported**: this repository does not offer it. The row says why.
-- **Not possible**: needs Anthropic's servers. See
-  [Structural Limits](#structural-limits).
-
-"Verified live" names the [scenario](VERIFICATION.md#scenarios) (v01 to v11)
-with a check that fails if the feature breaks, or says "no". A dash means the
-feature does not work, so there is nothing to verify. All live results
-come from the last full matrix run, on commit `bed30ce`. The README lists
-[what changed after that run](../README.md#verified), and VERIFICATION.md lists
-[what the run does not cover](VERIFICATION.md#not-verified-by-this-run).
+"Live matrix check" identifies the enforced V01–V06 scope, not recorded passes.
+`no` means outside that scope. A full pass requires **6 models × 6 scenarios = 36
+passing slots**, plus integrity, isolation and cleanup gates. For recorded outcomes and their scope, see
+[Verification Results](VERIFICATION.md); for the pass contract, see
+[Testing](TESTING.md#what-a-pass-means). Production offline regressions remain
+separate evidence. The runner starts private direct bridges itself; none of the
+rows below claims live verification of the production launchers or shared daemon.
 
 ### Tools
 
-| Feature | Status | What differs | Verified live |
+| Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
-| Read, Edit, Write | Works | | v02 (Edit), v05 (Read of a PDF and an image), v08 (Write, through a hook that fires only on Write or Edit) |
-| Bash, including long-running commands | Works | | v03, v04 |
-| NotebookEdit | Works, not verified live | | no (v05 checks the notebook, not which tool changed it) |
-| Git and git worktrees | Works | | v04 |
-| Failed tool calls and recovery | Works | | v03, v08 |
-| Several tool calls in one turn | Works, differs | One request can send back at most `MAX_TOOL_RESULTS` (default 32) tool results. A request with more fails with 500 `api_error`. | no |
-| MCP servers and their tools | Works, differs | Every MCP tool's full schema is sent with every request. The Copilot CLI's own MCP servers are kept from starting in the bridge's sessions ([details](ARCHITECTURE.md#copilot-runtime-mcp-servers)). | v07 |
-| MCP tool search (`ToolSearch`) | Works, differs | Off by default. `GHCP_NATIVE_TOOL_SEARCH=1` turns on Claude Code's ToolSearch. The bridge still sends every tool to Copilot, and a tool reference reaches the model as the text `[tool_reference "name"]`. | no |
-| In-session scheduled tasks (`CronCreate`, `CronList`) | Works | | v08 (a job is created and listed, and none fires) |
-| WebFetch | Works, not verified live | Claude Code fetches the page on your machine. | no |
+| Read, Edit, Write | Supported | | V02: hidden sample/source/test Reads and exact discount Edit; no Write |
+| Bash, including long-running commands | Supported | | V02: specified foreground tests, a retest in which all three tests pass, and an independent rerun; no long/background commands |
+| NotebookEdit | Expected | | no |
+| Git and git worktrees | Supported | | no |
+| Failed tool calls and recovery | Supported | | V02: discount regression → Edit → retest; V03: expected MCP ENOENT → hidden lookup → same-process recall |
+| Several tool calls in one turn | Supported, differs | One request can send back at most `MAX_TOOL_RESULTS` (default 32) tool results. A request with more fails with 500 `api_error`. | no |
+| MCP servers and their tools | Supported, differs | Every MCP tool's full schema is sent with every request. The Copilot CLI's own MCP servers are kept from starting in the bridge's sessions ([details](ARCHITECTURE.md#copilot-runtime-mcp-servers)). | V03: CLI-owned local MCP fixture, matching tool IDs/arguments/results and ledger; no external MCP service |
+| MCP tool search (`ToolSearch`) | Supported, differs | Off by default. `GHCP_NATIVE_TOOL_SEARCH=1` turns on Claude Code's ToolSearch. The bridge still sends every tool to Copilot, and a tool reference reaches the model as the text `[tool_reference "name"]`. | no |
+| In-session scheduled tasks (`CronCreate`, `CronList`) | Supported | | no |
+| WebFetch | Expected | Claude Code fetches the page on your machine. | no |
 | WebSearch | Not possible | Anthropic runs it on its servers. | — |
 
 ### Agents and project configuration
 
-| Feature | Status | What differs | Verified live |
+| Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
-| Subagents and project agents (`.claude/agents`) | Works | | v06 |
-| Explore and subagents that name no model | Works, differs | They run on the model you launched with. Without the launcher's settings, Claude Code sends Explore to the Opus model when you launch on a GPT model ([Models](../README.md#models)). | no |
-| CLAUDE.md instructions | Works | | v08 |
-| Hooks, including a hook that denies a tool | Works | | v08 |
-| Custom slash commands, skills, plugins | Works, not verified live | | no (v08 checks only that they are listed, not that they run) |
-| Output styles and custom system prompts | Works, not verified live | Their text reaches the model as system instructions. | no |
-| Permission modes | Works | Claude Code enforces them on your machine. | v02 (plan mode only) |
-| Permission prompts | Works, not verified live | | no (the matrix never shows a permission prompt) |
+| Subagents and project agents (`.claude/agents`) | Supported | | no |
+| Explore and subagents that name no model | Supported, differs | They run on the model you launched with. Without the launcher's settings, Claude Code sends Explore to the Opus model when you launch on a GPT model ([Models](../README.md#models)). | no |
+| CLAUDE.md instructions | Supported | | no |
+| Hooks, including a hook that denies a tool | Supported | | no |
+| Custom slash commands, skills, plugins | Expected | | no |
+| Output styles and custom system prompts | Expected | Their text reaches the model as system instructions. | no |
+| Permission modes | Supported | Claude Code enforces them on your machine. | Scoped tool isolation in V02/V03 and tool-free turns; not all modes or approval dialogs |
+| Permission prompts | Expected | | no |
 | `--settings` on the command line | Not supported | The launcher refuses it, because it could turn off the routing to the bridge. Your own settings files still load ([details](../README.md#your-settings-are-left-alone)). | — |
 
 ### Models
 
-| Feature | Status | What differs | Verified live |
+| Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
-| `/model` list | Works, differs | Shows the six GitHub Copilot models ([Models](../README.md#models)). | no |
-| `--ghcp-model` and `GHCP_MODEL` | Works, differs | They replace Claude Code's `--model`, which the launcher refuses. | v11 (`--ghcp-model`) |
-| `/effort`, `--effort`, Ultracode | Works, differs | Forwarded to Copilot. A level the model does not list is replaced by one it does, and Ultracode is sent as `xhigh` ([Models](../README.md#models)). | no |
-| Which model answered | Works, differs | Claude Code shows the model it asked for. The `bridge.turn_completed` log line records the model Copilot served ([Logging](ARCHITECTURE.md#logging)). | no (the checks read the model Claude Code requested) |
-| Models outside the six | Works, not verified live | Pass any ID that `./bin/ghcp-models` lists to `--ghcp-model`. | no |
+| `/model` list | Supported, differs | Shows the six GitHub Copilot models ([Models](../README.md#models)). | V01: six-model native picker; V04: same-session switch from a different source model to the target |
+| `--ghcp-model` and `GHCP_MODEL` | Supported, differs | They replace Claude Code's `--model`, which the launcher refuses. | no: production launcher is not exercised |
+| `/effort`, `--effort`, Ultracode | Supported, differs | Forwarded to Copilot. A level the model does not list is replaced by one it does, and Ultracode is sent as `xhigh` ([Models](../README.md#models)). | V04: High effort and actual SDK state on supported targets, no applied effort on Haiku; not every level, flag or Ultracode |
+| Which model answered | Supported, differs | Claude Code shows the model it asked for. The `servedModels` field of the `bridge.turn_completed` log line lists the models that SDK usage reported; an empty list means unknown. This checks SDK-reported IDs, not the provider's internal implementation ([reading the log](DIAGNOSTICS.md#read-the-key-fields)). | V01–V06 completed responses: every SDK-reported ID correlated by response ID and expected phase model |
+| Models outside the six | Expected | Pass any ID that `./bin/ghcp-models` lists to `--ghcp-model`. | no |
 
 ### Sessions and context
 
-| Feature | Status | What differs | Verified live |
+| Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
-| Interactive sessions | Works, not verified live | They use the shared [background bridge](../README.md#the-background-bridge). | no |
-| Print mode (`-p`) and `stream-json` | Works, differs | `-p` gets a private bridge that stops when the launcher exits. With `--background` or `agents` it uses the background bridge instead. | v01 to v10 (all run with `-p` and `stream-json` output), v01 (`stream-json` input), v11 (the private bridge) |
-| `--resume`, `--continue`, `--fork-session` | Works, differs | When the running bridge has no Copilot session for the conversation (for example after a restart), it replays the saved history, keeping the newest messages up to `MAX_REPLAY_BYTES`. | v09 (`--resume` and `--fork-session`) |
-| `/rewind` and edited history | Works, not verified live | When the history no longer matches, the bridge drops its Copilot session and starts a new one from the history Claude Code sends. | no |
-| `--background` and the `agents` view | Works, differs | Every launch except `-p` shares one background bridge, which keeps running after Claude Code exits ([details](../README.md#the-background-bridge)). | v11 |
-| `/background` from an interactive session | Works, not verified live | Uses the same background bridge. | no |
-| Large context | Works, differs | On five of the six models, Copilot accepts fewer input tokens than the window Claude Code plans for ([Models](../README.md#models)). | v10 (a large prompt, not a full window) |
-| Compaction (`/compact` and automatic) | Works, differs | Claude Code still compacts. When Copilot would start dropping history on its own, the bridge fails the turn with a 400 `prompt is too long` error so that Claude Code compacts ([Long conversations](../README.md#long-conversations)). | no |
-| Token counts | Works, differs | After a reply they are Copilot's actual usage, with cached input split into Anthropic's cache fields. Counting before a reply (`/v1/messages/count_tokens`) is an estimate, request JSON length ÷ 4, labeled by the header `x-ghcp-token-count-method: estimated`. | v01 to v10 (usage is reported), v10 (the whole prompt is counted) |
+| Interactive sessions | Supported, differs | Production launches use the shared [background bridge](../README.md#the-background-bridge). | V01, V03–V06: native PTY interaction through private direct bridges, not the shared daemon |
+| Print mode (`-p`) and `stream-json` | Supported, differs | `-p` gets a private bridge that stops when the launcher exits. With `--background` or `agents` it uses the background bridge instead. | V01: exact print response; V02: coding/tool results; not launcher lifecycle |
+| `--resume`, `--continue`, `--fork-session` | Supported, differs | When the running bridge has no Copilot session for the conversation (for example after a restart), it replays the saved history, keeping the newest messages up to `MAX_REPLAY_BYTES`. | V06: exact-session --resume in a new CLI and private bridge after normal exit/cleanup; no --continue, fork, crash or in-flight recovery |
+| `/clear` | Supported | Claude Code starts a fresh conversation. | V01: new session ID and old conversation absent from the next request |
+| `/rewind` and edited history | Expected | When the history no longer matches, the bridge drops its Copilot session and starts a new one from the history Claude Code sends. | no |
+| `--background` and the `agents` view | Supported, differs | Every launch except `-p` shares one background bridge, which keeps running after Claude Code exits ([details](../README.md#the-background-bridge)). | no |
+| `/background` from an interactive session | Expected | Uses the same background bridge. | no |
+| Large context | Supported, differs | The Copilot runtime input limit can be lower than the window Claude Code plans for ([Models](../README.md#models)). | no |
+| Compaction (`/compact` and automatic) | Supported, differs | Claude Code still compacts. When Copilot would start dropping history on its own, the bridge fails the turn with a 400 `prompt is too long` error so that Claude Code compacts ([Long conversations](../README.md#long-conversations)). | V06: manual /compact summary request and native boundary, recall from a new SDK session sent the compacted history without the seed prompt, and exact recall again after cold resume; no automatic overflow compaction |
+| Token counts | Supported, differs | After a reply they use SDK-reported usage, estimating only missing values and splitting cached input into Anthropic's cache fields. Counting before a reply (`/v1/messages/count_tokens`) is an estimate, request JSON length ÷ 4, labeled by the header `x-ghcp-token-count-method: estimated`. | V01–V06 completed responses: valid usage and input/output activity, not token-count accuracy |
 | Prompt caching | Not possible | `cache_control` markers have no effect. The cache fields report Copilot's own cache. | — |
 
 ### Input and output
 
-| Feature | Status | What differs | Verified live |
+| Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
-| Streaming | Works | | v01 to v10 |
-| `--json-schema` | Works, differs | Claude Code checks the result against the schema and retries on its own. The bridge does not apply `output_config.format`. | v10 |
-| Images and PDFs that a tool reads | Works | Sent to Copilot as attachments. Whether a model accepts them depends on the model. | v05 |
-| Images and PDFs in the prompt | Works, not verified live | Sent to Copilot as attachments. | no |
+| Streaming | Supported | | V01/V02: completed print streams and tool round trips; V05: actual streaming interrupted by Escape with same-process recovery; not every SSE frame boundary |
+| Unicode text | Supported | | V01: exact fresh Unicode response in the native terminal |
+| `--json-schema` | Supported, differs | Claude Code checks the result against the schema and retries on its own. The bridge does not apply `output_config.format`. | no |
+| Images and PDFs that a tool reads | Supported | Sent to Copilot as attachments. Whether a model accepts them depends on the model. | no |
+| Images and PDFs in the prompt | Expected | Sent to Copilot as attachments. | no |
 | Extended thinking | Not possible | The `thinking` field is ignored and replies carry no thinking blocks. Reasoning effort is forwarded instead. | — |
-| Interrupting a reply (Esc) | Works, not verified live | A queued request is dropped, and a running Copilot turn is stopped. | no |
+| Interrupting a reply (Esc) | Supported | A queued request is dropped, and a running Copilot turn is stopped. | V05: Escape during active streaming, correlated client_abort and acknowledged SDK abort, exact recovery in the same native process/session |
 
 ### Errors and request controls
 
-| Feature | Status | What differs | Verified live |
+| Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
-| Copilot rate limits and outages | Works, differs | Copilot retries first, and nothing streams while it waits. What still fails reaches Claude Code as 429 or 529, which it retries ([status table](ARCHITECTURE.md#upstream-errors)). | no (`npm test`, and a one-off check recorded in [Verification history](VERIFICATION_HISTORY.md)) |
-| Long or stalled turns | Works, differs | By default a turn fails after 5 minutes without model progress or 30 minutes in total ([timeouts](../README.md#rate-limits-and-timeouts)). | no |
-| `tool_choice` | Works, differs | Emulated by filtering tools and adding an instruction ([Unsupported Controls](#unsupported-controls)). | no |
+| Copilot rate limits and outages | Supported, differs | Copilot retries first, and nothing streams while it waits. What still fails reaches Claude Code as 429 or 529, which it retries ([status table](DIAGNOSTICS.md#upstream-errors)). | no |
+| Long or stalled turns | Supported, differs | By default a turn fails after 5 minutes without model progress or 30 minutes in total ([timeouts](../README.md#rate-limits-and-timeouts)). | no |
+| `tool_choice` | Supported, differs | Emulated by filtering tools and adding an instruction ([Unsupported Controls](#unsupported-controls)). | no |
 | `temperature`, `top_p`, `max_tokens`, `stop_sequences` | Not possible | Accepted but not applied ([Unsupported Controls](#unsupported-controls)). | — |
 
 ### Where Claude Code runs
 
-| Feature | Status | What differs | Verified live |
+| Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
-| `claude-ghcp` in an IDE's integrated terminal (VS Code, JetBrains) | Works, not verified live | Same as any other terminal. | no |
+| `claude-ghcp` in an IDE's integrated terminal (VS Code, JetBrains) | Expected | Same as any other terminal. | no |
 | Claude Code started by an IDE extension or Claude Desktop | Not supported | It does not use this repository's launcher, so its requests do not go through the bridge. | — |
 | The Windows default shell | Not supported | The launchers are bash scripts. | — |
 | Remote Control | Not possible | Claude Code turns it off when `ANTHROPIC_BASE_URL` is not Anthropic's. | — |
 | Claude Code on the web, `--cloud`, `--teleport`, mobile sessions, cloud ultrareview | Not possible | They run on Anthropic's machines and never reach the bridge. | — |
 | Artifacts, routines, Desktop scheduled tasks, Anthropic Analytics, billing, SSO/SCIM | Not possible | Anthropic account services ([Structural Limits](#structural-limits)). | — |
+
 
 ## Structural Limits
 

@@ -39,19 +39,3 @@ export async function deleteClientSession(client, sessionId) {
     await client.deleteSession(sessionId);
   }
 }
-
-export async function getSessionUsage(session) {
-  const method = rpcMethod(session, ["usage", "getMetrics"]);
-  return method ? method() : null;
-}
-
-export async function compactSessionHistory(session, options) {
-  const method = rpcMethod(session, ["history", "compact"]);
-  if (!method) return null;
-  return options === undefined ? method() : method(options);
-}
-
-export async function rewindSessionHistory(session, options) {
-  const method = rpcMethod(session, ["history", "rewind"]);
-  return method ? method(options) : null;
-}

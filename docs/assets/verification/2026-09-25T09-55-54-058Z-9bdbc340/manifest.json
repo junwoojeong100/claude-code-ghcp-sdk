@@ -1,0 +1,666 @@
+{
+  "schema": "ghcp-render-manifest",
+  "version": 1,
+  "label": "Edited replay of real PTY recordings",
+  "notice": "Stills and video are edited replays of output-only PTY recordings sealed in the run's artifact manifest; the results card is rendered from stored evidence. Neither is verification evidence.",
+  "run": {
+    "id": "2026-09-25T09-55-54-058Z-9bdbc340",
+    "green": false,
+    "counts": {
+      "pass": 35,
+      "fail": 1,
+      "blocked": 0,
+      "unknown": 0
+    },
+    "expectedTotal": 36,
+    "problems": 1
+  },
+  "tools": {
+    "node": "v22.16.0",
+    "xtermHeadless": "6.0.0",
+    "playwrightCore": "1.63.0-alpha-2026-08-31",
+    "chrome": "153.0.8010.54",
+    "ffmpeg": "ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers",
+    "ffprobe": "ffprobe version 8.0.1 Copyright (c) 2007-2025 the FFmpeg developers",
+    "encoder": "libx264"
+  },
+  "redaction": {
+    "rules": [
+      {
+        "id": "home",
+        "placeholder": "[home]",
+        "description": "home directory path",
+        "count": 0
+      },
+      {
+        "id": "varFolders",
+        "placeholder": "[tmp]",
+        "description": "/var/folders or /private/var/folders path",
+        "count": 612
+      },
+      {
+        "id": "tmp",
+        "placeholder": "[tmp]",
+        "description": "/tmp or /private/tmp path",
+        "count": 0
+      },
+      {
+        "id": "secretKey",
+        "placeholder": "[token]",
+        "description": "sk- (full or masked sk-...tail), gh*_ or github_pat_ key",
+        "count": 0
+      },
+      {
+        "id": "longToken",
+        "placeholder": "[token]",
+        "description": "32+ character hex/base64url run with letters and digits",
+        "count": 949
+      },
+      {
+        "id": "username",
+        "placeholder": "[user]",
+        "description": "local account name",
+        "count": 0
+      }
+    ],
+    "note": "Counts only; redacted values are never stored."
+  },
+  "outputs": [
+    {
+      "file": "still-01-results-summary.png",
+      "bytes": 84175,
+      "sha256": "c5240b000e1adc9d953ce1ce34089ee737025e8192df68d118fb23e4314fb289",
+      "width": 1280,
+      "height": 553,
+      "kind": "summary",
+      "green": false,
+      "counts": {
+        "pass": 35,
+        "fail": 1,
+        "blocked": 0,
+        "unknown": 0
+      },
+      "expectedTotal": 36,
+      "problems": 1,
+      "redactions": {
+        "home": 0,
+        "varFolders": 0,
+        "tmp": 0,
+        "secretKey": 0,
+        "longToken": 0,
+        "username": 0
+      }
+    },
+    {
+      "file": "still-02-v01-unicode-answer.png",
+      "bytes": 58790,
+      "sha256": "b76ef0e76fee399e5e3f54820795cf88f63139cc9d66139225204b39e527e766",
+      "width": 1377,
+      "height": 874,
+      "kind": "still",
+      "slot": "gpt-6-sol__V01",
+      "model": "gpt-6-sol",
+      "scenario": "V01",
+      "slotOutcome": "pass",
+      "phase": "unicode",
+      "atMs": 10250,
+      "source": {
+        "path": "slots/gpt-6-sol__V01/terminal-output-d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40.jsonl",
+        "sha256": "53c5482ad9f4427b48a13d5c8144d2efe5012bfcdce9b406a4044d1bf6c910cf",
+        "bytes": 33917,
+        "launch": "d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40",
+        "endMs": 14129.671,
+        "capture": {
+          "complete": true,
+          "truncated": false,
+          "error": null
+        }
+      },
+      "redactions": {
+        "home": 0,
+        "varFolders": 1,
+        "tmp": 0,
+        "secretKey": 0,
+        "longToken": 3,
+        "username": 0
+      }
+    },
+    {
+      "file": "still-03-v04-model-switch.png",
+      "bytes": 90375,
+      "sha256": "734c47fa7f8e8158db6aea40ced9733d952bc7d4c73d7ab114d4eb3ebd7e54dc",
+      "width": 1377,
+      "height": 874,
+      "kind": "still",
+      "slot": "claude-sonnet-5__V04",
+      "model": "claude-sonnet-5",
+      "scenario": "V04",
+      "slotOutcome": "pass",
+      "phase": "target",
+      "atMs": 13400,
+      "source": {
+        "path": "slots/claude-sonnet-5__V04/terminal-output-4dd864f0-9c74-44bb-928f-39808e8cd266.jsonl",
+        "sha256": "ce6f854862bfd1a3d0e2c137fa4bb5d51c594a308d5e771733c99fdec8eb110a",
+        "bytes": 31604,
+        "launch": "4dd864f0-9c74-44bb-928f-39808e8cd266",
+        "endMs": 13645.215,
+        "capture": {
+          "complete": true,
+          "truncated": false,
+          "error": null
+        }
+      },
+      "redactions": {
+        "home": 0,
+        "varFolders": 1,
+        "tmp": 0,
+        "secretKey": 0,
+        "longToken": 4,
+        "username": 0
+      }
+    },
+    {
+      "file": "still-04-v05-interrupt-continue.png",
+      "bytes": 65053,
+      "sha256": "5439b65d3453551bdebb35ee6529ea3b062eaeddfccbbf56a796d1094ca3f750",
+      "width": 1377,
+      "height": 874,
+      "kind": "still",
+      "slot": "claude-opus-5.5__V05",
+      "model": "claude-opus-5.5",
+      "scenario": "V05",
+      "slotOutcome": "pass",
+      "phase": "recovery",
+      "atMs": 11620,
+      "source": {
+        "path": "slots/claude-opus-5.5__V05/terminal-output-784d8377-6277-418e-9cc0-4b90b22c025b.jsonl",
+        "sha256": "cfa0136e94d80641dc88d9c22469fb4e67bbc0d4a3f971e4554ffbebee409c7f",
+        "bytes": 20090,
+        "launch": "784d8377-6277-418e-9cc0-4b90b22c025b",
+        "endMs": 11813.498,
+        "capture": {
+          "complete": true,
+          "truncated": false,
+          "error": null
+        }
+      },
+      "redactions": {
+        "home": 0,
+        "varFolders": 1,
+        "tmp": 0,
+        "secretKey": 0,
+        "longToken": 2,
+        "username": 0
+      }
+    },
+    {
+      "file": "still-05-v06-cold-resume.png",
+      "bytes": 58749,
+      "sha256": "a74a313b149910309507d56a3f2ff29049d8981b0d832db2e2ca40bfad0e3ba7",
+      "width": 1377,
+      "height": 874,
+      "kind": "still",
+      "slot": "gpt-6-luna__V06",
+      "model": "gpt-6-luna",
+      "scenario": "V06",
+      "slotOutcome": "pass",
+      "phase": "resume",
+      "atMs": 4150,
+      "source": {
+        "path": "slots/gpt-6-luna__V06/terminal-output-39561e38-5a37-4ae5-9538-c18920100438.jsonl",
+        "sha256": "f5096370b519145d87d83420e2379e46cd56489ef2f6f7124c704343327bfc93",
+        "bytes": 9953,
+        "launch": "39561e38-5a37-4ae5-9538-c18920100438",
+        "endMs": 4318.594,
+        "capture": {
+          "complete": true,
+          "truncated": false,
+          "error": null
+        }
+      },
+      "redactions": {
+        "home": 0,
+        "varFolders": 1,
+        "tmp": 0,
+        "secretKey": 0,
+        "longToken": 2,
+        "username": 0
+      }
+    },
+    {
+      "file": "video.mp4",
+      "bytes": 751281,
+      "sha256": "90640af07497f4b1d288280924f3bea16e7222556990b36c1ac26e36da3eb9af",
+      "kind": "video",
+      "label": "Edited replay of real PTY recordings",
+      "fps": 10,
+      "frames": 610,
+      "uniqueFrames": 425,
+      "durationMs": 61000,
+      "width": 1378,
+      "height": 874,
+      "encoder": "libx264",
+      "probe": {
+        "codec": "h264",
+        "width": 1378,
+        "height": 874,
+        "pixFmt": "yuv420p",
+        "frames": 610,
+        "durationSec": 61,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2"
+      },
+      "redactions": {
+        "home": 0,
+        "varFolders": 608,
+        "tmp": 0,
+        "secretKey": 0,
+        "longToken": 938,
+        "username": 0
+      },
+      "redactionCounting": "replacements summed over every video frame",
+      "segments": [
+        {
+          "index": 0,
+          "slot": "gpt-6-sol__V01",
+          "model": "gpt-6-sol",
+          "scenario": "V01",
+          "slotOutcome": "pass",
+          "phases": [
+            "unicode",
+            "clear"
+          ],
+          "source": {
+            "path": "slots/gpt-6-sol__V01/terminal-output-d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40.jsonl",
+            "sha256": "53c5482ad9f4427b48a13d5c8144d2efe5012bfcdce9b406a4044d1bf6c910cf",
+            "bytes": 33917,
+            "launch": "d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40",
+            "endMs": 14129.671,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 2500,
+            "toMs": 10350
+          },
+          "speed": 1,
+          "frames": 79,
+          "output": {
+            "fromMs": 0,
+            "toMs": 7900
+          },
+          "caption": "V01: exact Unicode answer through the bridge"
+        },
+        {
+          "index": 1,
+          "slot": "gpt-6-sol__V01",
+          "model": "gpt-6-sol",
+          "scenario": "V01",
+          "slotOutcome": "pass",
+          "phases": [
+            "clear"
+          ],
+          "source": {
+            "path": "slots/gpt-6-sol__V01/terminal-output-d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40.jsonl",
+            "sha256": "53c5482ad9f4427b48a13d5c8144d2efe5012bfcdce9b406a4044d1bf6c910cf",
+            "bytes": 33917,
+            "launch": "d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40",
+            "endMs": 14129.671,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 10350,
+            "toMs": 13950
+          },
+          "speed": 1,
+          "frames": 36,
+          "output": {
+            "fromMs": 7900,
+            "toMs": 11500
+          },
+          "caption": "V01: /clear starts a fresh conversation"
+        },
+        {
+          "index": 2,
+          "slot": "claude-sonnet-5__V04",
+          "model": "claude-sonnet-5",
+          "scenario": "V04",
+          "slotOutcome": "pass",
+          "phases": [
+            "source",
+            "target"
+          ],
+          "source": {
+            "path": "slots/claude-sonnet-5__V04/terminal-output-4dd864f0-9c74-44bb-928f-39808e8cd266.jsonl",
+            "sha256": "ce6f854862bfd1a3d0e2c137fa4bb5d51c594a308d5e771733c99fdec8eb110a",
+            "bytes": 31604,
+            "launch": "4dd864f0-9c74-44bb-928f-39808e8cd266",
+            "endMs": 13645.215,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 4400,
+            "toMs": 13450
+          },
+          "speed": 1,
+          "frames": 91,
+          "output": {
+            "fromMs": 11500,
+            "toMs": 20600
+          },
+          "caption": "V04: GPT-6 Astra answers, then /model and /effort switch to Sonnet 5 in the same conversation"
+        },
+        {
+          "index": 3,
+          "slot": "claude-opus-5.5__V05",
+          "model": "claude-opus-5.5",
+          "scenario": "V05",
+          "slotOutcome": "pass",
+          "phases": [
+            "interrupt",
+            "recovery"
+          ],
+          "source": {
+            "path": "slots/claude-opus-5.5__V05/terminal-output-784d8377-6277-418e-9cc0-4b90b22c025b.jsonl",
+            "sha256": "cfa0136e94d80641dc88d9c22469fb4e67bbc0d4a3f971e4554ffbebee409c7f",
+            "bytes": 20090,
+            "launch": "784d8377-6277-418e-9cc0-4b90b22c025b",
+            "endMs": 11813.498,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 3700,
+            "toMs": 11650
+          },
+          "speed": 1,
+          "frames": 80,
+          "output": {
+            "fromMs": 20600,
+            "toMs": 28600
+          },
+          "caption": "V05: Esc interrupts a streaming reply; the same session answers next"
+        },
+        {
+          "index": 4,
+          "slot": "gpt-6-astra__V03",
+          "model": "gpt-6-astra",
+          "scenario": "V03",
+          "slotOutcome": "pass",
+          "phases": [
+            "lookup",
+            "recall"
+          ],
+          "source": {
+            "path": "slots/gpt-6-astra__V03/terminal-output-e9869f00-82cc-4bbc-80e9-635df5e5d844.jsonl",
+            "sha256": "d2b8ec01f79efbb1699cc287d0a25ec89e1ab844522846274a8952622890e56a",
+            "bytes": 35037,
+            "launch": "e9869f00-82cc-4bbc-80e9-635df5e5d844",
+            "endMs": 16664.239,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 4600,
+            "toMs": 16550
+          },
+          "speed": 1,
+          "frames": 120,
+          "output": {
+            "fromMs": 28600,
+            "toMs": 40600
+          },
+          "caption": "V03: MCP lookup recovers from ENOENT, then recalls the value without tools"
+        },
+        {
+          "index": 5,
+          "slot": "gpt-6-luna__V06",
+          "model": "gpt-6-luna",
+          "scenario": "V06",
+          "slotOutcome": "pass",
+          "phases": [
+            "seed",
+            "compact"
+          ],
+          "source": {
+            "path": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "sha256": "249cf139caf685aa9984e0bb5044e43d17ddc91b6f7dca6d59fc392f146295c0",
+            "bytes": 49744,
+            "launch": "2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8",
+            "endMs": 25487.693,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 4400,
+            "toMs": 15000
+          },
+          "speed": 1,
+          "frames": 106,
+          "output": {
+            "fromMs": 40600,
+            "toMs": 51200
+          },
+          "caption": "V06: seed a value, then native /compact"
+        },
+        {
+          "index": 6,
+          "slot": "gpt-6-luna__V06",
+          "model": "gpt-6-luna",
+          "scenario": "V06",
+          "slotOutcome": "pass",
+          "phases": [
+            "compact",
+            "recall"
+          ],
+          "source": {
+            "path": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "sha256": "249cf139caf685aa9984e0bb5044e43d17ddc91b6f7dca6d59fc392f146295c0",
+            "bytes": 49744,
+            "launch": "2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8",
+            "endMs": 25487.693,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 15000,
+            "toMs": 21800
+          },
+          "speed": 2,
+          "frames": 34,
+          "output": {
+            "fromMs": 51200,
+            "toMs": 54600
+          },
+          "caption": "V06: compaction in progress"
+        },
+        {
+          "index": 7,
+          "slot": "gpt-6-luna__V06",
+          "model": "gpt-6-luna",
+          "scenario": "V06",
+          "slotOutcome": "pass",
+          "phases": [
+            "recall"
+          ],
+          "source": {
+            "path": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "sha256": "249cf139caf685aa9984e0bb5044e43d17ddc91b6f7dca6d59fc392f146295c0",
+            "bytes": 49744,
+            "launch": "2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8",
+            "endMs": 25487.693,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 21800,
+            "toMs": 25300
+          },
+          "speed": 1,
+          "frames": 35,
+          "output": {
+            "fromMs": 54600,
+            "toMs": 58100
+          },
+          "caption": "V06: recall after compaction"
+        },
+        {
+          "index": 8,
+          "slot": "gpt-6-luna__V06",
+          "model": "gpt-6-luna",
+          "scenario": "V06",
+          "slotOutcome": "pass",
+          "phases": [
+            "resume"
+          ],
+          "source": {
+            "path": "slots/gpt-6-luna__V06/terminal-output-39561e38-5a37-4ae5-9538-c18920100438.jsonl",
+            "sha256": "f5096370b519145d87d83420e2379e46cd56489ef2f6f7124c704343327bfc93",
+            "bytes": 9953,
+            "launch": "39561e38-5a37-4ae5-9538-c18920100438",
+            "endMs": 4318.594,
+            "capture": {
+              "complete": true,
+              "truncated": false,
+              "error": null
+            }
+          },
+          "original": {
+            "fromMs": 1300,
+            "toMs": 4200
+          },
+          "speed": 1,
+          "frames": 29,
+          "output": {
+            "fromMs": 58100,
+            "toMs": 61000
+          },
+          "caption": "V06: a new CLI and bridge resume the saved session"
+        }
+      ],
+      "cuts": [
+        {
+          "afterSegment": 0,
+          "kind": "continuous",
+          "from": {
+            "source": "slots/gpt-6-sol__V01/terminal-output-d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40.jsonl",
+            "ms": 10350
+          },
+          "to": {
+            "source": "slots/gpt-6-sol__V01/terminal-output-d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40.jsonl",
+            "ms": 10350
+          }
+        },
+        {
+          "afterSegment": 1,
+          "kind": "recording-switch",
+          "from": {
+            "source": "slots/gpt-6-sol__V01/terminal-output-d9fc3bda-a5de-4f4b-8ecf-0d2b50149e40.jsonl",
+            "ms": 13950
+          },
+          "to": {
+            "source": "slots/claude-sonnet-5__V04/terminal-output-4dd864f0-9c74-44bb-928f-39808e8cd266.jsonl",
+            "ms": 4400
+          }
+        },
+        {
+          "afterSegment": 2,
+          "kind": "recording-switch",
+          "from": {
+            "source": "slots/claude-sonnet-5__V04/terminal-output-4dd864f0-9c74-44bb-928f-39808e8cd266.jsonl",
+            "ms": 13450
+          },
+          "to": {
+            "source": "slots/claude-opus-5.5__V05/terminal-output-784d8377-6277-418e-9cc0-4b90b22c025b.jsonl",
+            "ms": 3700
+          }
+        },
+        {
+          "afterSegment": 3,
+          "kind": "recording-switch",
+          "from": {
+            "source": "slots/claude-opus-5.5__V05/terminal-output-784d8377-6277-418e-9cc0-4b90b22c025b.jsonl",
+            "ms": 11650
+          },
+          "to": {
+            "source": "slots/gpt-6-astra__V03/terminal-output-e9869f00-82cc-4bbc-80e9-635df5e5d844.jsonl",
+            "ms": 4600
+          }
+        },
+        {
+          "afterSegment": 4,
+          "kind": "recording-switch",
+          "from": {
+            "source": "slots/gpt-6-astra__V03/terminal-output-e9869f00-82cc-4bbc-80e9-635df5e5d844.jsonl",
+            "ms": 16550
+          },
+          "to": {
+            "source": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "ms": 4400
+          }
+        },
+        {
+          "afterSegment": 5,
+          "kind": "continuous",
+          "from": {
+            "source": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "ms": 15000
+          },
+          "to": {
+            "source": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "ms": 15000
+          }
+        },
+        {
+          "afterSegment": 6,
+          "kind": "continuous",
+          "from": {
+            "source": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "ms": 21800
+          },
+          "to": {
+            "source": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "ms": 21800
+          }
+        },
+        {
+          "afterSegment": 7,
+          "kind": "recording-switch",
+          "from": {
+            "source": "slots/gpt-6-luna__V06/terminal-output-2dc6b3cc-fe59-46f5-9a1e-46265c0bdda8.jsonl",
+            "ms": 25300
+          },
+          "to": {
+            "source": "slots/gpt-6-luna__V06/terminal-output-39561e38-5a37-4ae5-9538-c18920100438.jsonl",
+            "ms": 1300
+          }
+        }
+      ]
+    }
+  ]
+}

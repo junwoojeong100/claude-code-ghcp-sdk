@@ -36,6 +36,24 @@ function sseEvents(response) {
     .map((line) => JSON.parse(line.slice(6)));
 }
 
+// Claude Code 2.1.282 folds message_start usage and then message_delta usage
+// this way: an input counter replaces the earlier value only when above zero.
+function claudeCodeStreamUsage(events) {
+  const kept = (next, previous) => next != null && next > 0 ? next : previous;
+  return events
+    .flatMap((event) => event.type === "message_start" ? [event.message.usage]
+      : event.type === "message_delta" ? [event.usage] : [])
+    .reduce((merged, usage) => ({
+      input_tokens: kept(usage.input_tokens, merged.input_tokens),
+      cache_creation_input_tokens: kept(usage.cache_creation_input_tokens, merged.cache_creation_input_tokens),
+      cache_read_input_tokens: kept(usage.cache_read_input_tokens, merged.cache_read_input_tokens),
+      output_tokens: usage.output_tokens ?? merged.output_tokens,
+    }), { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 });
+}
+
+const inputTotal = (usage) =>
+  usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+
 test("extracts Claude Code system text blocks", () => {
   assert.equal(
     extractSystem([
@@ -405,7 +423,7 @@ test("uses actual SDK usage and finish reason in non-streaming responses", () =>
   });
 });
 
-for (const [name, usage, outputTokens, expected] of [
+for (const [name, usage, outputTokens, expected, streamed = expected] of [
   [
     "counts cached long-context input exactly once",
     { inputTokens: 230000, cacheReadTokens: 210000, cacheWriteTokens: 19997, outputTokens: 7 },
@@ -417,6 +435,21 @@ for (const [name, usage, outputTokens, expected] of [
     { inputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 4, outputTokens: 1 },
     1,
     { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 },
+    { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 4 },
+  ],
+  [
+    "moves a single cache read token",
+    { inputTokens: 1, cacheReadTokens: 1, outputTokens: 2 },
+    2,
+    { input_tokens: 0, output_tokens: 2, cache_read_input_tokens: 1 },
+    { input_tokens: 1, output_tokens: 2 },
+  ],
+  [
+    "moves a cache write token when nothing was read",
+    { inputTokens: 4, cacheWriteTokens: 4, outputTokens: 1 },
+    1,
+    { input_tokens: 0, output_tokens: 1, cache_creation_input_tokens: 4 },
+    { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 3 },
   ],
   [
     "preserves measured zeros without cache",
@@ -429,6 +462,7 @@ for (const [name, usage, outputTokens, expected] of [
     { inputTokens: 0, outputTokens: 0, cacheReadTokens: 3, cacheWriteTokens: 4 },
     7,
     { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 },
+    { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 2, cache_creation_input_tokens: 4 },
   ],
   [
     "falls back only for missing output",
@@ -492,19 +526,35 @@ for (const [name, usage, outputTokens, expected] of [
         });
         stream.finish(payload);
         const events = sseEvents(response);
-        assert.equal(
-          events.find((event) => event.type === "message_start").message.usage.input_tokens,
-          10,
+        assert.deepEqual(
+          events.find((event) => event.type === "message_start").message.usage,
+          { input_tokens: 10, output_tokens: 0 },
         );
         actual = events.find((event) => event.type === "message_delta").usage;
+        const merged = claudeCodeStreamUsage(events);
+        // A zero input total cannot replace the estimate, so Claude Code keeps it.
+        assert.equal(inputTotal(merged), inputTotal(expected) || payload.inputTokens,
+          "Claude Code's merged total equals the JSON total");
+        assert.equal(merged.output_tokens, expected.output_tokens);
       } else {
         writeJsonMessage(response, payload);
         actual = JSON.parse(response.chunks.at(-1)).usage;
       }
-      assert.deepEqual(actual, expected);
+      assert.deepEqual(actual, streaming ? streamed : expected);
     });
   }
 }
+
+test("an interrupted stream keeps the request estimate as its usage anchor", () => {
+  const response = fakeResponse();
+  startSse(response);
+  const stream = new AnthropicSseStream(response, { id: "msg-interrupted", inputTokens: 190000 });
+  stream.start("gpt-6-sol");
+  stream.handleSdkEvent({ type: "assistant.message_delta", data: { deltaContent: "partial reply" } });
+  const events = sseEvents(response);
+  assert.ok(!events.some((event) => event.type === "message_delta"));
+  assert.equal(inputTotal(claudeCodeStreamUsage(events)), 190000);
+});
 
 test("serializes prior conversation for cold recovery", () => {
   const rendered = serializeConversation([

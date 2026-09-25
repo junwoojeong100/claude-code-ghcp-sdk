@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve a symlinked launcher (npm link, ~/.local/bin) to its checkout.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+  [[ "$SCRIPT_PATH" == /* ]] || SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
+done
+ROOT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 source "$ROOT_DIR/bin/resolve-claude.sh"
-export PATH="$ROOT_DIR/node_modules/.bin:$PATH"
 
 # Command-line settings bypass Claude Code's rollout-based renderer selection.
 # Restore the fullscreen renderer used by the unwrapped Claude Code command.
@@ -150,6 +156,16 @@ LEASE_FILE=""
 cleanup() {
   if [[ -n "$BRIDGE_PID" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
     kill "$BRIDGE_PID" 2>/dev/null || true
+    # The bridge's shutdown awaits the SDK's client.stop(), whose session.detach
+    # has no timeout, so a wedged Copilot runtime would hold an unbounded wait
+    # here long after Claude Code has finished.
+    STOP_DEADLINE=$((SECONDS + 30))
+    while kill -0 "$BRIDGE_PID" 2>/dev/null && ((SECONDS < STOP_DEADLINE)); do
+      sleep 0.25
+    done
+    if kill -0 "$BRIDGE_PID" 2>/dev/null; then
+      kill -KILL "$BRIDGE_PID" 2>/dev/null || true
+    fi
     wait "$BRIDGE_PID" 2>/dev/null || true
   fi
   # In persistent-bridge mode the settings file must outlive this process.
@@ -211,31 +227,12 @@ else
   node "$ROOT_DIR/src/server.mjs" >"$BRIDGE_LOG" 2>&1 &
   BRIDGE_PID=$!
 
-  # A cold boot makes three upstream Copilot round-trips before the server
-  # listens, so the old 30s ceiling gave up on a bridge that was still booting.
-  # The ceiling is a wall-clock deadline rather than an iteration count because
-  # an iteration costs the curl probe as well as the sleep: `N * 0.25s` is only
-  # the floor, and against a bridge that binds the port but never answers a bare
-  # curl hangs for minutes (verified: still running at 20s with no --max-time).
-  # --max-time caps that, so the wait really is bounded by 60s plus at most one
-  # overshooting iteration (2s + 0.25s), and the two confirmation probes below
-  # add a 5s cap each: 72.25s worst case. Nothing used to pin any of these --
-  # every bound could be deleted with the suite still green -- so
-  # test/launcher.test.mjs now parses these five numbers back out of this file
-  # and re-adds them against the figure on this line. Change one without
-  # changing the other and that test goes red.
-  #
-  # 60s and not more because this ceiling is spent out of a caller's budget. The
-  # v11 driver's second launch is spawnSync(bin/claude-ghcp, ["-p", ...],
-  # {timeout: 180_000}) in scripts/verify/drivers.mjs, and as a -p run with no --background
-  # it takes this ephemeral branch, so 180 - 72.25 leaves ~107s for the Claude
-  # turn itself -- against a measured 63.1s and 63.5s for the equivalent
-  # single-turn read-and-answer (.verify-runs/2026-09-21T02-02-27-681Z/
-  # slots.jsonl, v01-repo-recon evidence.durationMs). A 120s ceiling here would
-  # have left ~60s and had spawnSync SIGKILL a bridge that was merely slow to
-  # boot -- the exact case this wait exists to tolerate.
-  #
-  # A dead PID is still caught on the next iteration.
+  # Startup uses a wall-clock deadline, with each probe bounded so a silent
+  # port cannot stall the loop. The 60s deadline plus one overshooting iteration
+  # (2s probe + 0.25s sleep) and two 5s confirmation probes below give a
+  # 72.25s worst case. test/launcher.test.mjs checks this sum against the code.
+  # Callers must leave additional time for the Claude turn after startup.
+  # A dead PID is caught on the next iteration.
   HEALTH_DEADLINE=$((SECONDS + 60))
   while ((SECONDS < HEALTH_DEADLINE)); do
     if curl --silent --fail --max-time 2 "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null 2>&1; then
@@ -252,9 +249,11 @@ fi
 
 # Capped for the same reason as the loop probe: an uncapped curl against a port
 # that is bound but silent would spend minutes here, past every caller's budget.
+# The persistent log is shared and only ever appended to, so its end, not its
+# head, is where this failure is.
 curl --silent --fail --max-time 5 "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/null || {
   echo "Timed out waiting for the GHCP bridge." >&2
-  sed -n '1,120p' "$BRIDGE_LOG" >&2
+  tail -n 120 "$BRIDGE_LOG" >&2
   exit 1
 }
 
@@ -267,10 +266,14 @@ curl --silent --fail --max-time 5 "http://127.0.0.1:$BRIDGE_PORT/health" >/dev/n
 # src/bridge-daemon.mjs caps this same endpoint at 2s, and once /health answers
 # this route is an in-memory read of manager.listModels() with no upstream
 # round-trip, so 5s is slack rather than a budget.
-if ! node -e '
-  const [url, token, expected] = process.argv.slice(1);
+#
+# The token goes through the environment, never argv: every local user can
+# read a process's arguments, and the persistent bridge's token lives for as
+# long as that bridge does.
+if ! GHCP_BRIDGE_TOKEN="$BRIDGE_TOKEN" node -e '
+  const [url, expected] = process.argv.slice(1);
   fetch(url, {
-    headers: {"x-api-key": token},
+    headers: {"x-api-key": process.env.GHCP_BRIDGE_TOKEN},
     signal: AbortSignal.timeout(5_000),
   })
     .then((response) => {
@@ -286,16 +289,15 @@ if ! node -e '
       console.error(error.message);
       process.exit(2);
     });
-' "http://127.0.0.1:$BRIDGE_PORT/v1/models?all=true" "$BRIDGE_TOKEN" "$GHCP_MODEL_VALUE"; then
+' "http://127.0.0.1:$BRIDGE_PORT/v1/models?all=true" "$GHCP_MODEL_VALUE"; then
   echo "GitHub Copilot model is unavailable: $GHCP_MODEL_VALUE" >&2
   echo "Run \"$ROOT_DIR/bin/ghcp-models\" to list available adapter models." >&2
   exit 1
 fi
 
-node "$ROOT_DIR/src/write-launch-settings.mjs" \
+GHCP_BRIDGE_TOKEN="$BRIDGE_TOKEN" node "$ROOT_DIR/src/write-launch-settings.mjs" \
   "$SETTINGS_FILE" \
   "http://127.0.0.1:$BRIDGE_PORT" \
-  "$BRIDGE_TOKEN" \
   "$FRONTEND_MODEL"
 
 CLAUDE_COMMAND=(

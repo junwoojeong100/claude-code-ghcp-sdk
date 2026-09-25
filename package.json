@@ -19,16 +19,15 @@
   "scripts": {
     "bridge": "node src/server.mjs",
     "current-provider": "node src/provider-detection.mjs",
-    "doctor": "node src/doctor.mjs",
+    "doctor": "bash bin/ghcp-doctor",
     "models": "node src/list-models.mjs",
     "litellm:setup": "bash scripts/setup-litellm.sh",
     "litellm:start": "bash scripts/start-litellm.sh",
     "test": "node --test test/*.test.mjs",
     "verify": "node scripts/verify/run.mjs",
-    "verify:plan": "node scripts/verify/scenarios.mjs",
-    "verify:probe": "node scripts/verify/probe.mjs",
+    "verify:plan": "node scripts/verify/run.mjs --dry-run",
     "verify:report": "node scripts/verify/report.mjs",
-    "verify:doc": "node scripts/verify/report.mjs --markdown > docs/VERIFICATION.md && node scripts/verify/report.mjs --markdown=ko > docs/VERIFICATION_KO.md"
+    "verify:doc": "node scripts/verify/report.mjs --write-docs"
   },
   "dependencies": {
     "@github/copilot-sdk": "1.0.14",

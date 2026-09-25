@@ -1,315 +1,460 @@
-# 검증 결과: Copilot 모델 6개, 66개 슬롯 중 66개 통과
+# 핵심 연동 검증
 
-<!-- scripts/verify/report.mjs가 생성하는 파일입니다. 다시 생성하면 덮어쓰므로 직접 고치지 마세요. -->
+> [English](VERIFICATION.md) | 한국어
 
-> **언어 / Language:** [English](VERIFICATION.md) | 한국어
+결과: NOT PASSED
+pass 35 / fail 1 / blocked 0 / unknown 0
+예상: 36 / 실제: 36 / gate: 36
+범위: full (36 전체 매트릭스 케이스)
+정책: strict-all-pass-v2; suite: claude-ghcp-essential-v1; schema: 2
+전체 PASS에는 정규 슬롯 36개·필수 단계 검사·원본 증거 재판정·정리·설정/코드/실행 파일 불변·소스/산출물 해시 검증이 필요합니다. BLOCKED는 통과가 아닙니다.
 
-**PASS.** 66개 슬롯이 모두 통과했습니다. 기록된 검사 1,146개 중 실패한 검사는 없습니다.
+## 모델 × 시나리오 결과
 
-슬롯은 Copilot 모델 하나가 시나리오 하나를 실행하는 단위이며, 이 실행은 모델 6개 × 시나리오 11개입니다.
-
-- 코드: 커밋 `bed30ce`. 커밋하지 않은 변경이 없었습니다. 실행하는 동안 코드가 바뀌지 않았습니다.
-- Claude Code: 2.1.280.
-- 브리지 설정(모든 브리지 공통): `PENDING_TOOL_WAIT_MS=30000`, 기본값은 10000입니다.
-- 검증 하네스: `--timeout-scale 2`, 모델 3개 병렬, 모델마다 시나리오 2개 병렬. 기록된 설정 전체는 [이 실행의 설정](#이-실행의-설정)에 있습니다.
-- 실행: 2026-09-23T09:11:26.241Z부터 2026-09-23T09:19:25.033Z까지 479초. 호스트: darwin arm64, Node v22.16.0.
-
-## 슬롯 실행 방식
-
-- **v01–v10.** 검증 하네스가 슬롯의 모델에 맞춘 브리지(`node src/server.mjs`, 비어 있는 로컬 포트)를 띄우고, 런처가 쓰는 것과 같은 `src/write-launch-settings.mjs`로 Claude Code 설정 파일을 만듭니다. 그다음 설치된 `claude` 바이너리를 print 모드(`-p`, stream-json 출력)로 실행하면서 `--settings`로 그 파일을 넘깁니다. 슬롯마다 브리지, 작업 폴더, Claude Code 설정 폴더가 따로 있습니다.
-- **v11.** 하네스가 사용자처럼 `bin/claude-ghcp`를 실행합니다. 상주 브리지 데몬을 띄우는 `--background` 실행, 자체 브리지를 쓰는 `-p` 실행, 데몬을 거치는 `agents` 실행입니다.
-
-LiteLLM을 거치는 슬롯은 없고, 모의 응답이나 대체 구현도 쓰지 않습니다. 모든 모델 턴은 GitHub Copilot으로 갑니다.
-
-검사는 디스크의 파일, git 이력, 훅 로그, Claude Code의 stream-json 출력(init 이벤트, 도구 호출, 도구 결과, 마지막 result 이벤트)을 읽습니다. v11 검사는 런처, `claude-ghcp-status`, `claude-ghcp-stop`, `claude agents`의 출력과 데몬 폴더도 읽습니다. 모델의 답을 읽는 검사는 하네스가 심어 둔 값을 찾습니다. 예외는 두 가지입니다. v05는 모든 단계를 마쳤다는 주장을 파일과 대조하고, v08은 명령이 차단되었다는 말이 답에 있어야 합니다.
-
-v01–v10의 Claude Code 실행에는 모두 아래 검사가 더 붙습니다. 한 슬롯은 Claude Code를 1–3회 실행합니다.
-
-1. 제한 시간 안에 result 이벤트로 끝났습니다.
-2. 모든 tool_use에 tool_result가 있고, 모든 tool_result에 tool_use가 있습니다.
-3. `modelUsage`에 슬롯의 모델이나 Claude Code를 실행할 때 쓴 별칭이 있습니다.
-4. result 이벤트에 `stop_reason`이나 `subtype`이 있습니다.
-5. usage의 입력 토큰이 0보다 큽니다.
-6. result가 오류가 아닙니다.
-
-1–3번 중 하나라도 실패하면 슬롯은 BLOCK입니다. 판정할 수 없다는 뜻이며 미통과로 셉니다. 브리지가 끝내 정상 응답을 하지 않는 것처럼 검증 하네스 자체가 실패해도 BLOCK입니다. 4–6번 중 하나라도 실패하면 FAIL입니다. v09는 첫 번째 실행이 통과하지 못하면 멈추고, 건너뛴 두 실행 때문에 슬롯은 BLOCK이 됩니다. v11은 Claude Code의 stream-json 출력을 읽지 않으므로 이 검사가 없습니다. 대신 런처의 종료 코드와 출력, 데몬 상태, 백그라운드 에이전트가 쓴 파일을 검사합니다.
-
-## 이 실행으로 검증하지 않은 것
-
-통과한 실행이라도 아래 내용은 보여 주지 않습니다.
-
-- **업스트림 오류.** Copilot 실패를 일부러 일으키는 슬롯이 없습니다. 브리지의 429(요청 한도)와 529(과부하) 응답은 이 실행이 아니라 `npm test`가 확인합니다.
-- **컨텍스트 한도 오류와 압축.** 모델의 컨텍스트 창을 채우는 시나리오가 없습니다. 그래서 브리지의 컨텍스트 한도 오류와 그 뒤에 Claude Code가 하는 압축이 일어나지 않습니다.
-- **대화형 세션.** v01–v10은 Claude Code를 모두 print 모드(`-p`)로 실행합니다. v11은 런처를 `--background`, `-p`, `agents`로 실행합니다. 대화형 터미널 화면, `/rewind`, Esc 취소는 다루지 않습니다.
-- **권한 확인 창.** v01–v10은 `bypassPermissions`로 실행하고, v02의 plan 모드 턴만 예외입니다. v11에서 모델을 호출하는 실행은 `acceptEdits`로 실행합니다. 사람에게 도구 사용 승인을 묻는 확인 창은 검증하지 않습니다.
-- **실제로 답한 Copilot 모델.** 모델 검사는 `modelUsage`를 읽는데, 여기에는 Claude Code가 요청한 모델 이름이 들어 있습니다. 어떤 Copilot 모델이 턴을 처리했는지는 알 수 없습니다.
-- **커스텀 명령, 스킬, 예약 작업의 실행.** v08은 이들이 Claude Code의 init 이벤트에 나오는지, 예약 작업이 만들어지고 목록에 나오는지만 확인합니다. 실제로 실행되었는지는 검사하지 않습니다.
-- **세션 도중의 브리지 재시작.** v09의 처음·재개·포크 프로세스는 계속 실행 중인 브리지 하나를 함께 씁니다.
-- **LiteLLM.** 모든 슬롯이 브리지에 직접 연결합니다.
-- **매트릭스 밖의 모델.** 결과 표에 있는 모델만 실행했습니다.
-- **브리지가 무시하거나 적용하지 못하는 요청 값.** [COMPATIBILITY_KO.md](COMPATIBILITY_KO.md#적용하지-않는-요청-값)를 보세요.
-- **검사가 없는 기능과 어느 시나리오도 선언하지 않은 기능.** 둘 다 [기능 커버리지](#기능-커버리지)에 있습니다.
-- **다른 호스트.** 이 실행은 이 문서 맨 위에 적은 머신 한 대에서만 돌았습니다.
-- **기록한 커밋 이후의 코드.** 이 실행은 이 문서 맨 위에 적은 커밋만 검증합니다. 이후 변경과 그 변경을 확인하는 방법은 [README_KO.md](../README_KO.md#검증한-것)에 있습니다.
-- **기본 `PENDING_TOOL_WAIT_MS` 값.** 이 실행의 모든 브리지는 Copilot이 도구 호출을 등록하기를 최대 30000 ms 기다렸습니다. 기본값은 10000 ms입니다.
-
-## 결과 매트릭스
-
-| 시나리오 | claude-opus-5.5 | claude-sonnet-5 | claude-haiku-4.5 | gpt-6-astra | gpt-6-sol | gpt-6-luna |
+| 선택 모델 | V01 | V02 | V03 | V04 | V05 | V06 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `v01-repo-recon` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v02-surgical-edit` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v03-test-fix-loop` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v04-shell-ops` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v05-multi-step` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v06-subagent` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v07-mcp-playwright` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v08-hooks-memory` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v09-session-resume` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v10-long-context` | PASS | PASS | PASS | PASS | PASS | PASS |
-| `v11-daemon-background` | PASS | PASS | PASS | PASS | PASS | PASS |
-
-**pass 66 / fail 0 / blocked 0**, 전체 66개 슬롯.
-
-아래 슬롯에서는 `modelUsage`에 모델이 둘 이상 있었습니다. 모델 검사는 그중 하나라도 슬롯의 모델이나 실행할 때 쓴 별칭이면 통과합니다.
-
-- gpt-6-astra × `v01-repo-recon`: `github-copilot/claude-gpt-6-astra[1m]`, `claude-opus-5-5[1m]`
-
-## 통과하지 못한 슬롯
-
-없습니다.
-
-## 시나리오
-
-### `v01-repo-recon` — 저장소 정찰
-
-코드를 고치기 전에 저장소에서 대상을 찾습니다. 거의 모든 세션이 이 동작으로 시작합니다.
-
-**잡아내려는 브리지 결함:** 여러 검색 호출의 결과가 유실되거나, 짝이 어긋나거나, 순서가 바뀌어 모델이 읽지 않은 경로를 답하는 경우.
-
-검사:
-
-- Claude Code가 stream-json 입력을 해석하고 사용자 메시지를 되돌려 보냈습니다.
-- 검색 도구(Bash, Glob, Grep, Task 중 하나)를 사용했습니다. 이 빌드에는 Glob과 Grep이 없습니다.
-- 답에 상수를 정의한 파일과 그 상수의 값이 있습니다.
-- 답이 미끼 파일을 가리키지 않습니다.
-
-### `v02-surgical-edit` — 정밀 편집과 파일 생성
-
-요청한 부분만 정확히 바꾸고 나머지는 그대로 둔 뒤 새 파일을 만듭니다. 그보다 먼저 plan 모드 턴이 실행되며, 이 턴은 파일을 바꾸면 안 됩니다.
-
-**잡아내려는 브리지 결함:** tool_use 입력의 공백이나 줄바꿈이 정규화되어 Edit의 정확한 일치가 실패하거나, 엉뚱한 줄이 조용히 바뀌는 경우.
-
-검사:
-
-- plan 모드 턴이 승인을 기다리지 않고 끝났고, 요청받은 변경을 하지 않았습니다.
-- 편집 턴에서 표시한 값이 새 값으로 바뀌었습니다.
-- 표시한 다른 두 줄은 바뀌지 않은 채 남아 있습니다.
-- 요청한 새 파일이 있고, 요청한 const를 export합니다.
-- 편집 턴에서 Edit(또는 MultiEdit, NotebookEdit)를 사용했습니다.
-
-### `v03-test-fix-loop` — 실패 테스트 진단과 수정
-
-테스트를 실행하고, 실패를 읽고, 소스를 고친 뒤 테스트가 통과할 때까지 다시 실행하는 핵심 에이전트 루프입니다.
-
-**잡아내려는 브리지 결함:** 실패한 테스트 실행의 tool_result가 모델에 전달되지 않아, 모델이 실패를 모른 채 일찍 멈추는 경우.
-
-검사:
-
-- 모델이 Bash를 호출했습니다.
-- 도구 결과 중 하나에 "not ok", "fail", "AssertionError"가 있거나 오류 결과가 있고, 모델이 도구를 두 번 이상 호출했습니다. `node --test` 출력은 "# fail" 개수를 늘 찍으므로 어떤 출력이든 이 조건에 맞습니다.
-- 테스트 파일은 바이트 단위로 그대로입니다.
-- 검증 하네스가 테스트를 직접 다시 실행했고, 종료 코드가 0입니다.
-
-### `v04-shell-ops` — 백그라운드 셸과 git 워크플로
-
-명령 하나로 끝나지 않는 두 가지 셸 작업, 오래 실행되는 프로세스와 버전 관리를 다룹니다.
-
-**잡아내려는 브리지 결함:** 길게 이어지는 셸과 git 도구 결과가 유실되거나 짝이 어긋나, 모델이 커밋, worktree 생성, ticker 종료 중 하나를 건너뛰는 경우.
-
-검사:
-
-- ticker 스크립트 이름이 들어가거나 백그라운드로 실행한 Bash 호출이 있고, tick 로그 파일 이름이 들어간 Bash 명령이나 Read 호출이 있습니다.
-- tick 로그가 세 줄 이상이고, 기록 파일이 만들어졌습니다.
-- git log에 요청한 제목과 정확히 같은 커밋이 있습니다.
-- git의 worktree 목록을 읽을 수 있고, 요청한 브랜치나 EnterWorktree가 그 이름으로 만드는 브랜치에 등록된 다른 worktree가 정확히 하나 있습니다.
-- 그 worktree의 디스크와 HEAD 커밋에 표식 파일이 같은 내용으로 있습니다.
-- 주 체크아웃과 그 HEAD에는 표식 파일이 없습니다.
-- 턴이 끝난 뒤 실행 중인 ticker 프로세스가 없습니다.
-
-### `v05-multi-step` — 파일 종류를 넘나드는 4단계 계획
-
-한 턴 안에서 4단계 계획을 끝까지 지킵니다. 소스 파일, 텍스트 파일, 새 마크다운 파일, 주피터 노트북을 차례로 고친 뒤, 작업 폴더의 PDF와 PNG에서 확인 문자열을 읽습니다.
-
-**잡아내려는 브리지 결함:** tool_result 안에 담긴 PDF 페이지나 이미지가 텍스트만 옮기는 변환에서 빠지는 경우, 또는 도구 루프가 길어지며 계획이 흐트러져 마지막 단계가 조용히 빠지는 경우.
-
-검사:
-
-- 네 가지 변경이 모두 디스크에 반영되었습니다.
-- 노트북이 여전히 nbformat 4 문서로 파싱되고, 셀의 RATE가 새 값입니다.
-- 답이 모든 단계를 마쳤다고 주장하면, 네 파일이 모두 그 주장과 맞습니다.
-- 답에 PDF와 PNG에 적힌 확인 문자열이 모두 있습니다. 각 문자열의 무작위 여섯 글자 중 한 글자까지는 잘못 읽어도 허용합니다.
-
-### `v06-subagent` — 서브에이전트 위임
-
-프로젝트에 정의한 서브에이전트에 작업을 넘기고, 돌아온 결과를 이어서 씁니다.
-
-**잡아내려는 브리지 결함:** 중첩 세션에서 도구 루프를 돈 서브에이전트의 최종 보고가 인계 지점에서 유실되어, 부모 에이전트가 답을 지어내는 경우.
-
-검사:
-
-- 프로젝트에 정의한 에이전트가 init 이벤트에 나옵니다.
-- Agent 도구(init 이벤트에는 Task로 표시)를 그 에이전트를 `subagent_type`으로 지정해 호출했습니다.
-- 위임 호출이 오류가 아닌 tool_result를 돌려받았습니다.
-- 최종 답에 표식이 든 파일이 모두 있습니다.
-
-### `v07-mcp-playwright` — MCP 브라우저 자동화(headless Chrome)
-
-MCP로 들어온 외부 기능을 실제로 씁니다. @playwright/mcp가 headless Chrome을 조작합니다.
-
-**잡아내려는 브리지 결함:** MCP 도구 스키마가 브리지를 지나며 바뀌거나 이름공간이 달라져, 모델이 도구를 호출하지 못하거나 잘못된 형태로 호출하는 경우.
-
-검사:
-
-- init 이벤트에서 playwright MCP 서버가 연결됨으로 나옵니다.
-- `mcp__playwright__*` 도구를 한 번 이상 호출했습니다.
-- 하네스가 띄운 페이지에 표시된 빌드 토큰이 답에 있습니다.
-
-### `v08-hooks-memory` — 훅·메모리·명령·스킬
-
-프로젝트가 모델에 덧붙여 설정하는 것을 모두 씁니다. CLAUDE.md 규칙, 관찰하고 차단하는 훅, 커스텀 명령, 스킬, 플러그인, 예약 작업입니다.
-
-**잡아내려는 브리지 결함:** 훅의 차단이 오류가 아닌 평범한 tool_result로 모델에 전달되어, 모델이 막힌 명령을 실행된 것으로 보고하는 경우.
-
-검사:
-
-- 감사 기록이 프롬프트가 제안한 경로가 아니라 CLAUDE.md가 정한 경로에 생겼고, 감사 토큰과 정해진 제목이 들어 있습니다.
-- 훅 로그에 PreToolUse 훅과 차단 훅이 모두 실행된 기록이 있습니다.
-- 금지한 `curl` 명령이 요청한 페이지가 어떤 도구 결과에도 없고, 답에 차단이나 거부를 뜻하는 말(blocked, denied, 차단, 거부 등)이 있습니다.
-- 커스텀 슬래시 명령과 프로젝트 스킬이 init 이벤트에 나옵니다. Claude Code는 모델 요청 전에 로컬 파일로 이 이벤트를 만들므로, 이 검사에는 브리지가 관여하지 않습니다.
-- `--plugin-dir`로 불러온 플러그인이 명령과 스킬을 하나씩 추가하고, 둘 다 init 이벤트에 나옵니다. 이 검사에도 브리지는 관여하지 않습니다.
-- 두 번째 턴에서 CronCreate로 작업을 만들었고, CronList가 그 작업을 id나 프롬프트로 다시 보여 줍니다.
-
-### `v09-session-resume` — 프로세스 간 세션 재개
-
-Claude Code 프로세스 세 개가 브리지 하나를 차례로 씁니다. 처음 턴, `--resume` 턴, `--resume --fork-session` 턴입니다. 뒤의 두 턴은 도구나 영구 메모리 없이 처음 턴에서 준 값을 그대로 답해야 합니다. 그동안 브리지는 계속 실행 중입니다.
-
-**잡아내려는 브리지 결함:** 브리지는 Claude Code 세션 ID와 에이전트, 모델, 도구, 시스템 프롬프트로 Copilot 세션을 찾습니다. 재개하거나 포크한 프로세스가 엉뚱한 기록에 연결되거나 아무 기록에도 연결되지 않아, 앞선 턴 없이 답하는 경우.
-
-검사:
-
-- 처음 턴이 하네스가 준 세션 ID로 실행되었고, 재개한 턴도 같은 ID를 유지했습니다.
-- 재개한 턴이 심어 둔 빌드 ID로 답했습니다.
-- 세 턴 모두 도구를 호출하지 않았습니다.
-- 포크한 턴이 자기 세션 ID로 실행되면서 심어 둔 배포 시간을 답했습니다.
-
-### `v10-long-context` — 대형 컨텍스트 검색과 추론
-
-프롬프트에 붙여 넣은 약 108,000자 분량의 보고서에서 멀리 떨어진 두 사실을 찾아 숫자 하나로 계산합니다.
-
-**잡아내려는 브리지 결함:** 업스트림에서 컨텍스트가 조용히 잘려, 모델이 남은 부분만 보고 자신 있게 답하는 경우. 보고서를 프롬프트에 붙여 넣으므로, 크게 잘리면 입력 토큰 수에 드러납니다.
-
-검사:
-
-- result에 `--json-schema`가 요구하는 숫자 `difference`를 가진 구조화 객체가 있습니다.
-- 두 사실이 모두 있어야 나오는 차이 값이 정확합니다.
-- 한 줄짜리 대조 턴과 비교해 입력 토큰이 보고서 추정 크기(글자 수 ÷ 4)의 절반 이상 늘었습니다.
-- Read, Grep, Glob을 호출하지 않았습니다. Bash는 막지 않으며, 작업 폴더에도 보고서 사본이 있습니다.
-
-### `v11-daemon-background` — 런처·데몬·백그라운드 에이전트
-
-이 프로젝트가 실제로 제공하는 진입점을 씁니다. bin/claude-ghcp 런처, 런처가 남겨 두는 상주 브리지 데몬, 런처가 끝난 뒤에도 계속 응답을 받는 분리 실행 에이전트입니다.
-
-**잡아내려는 브리지 결함:** 두 번째 실행이 살아 있는 데몬을 재사용하지 않고 경쟁 데몬을 띄우거나, 낡은 레지스트리가 죽은 포트를 넘기거나, 정지한 뒤에도 포트가 점유된 채 남는 경우. v01–v10은 슬롯마다 브리지를 따로 띄우므로 v11만 이 문제를 볼 수 있습니다.
-
-검사:
-
-- `bin/claude-ghcp --background`가 종료 코드 0으로 끝났고 백그라운드 세션 ID를 출력했습니다.
-- `claude-ghcp-status`가 데몬이 실행 중이며 pid와 포트가 있다고 보고하고, 그 기록의 모델이 슬롯의 모델과 같습니다.
-- 분리 실행한 에이전트가 검증용 파일에만 있는 값을 기록했습니다.
-- `claude agents`가 슬롯 작업 폴더의 백그라운드 세션을 보여 줍니다.
-- 자체 브리지를 쓰는 print 모드(`-p`) 실행이 종료 코드 0으로 끝났고, 읽으라고 한 파일의 값으로 답했으며, 데몬의 pid와 포트는 바뀌지 않았습니다.
-- 상주 브리지를 쓰는 실행(모델을 호출하지 않는 `agents` 하위 명령)이 종료 코드 0으로 끝났고, 데몬 폴더에 설정 파일을 하나 더 만들었으며, 같은 pid와 포트의 데몬을 찾았습니다.
-- `claude-ghcp-stop`이 정지를 보고하고, 이후 status가 데몬이 실행 중이 아님을 보여 주며, 레지스트리와 로그가 지워졌습니다.
-
-## 기능 커버리지
-
-이 실행의 시나리오 11개는 `scripts/verify/features.mjs`에서 세는 기능 43개 중 39개를 선언합니다. 가중치로는 **92.2%**(102 중 94)입니다. 이 비율은 검사가 아니라 시나리오가 `covers`에 적은 기능을 센 값이고, 통과율이 아닙니다. 가중치는 거의 모든 세션에서 쓰는 기능이 3, 자주 쓰는 기능이 2, 드물게 쓰는 기능이 1입니다. 파일에는 기능이 47개 있고, 그중 Claude Code에 없는 도구가 필요한 4개는 세지 않습니다.
-
-### 선언했지만 검사하지 않는 기능
-
-아래 기능은 비율에 들어가지만, 적힌 시나리오의 검사 중 이 기능을 확인하는 것은 없습니다.
-
-- `parallel-tools` (`v01-repo-recon`): 한 어시스턴트 메시지에 든 도구 호출 수를 세는 검사가 없습니다. 이 기능을 선언한 다른 시나리오도 없습니다.
-- `error-recovery` (`v04-shell-ops`): v04에는 실패한 도구 결과를 다루는 검사가 없습니다. v03과 v08도 이 기능을 선언합니다.
-
-### 어느 시나리오도 선언하지 않은 기능
-
-- `thinking`: 확장 사고(reasoning) 블록
-- `webfetch`: WebFetch / WebSearch
-- `tui`: 대화형 TUI 요소(plan 선택 화면, /rewind)
-- `compaction`: 자동 컨텍스트 압축
-
-각 기능이 브리지에서 동작하는지는 [COMPATIBILITY_KO.md](COMPATIBILITY_KO.md#기능별-확인)에서 확인하세요.
-
-### Claude Code에 없는 도구
-
-`scripts/verify/probe.mjs`로 확인한 결과 Claude Code 2.1.278에는 다음 도구가 없습니다: `TodoWrite`, `BashOutput`, `KillShell`, `Glob`, `Grep`. 각 도구를 이름으로 지정해 호출하게 했을 때, 같은 턴의 Read 호출은 tool_use를 만들었지만 이 도구들은 만들지 않았습니다. 이 실행이 쓴 Claude Code 2.1.280에서는 프로브를 다시 돌리지 않았습니다. 이 도구가 있어야 하는 기능은 선언한 것으로도, 빠진 것으로도 세지 않습니다.
-
-- `glob` (`Glob` 필요): Glob 경로 검색
-- `grep` (`Grep` 필요): Grep 내용 검색
-- `bash-background` (`BashOutput` 필요): 백그라운드 셸과 출력 폴링
-- `todo` (`TodoWrite` 필요): TodoWrite 작업 추적
-
-## 재현
-
-`npm run verify`는 모든 슬롯에서 실제 Copilot 모델을 호출하며, 지금 체크아웃된 코드를 실행합니다. 이 실행이 검증한 코드를 다시 돌리려면 먼저 다음 커밋을 체크아웃하세요: `bed30ce`. 첫 번째 명령은 이 실행에 기록된 `--timeout-scale`, `--model-concurrency`, `--scenario-concurrency`, `PENDING_TOOL_WAIT_MS` 값을 그대로 씁니다. 다른 브리지 설정과 설치된 Claude Code를 포함한 나머지는 실행하는 컴퓨터의 것을 씁니다.
-
+| claude-opus-5.5 | PASS | PASS | PASS | PASS | PASS | PASS |
+| claude-sonnet-5 | PASS | PASS | PASS | PASS | PASS | PASS |
+| claude-haiku-4.5 | PASS | FAIL | PASS | PASS | PASS | PASS |
+| gpt-6-astra | PASS | PASS | PASS | PASS | PASS | PASS |
+| gpt-6-sol | PASS | PASS | PASS | PASS | PASS | PASS |
+| gpt-6-luna | PASS | PASS | PASS | PASS | PASS | PASS |
+
+## 실패와 누락 증거
+
+- Every expected slot must pass; fail, blocked and unknown outcomes are not passes.
+- FAIL claude-haiku-4.5 × V02: coding: exact answer: entire fresh answer must match
+  - coding: exact answer: entire fresh answer must match
+  - coding: exact answer: entire fresh answer must match
+    - exact answer: entire fresh answer must match
+
+## 시나리오 기준
+
+필수 기준이며 실패·차단된 케이스가 만족했다는 뜻이 아닙니다.
+- V01 r2 — 실행·Unicode·새 대화 격리
+  - 실제 print 응답이 정상 완료되며 요청한 답과 정확히 같습니다.
+  - native picker에 대상 모델 6개가 있으며 새로운 Unicode 응답이 정확합니다.
+  - native /clear가 세션을 바꾸고 다음 요청에서 이전 대화가 제거됩니다.
+- V02 r1 — 읽기·수정·회귀 테스트
+  - 실패하는 foreground 테스트 전에 Read가 숨은 sample·소스·테스트 전체를 반환합니다.
+  - 성공한 Edit가 discount.mjs만 고친 뒤 종료 상태를 가리지 않은 동일 명령의 테스트 3개가 통과합니다.
+  - 독립 재검사도 통과하며 다른 파일·모드·링크는 불변이고 최종 답은 숨은 sample입니다.
+- V03 r1 — MCP 오류·도구 결과 복구
+  - CLI 소유 MCP lookup이 missing의 ENOENT를 반환한 후 숨은 selected 값을 반환합니다.
+  - native 도구 ID·인자·결과와 MCP ledger가 일치하며 파일·셸 우회가 없습니다.
+  - 같은 프로세스·세션의 두 번째 턴에서 도구 없이 정확한 값을 회상합니다.
+- V04 r1 — 모델·추론 수준 전환
+  - 다른 source 모델이 응답한 후 같은 대화에서 native /model로 target을 선택합니다.
+  - 각 새 응답의 요청·해석·SDK 보고 모델이 단계와 맞으며 대화 문맥이 유지됩니다.
+  - 지원 모델에는 High effort가 전달되어 SDK 실제 상태와 일치하고 Haiku에는 effort를 적용하지 않습니다.
+- V05 r2 — 중단 후 같은 프로세스에서 계속
+  - Escape가 실제 스트리밍 요청을 중단하며 같은 요청의 client_abort와 SDK abort acknowledgment가 있고 정상 완료는 없습니다.
+  - 같은 native 프로세스·세션이 후속 질문에 정확한 완료 응답을 반환합니다.
+- V06 r2 — 압축·종료·콜드 재개
+  - native /compact의 실제 요약 요청·압축 경계가 기록되고, seed 프롬프트 없이 압축된 기록을 받은 새 SDK 세션이 대화 전용 값을 정확히 회상합니다.
+  - 정상 종료와 소유 브리지 정리 후 새 CLI·브리지가 정확한 저장 세션 ID를 재개합니다.
+  - 재개 세션은 도구·보조 기억 없이 같은 값을 회상하며 후속 프롬프트에 값을 다시 넣지 않습니다.
+
+## 단계별 증거
+
+브리지 요청 이름과 SDK 보고 ID를 구분합니다. 연결된 SDK 기록만 처리 모델 증거이며 누락은 unknown입니다. 모델 목록 노출은 실제 실행 증거가 아닙니다.
+effort는 연결된 모델 상태 기록마다 요청 / 적용 / 관측을 표시합니다. "요청 없음"은 요청에 effort가 없었음을, "적용 없음"은 브리지가 적용하지 않았음을, "SDK 미보고"는 SDK 모델 상태에 reasoningEffort가 없었음을, "관측 실패 (사유)"는 기록된 사유로 모델 상태 조회가 실패했음을, "모델 상태 없음"은 연결된 기록이 없음을, "unknown"은 저장 기록에 해당 필드가 없음을 뜻합니다. 값을 채워 넣지 않습니다.
+| 모델 / 케이스 | 단계 | 결과 | 브리지 요청 이름 | SDK 보고 ID | effort 요청 / 적용 / 관측 |
+| --- | --- | --- | --- | --- | --- |
+| claude-opus-5.5 / V01 | print | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-opus-5.5 / V01 | unicode | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-opus-5.5 / V01 | clear | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-opus-5.5 / V02 | coding | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium; medium / medium / medium; medium / medium / medium; medium / medium / medium; medium / medium / medium |
+| claude-opus-5.5 / V03 | lookup | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium; medium / medium / medium; medium / medium / medium |
+| claude-opus-5.5 / V03 | recall | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-opus-5.5 / V04 | source | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| claude-opus-5.5 / V04 | target | PASS | claude-opus-5-5 | claude-opus-5.5 | high / high / high |
+| claude-opus-5.5 / V05 | interrupt | PASS | claude-opus-5-5 | unknown | 모델 상태 없음 |
+| claude-opus-5.5 / V05 | recovery | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-opus-5.5 / V06 | seed | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-opus-5.5 / V06 | compact | PASS | claude-opus-5-5 | claude-opus-5.5 | 모델 상태 없음 |
+| claude-opus-5.5 / V06 | recall | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-opus-5.5 / V06 | resume | PASS | claude-opus-5-5 | claude-opus-5.5 | medium / medium / medium |
+| claude-sonnet-5 / V01 | print | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V01 | unicode | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V01 | clear | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V02 | coding | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high; high / high / high; high / high / high; high / high / high; high / high / high |
+| claude-sonnet-5 / V03 | lookup | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high; high / high / high; high / high / high |
+| claude-sonnet-5 / V03 | recall | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V04 | source | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| claude-sonnet-5 / V04 | target | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V05 | interrupt | PASS | claude-sonnet-5 | unknown | 모델 상태 없음 |
+| claude-sonnet-5 / V05 | recovery | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V06 | seed | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V06 | compact | PASS | claude-sonnet-5 | claude-sonnet-5 | 모델 상태 없음 |
+| claude-sonnet-5 / V06 | recall | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-sonnet-5 / V06 | resume | PASS | claude-sonnet-5 | claude-sonnet-5 | high / high / high |
+| claude-haiku-4.5 / V01 | print | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V01 | unicode | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V01 | clear | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V02 | coding | FAIL | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고; 요청 없음 / 적용 없음 / SDK 미보고; 요청 없음 / 적용 없음 / SDK 미보고; 요청 없음 / 적용 없음 / SDK 미보고; 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V03 | lookup | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고; 요청 없음 / 적용 없음 / SDK 미보고; 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V03 | recall | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V04 | source | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| claude-haiku-4.5 / V04 | target | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V05 | interrupt | PASS | claude-haiku-4-5 | unknown | 모델 상태 없음 |
+| claude-haiku-4.5 / V05 | recovery | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V06 | seed | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V06 | compact | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 모델 상태 없음 |
+| claude-haiku-4.5 / V06 | recall | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| claude-haiku-4.5 / V06 | resume | PASS | claude-haiku-4-5 | claude-haiku-4.5 | 요청 없음 / 적용 없음 / SDK 미보고 |
+| gpt-6-astra / V01 | print | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V01 | unicode | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V01 | clear | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V02 | coding | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high; high / high / high; high / high / high; high / high / high; high / high / high; high / high / high; high / high / high |
+| gpt-6-astra / V03 | lookup | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high; high / high / high; high / high / high |
+| gpt-6-astra / V03 | recall | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V04 | source | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-astra / V04 | target | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V05 | interrupt | PASS | github-copilot/claude-gpt-6-astra | unknown | 모델 상태 없음 |
+| gpt-6-astra / V05 | recovery | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V06 | seed | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V06 | compact | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | 모델 상태 없음 |
+| gpt-6-astra / V06 | recall | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-astra / V06 | resume | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-sol / V01 | print | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V01 | unicode | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V01 | clear | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V02 | coding | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high; high / high / high; high / high / high; high / high / high; high / high / high; high / high / high; high / high / high |
+| gpt-6-sol / V03 | lookup | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high; high / high / high; high / high / high |
+| gpt-6-sol / V03 | recall | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V04 | source | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-sol / V04 | target | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V05 | interrupt | PASS | github-copilot/claude-gpt-6-sol | unknown | 모델 상태 없음 |
+| gpt-6-sol / V05 | recovery | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V06 | seed | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V06 | compact | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | 모델 상태 없음 |
+| gpt-6-sol / V06 | recall | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-sol / V06 | resume | PASS | github-copilot/claude-gpt-6-sol | gpt-6-sol | high / high / high |
+| gpt-6-luna / V01 | print | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V01 | unicode | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V01 | clear | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V02 | coding | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high; high / high / high; high / high / high; high / high / high; high / high / high; high / high / high; high / high / high |
+| gpt-6-luna / V03 | lookup | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high; high / high / high; high / high / high |
+| gpt-6-luna / V03 | recall | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V04 | source | PASS | github-copilot/claude-gpt-6-astra | gpt-6-astra | high / high / high |
+| gpt-6-luna / V04 | target | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V05 | interrupt | PASS | github-copilot/claude-gpt-6-luna | unknown | 모델 상태 없음 |
+| gpt-6-luna / V05 | recovery | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V06 | seed | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V06 | compact | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | 모델 상태 없음 |
+| gpt-6-luna / V06 | recall | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+| gpt-6-luna / V06 | resume | PASS | github-copilot/claude-gpt-6-luna | gpt-6-luna | high / high / high |
+
+## 실행 메타데이터
+
+run: .verify-runs/2026-09-25T09-55-54-058Z-9bdbc340
+Claude Code: 2.1.282 (~/.local/share/claude/versions/2.1.282); SHA256 fcfd837103965c64de34a6b9b94370d77a347ea71819715a27d5f0ef01775ea4; end SHA256 fcfd837103965c64de34a6b9b94370d77a347ea71819715a27d5f0ef01775ea4
+Copilot SDK (@github/copilot-sdk) 패키지 버전: 1.0.14; 실행 시작 시 기록한 npm 패키지 버전이며 Copilot 런타임 실행 파일 식별 정보가 아닙니다
+Node: v22.16.0; host: darwin arm64 25.6.0
+start: 2026-09-25T09:55:54.058Z; end: 2026-09-25T10:12:54.177Z; seconds: 1020
+code start: commit 580b7c50df917d0841e821d4bd34c7e937e54caf; dirty: true; fingerprint: sha256 verification-code-v2 9596932c38c894528649b42ad70e918df24b09ed8ec3f6c2280607676ac3e600; files: 102
+code end: commit 580b7c50df917d0841e821d4bd34c7e937e54caf; dirty: true; fingerprint: sha256 verification-code-v2 9596932c38c894528649b42ad70e918df24b09ed8ec3f6c2280607676ac3e600; files: 102
+sources: sources/manifest.json; SHA256 3911b2b5a0771722770cbe66964e7591be37e6710dab328a3fbc5f92ebfa8811
+reference commit: 647a5285e8c6ddba638db0aa406b48f15ba64327
+reference scripts/verification/catalog.mjs: e64fa93b44769dd36417be157f37c7e756d8d44bc7c9e1ed6108ae5b6294701d
+reference scripts/verification/scenarios.mjs: 45852c4770b5f1fb78ed033b7d6075b4251b4862446b8b1971ea45b9288ae548
+user settings: ~/.claude/settings.json; intact: true; before: present:cc7894c5e801f76809be171ef481142a05a419dcb0b01c8a606b68edd828b887; after: present:cc7894c5e801f76809be171ef481142a05a419dcb0b01c8a606b68edd828b887
+--model-concurrency: 1
+--timeout-scale: 2
+PENDING_TOOL_WAIT_MS: 30000
+bridgeHealthMs: 240000
+cleanupMs: 20000
+scenarioMs.V01: 480000
+scenarioMs.V02: 600000
+scenarioMs.V03: 480000
+scenarioMs.V04: 480000
+scenarioMs.V05: 480000
+scenarioMs.V06: 840000
+runtime.turnTimeoutMs: 300000
+runtime.maxTurnDurationMs: 1800000
+runtime.sessionOperationTimeoutMs: 60000
+runtime.pendingToolWaitMs: 30000
+runtime.abortTimeoutMs: 5000
+runtime.cleanupTimeoutMs: 5000
+runtime.stateIdleTtlMs: 1800000
+runtime.mcpDiscoveryTimeoutMs: 10000
+슬롯마다 CLI 실행별 종료 코드·시그널·강제 종료·SIGKILL 승격과 소유 프로세스 회수 여부, 소유 브리지별 정지 기록과 /health 요약을 표시합니다. 전체 /health 기록은 slots.jsonl에 있습니다.
+claude-opus-5.5 V01: seconds 25.7
+  CLI 1: PID 21809; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  CLI 2: PID 21910; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-opus-5.5-57446-10328302e4f3; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 21804; port 57446; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-opus-5.5__V01/bridge.log
+  브리지 정지 1: PID 21804; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-opus-5.5 V02: seconds 24.8
+  CLI 1: PID 22140; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  브리지 1 /health: ok 예; instance verify-claude-opus-5.5-57481-21c8645a6251; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 22137; port 57481; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-opus-5.5__V02/bridge.log
+  브리지 정지 1: PID 22137; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-opus-5.5 V03: seconds 24.5
+  CLI 1: PID 22296; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-opus-5.5-57540-7aa10ea60457; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 22281; port 57540; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-opus-5.5__V03/bridge.log
+  브리지 정지 1: PID 22281; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-opus-5.5 V04: seconds 20.7
+  CLI 1: PID 22523; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-57571-fc957546c704; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 22508; port 57571; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-opus-5.5__V04/bridge.log
+  브리지 정지 1: PID 22508; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-opus-5.5 V05: seconds 18.9
+  CLI 1: PID 22767; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-opus-5.5-57596-9e997bd3075f; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 22752; port 57596; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-opus-5.5__V05/bridge.log
+  브리지 정지 1: PID 22752; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-opus-5.5 V06: seconds 43.2
+  CLI 1: PID 22968; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  CLI 2: PID 23275; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-opus-5.5-57620-978813c701d0; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 22953; port 57620; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-opus-5.5__V06/bridge.log
+  브리지 2 /health: ok 예; instance verify-claude-opus-5.5-57650-2cdb7dccfb28; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 23260; port 57650; 전체 기록 slots.jsonl bridges[1].health; 로그 slots/claude-opus-5.5__V06/bridge-2.log
+  브리지 정지 1: PID 22953; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+  브리지 정지 2: PID 23260; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-sonnet-5 V01: seconds 23.7
+  CLI 1: PID 23403; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  CLI 2: PID 23505; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-sonnet-5-57671-8c1fd3783ddb; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 23400; port 57671; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-sonnet-5__V01/bridge.log
+  브리지 정지 1: PID 23400; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-sonnet-5 V02: seconds 19.7
+  CLI 1: PID 23735; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  브리지 1 /health: ok 예; instance verify-claude-sonnet-5-57697-cdc7c6d71397; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 23732; port 57697; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-sonnet-5__V02/bridge.log
+  브리지 정지 1: PID 23732; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-sonnet-5 V03: seconds 20.9
+  CLI 1: PID 23879; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-sonnet-5-57722-b95773a85751; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 23864; port 57722; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-sonnet-5__V03/bridge.log
+  브리지 정지 1: PID 23864; 그룹 종료 예; 포트 해제 예; 종료 코드 없음; 시그널 SIGKILL
+claude-sonnet-5 V04: seconds 20.8
+  CLI 1: PID 24072; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-57751-b429e4c35289; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 24057; port 57751; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-sonnet-5__V04/bridge.log
+  브리지 정지 1: PID 24057; 그룹 종료 예; 포트 해제 예; 종료 코드 없음; 시그널 SIGKILL
+claude-sonnet-5 V05: seconds 19.8
+  CLI 1: PID 24339; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-sonnet-5-57774-a135e23db32b; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 24324; port 57774; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-sonnet-5__V05/bridge.log
+  브리지 정지 1: PID 24324; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-sonnet-5 V06: seconds 44.7
+  CLI 1: PID 24544; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  CLI 2: PID 24902; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-sonnet-5-57803-292c4d7b7f50; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 24512; port 57803; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-sonnet-5__V06/bridge.log
+  브리지 2 /health: ok 예; instance verify-claude-sonnet-5-57847-7f0f6cb59ef4; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 24886; port 57847; 전체 기록 slots.jsonl bridges[1].health; 로그 slots/claude-sonnet-5__V06/bridge-2.log
+  브리지 정지 1: PID 24512; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+  브리지 정지 2: PID 24886; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-haiku-4.5 V01: seconds 25.4
+  CLI 1: PID 25040; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  CLI 2: PID 25142; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-haiku-4.5-57870-1133d86f756e; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 25035; port 57870; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-haiku-4.5__V01/bridge.log
+  브리지 정지 1: PID 25035; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-haiku-4.5 V02: seconds 19.8
+  CLI 1: PID 25374; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  브리지 1 /health: ok 예; instance verify-claude-haiku-4.5-57898-b8769dbf56e2; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 25370; port 57898; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-haiku-4.5__V02/bridge.log
+  브리지 정지 1: PID 25370; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-haiku-4.5 V03: seconds 21.3
+  CLI 1: PID 25521; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-haiku-4.5-57922-2281da602616; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 25503; port 57922; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-haiku-4.5__V03/bridge.log
+  브리지 정지 1: PID 25503; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-haiku-4.5 V04: seconds 23.6
+  CLI 1: PID 25748; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-57947-7bdba49069f4; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 25716; port 57947; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-haiku-4.5__V04/bridge.log
+  브리지 정지 1: PID 25716; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-haiku-4.5 V05: seconds 18.9
+  CLI 1: PID 25998; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-haiku-4.5-57971-55fd5b6375be; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 25982; port 57971; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-haiku-4.5__V05/bridge.log
+  브리지 정지 1: PID 25982; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+claude-haiku-4.5 V06: seconds 44.2
+  CLI 1: PID 26210; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  CLI 2: PID 26523; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-claude-haiku-4.5-57995-ea9c3d902c69; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 26195; port 57995; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/claude-haiku-4.5__V06/bridge.log
+  브리지 2 /health: ok 예; instance verify-claude-haiku-4.5-58018-7e24adfe0ff7; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 26508; port 58018; 전체 기록 slots.jsonl bridges[1].health; 로그 slots/claude-haiku-4.5__V06/bridge-2.log
+  브리지 정지 1: PID 26195; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+  브리지 정지 2: PID 26508; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-astra V01: seconds 28.6
+  CLI 1: PID 26651; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  CLI 2: PID 26753; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-58039-62908fd6fd05; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 26648; port 58039; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-astra__V01/bridge.log
+  브리지 정지 1: PID 26648; 그룹 종료 예; 포트 해제 예; 종료 코드 없음; 시그널 SIGKILL
+gpt-6-astra V02: seconds 28.3
+  CLI 1: PID 27007; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-58068-89ee1a53a9c7; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 26993; port 58068; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-astra__V02/bridge.log
+  브리지 정지 1: PID 26993; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-astra V03: seconds 23.8
+  CLI 1: PID 27145; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-58094-00da2c34004a; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 27129; port 58094; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-astra__V03/bridge.log
+  브리지 정지 1: PID 27129; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-astra V04: seconds 20.6
+  CLI 1: PID 27364; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-luna-58125-d8c0bb814136; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 27349; port 58125; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-astra__V04/bridge.log
+  브리지 정지 1: PID 27349; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-astra V05: seconds 20.4
+  CLI 1: PID 27620; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-58146-377cd32d3100; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 27605; port 58146; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-astra__V05/bridge.log
+  브리지 정지 1: PID 27605; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-astra V06: seconds 73.6
+  CLI 1: PID 27847; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  CLI 2: PID 28312; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-58172-78d57236da04; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 27831; port 58172; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-astra__V06/bridge.log
+  브리지 2 /health: ok 예; instance verify-gpt-6-astra-58208-b25533d4f3b1; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 28297; port 58208; 전체 기록 slots.jsonl bridges[1].health; 로그 slots/gpt-6-astra__V06/bridge-2.log
+  브리지 정지 1: PID 27831; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+  브리지 정지 2: PID 28297; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-sol V01: seconds 26.0
+  CLI 1: PID 28446; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  CLI 2: PID 28551; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-sol-58230-73a8d548d566; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 28441; port 58230; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-sol__V01/bridge.log
+  브리지 정지 1: PID 28441; 그룹 종료 예; 포트 해제 예; 종료 코드 없음; 시그널 SIGKILL
+gpt-6-sol V02: seconds 25.6
+  CLI 1: PID 28783; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  브리지 1 /health: ok 예; instance verify-gpt-6-sol-58259-259feef9b440; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 28780; port 58259; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-sol__V02/bridge.log
+  브리지 정지 1: PID 28780; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-sol V03: seconds 20.6
+  CLI 1: PID 28935; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-sol-58282-844fdfc100c8; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 28907; port 58282; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-sol__V03/bridge.log
+  브리지 정지 1: PID 28907; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-sol V04: seconds 21.9
+  CLI 1: PID 29129; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-58303-ef64a367b038; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 29114; port 58303; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-sol__V04/bridge.log
+  브리지 정지 1: PID 29114; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-sol V05: seconds 19.6
+  CLI 1: PID 29387; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-sol-58325-68410b6565d2; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 29372; port 58325; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-sol__V05/bridge.log
+  브리지 정지 1: PID 29372; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-sol V06: seconds 55.7
+  CLI 1: PID 29583; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  CLI 2: PID 29952; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-sol-58353-1232909abca9; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 29568; port 58353; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-sol__V06/bridge.log
+  브리지 2 /health: ok 예; instance verify-gpt-6-sol-58383-b0c303447bdd; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 29937; port 58383; 전체 기록 slots.jsonl bridges[1].health; 로그 slots/gpt-6-sol__V06/bridge-2.log
+  브리지 정지 1: PID 29568; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+  브리지 정지 2: PID 29937; 그룹 종료 예; 포트 해제 예; 종료 코드 없음; 시그널 SIGKILL
+gpt-6-luna V01: seconds 23.6
+  CLI 1: PID 30094; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  CLI 2: PID 30204; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-luna-58401-b3dce0988bf0; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 30091; port 58401; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-luna__V01/bridge.log
+  브리지 정지 1: PID 30091; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-luna V02: seconds 19.6
+  CLI 1: PID 30430; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 남은 PID unknown)
+  브리지 1 /health: ok 예; instance verify-gpt-6-luna-58435-982aa7375607; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 30427; port 58435; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-luna__V02/bridge.log
+  브리지 정지 1: PID 30427; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-luna V03: seconds 20.5
+  CLI 1: PID 30552; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-luna-58460-3c127a774746; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 30537; port 58460; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-luna__V03/bridge.log
+  브리지 정지 1: PID 30537; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-luna V04: seconds 22.2
+  CLI 1: PID 30758; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-astra-58484-3657cb3a638e; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 30742; port 58484; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-luna__V04/bridge.log
+  브리지 정지 1: PID 30742; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+gpt-6-luna V05: seconds 20.9
+  CLI 1: PID 31050; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-luna-58562-cb16ab2850e8; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 31035; port 58562; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-luna__V05/bridge.log
+  브리지 정지 1: PID 31035; 그룹 종료 예; 포트 해제 예; 종료 코드 없음; 시그널 SIGKILL
+gpt-6-luna V06: seconds 44.3
+  CLI 1: PID 31252; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  CLI 2: PID 31567; 종료 코드 0; 시그널 없음; 강제 종료 아니오; SIGKILL 승격 아니오; 회수 예 (그룹 종료 예; 헬퍼 종료 예; 남은 PID 없음)
+  브리지 1 /health: ok 예; instance verify-gpt-6-luna-58600-06407f29d94e; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 31237; port 58600; 전체 기록 slots.jsonl bridges[0].health; 로그 slots/gpt-6-luna__V06/bridge.log
+  브리지 2 /health: ok 예; instance verify-gpt-6-luna-58629-3b9c24c16ff0; 모델 수 23; 타임아웃이 기록된 런타임 값과 일치 예; PID 31552; port 58629; 전체 기록 slots.jsonl bridges[1].health; 로그 slots/gpt-6-luna__V06/bridge-2.log
+  브리지 정지 1: PID 31237; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+  브리지 정지 2: PID 31552; 그룹 종료 예; 포트 해제 예; 종료 코드 0; 시그널 없음
+슬롯 예산은 단계마다 갱신하지 않는 전체 deadline입니다. 런타임 예산은 배율 변경 없이 기록합니다. 현재 의존성·환경·설치 실행 파일에서 메타데이터를 채우지 않습니다.
+
+## 증거와 재현
+
+저장소 루트에서 실행하세요. 명시한 저장 실행을 읽을 때 모델을 호출하지 않습니다. 리포터는 저장된 PASS 슬롯의 원본 증거를 현재 체크아웃의 평가기로 재판정하며 저장된 실패를 올리지 않습니다. 동결된 소스 사본(sources/files/)은 재현 자료이며 리포터는 해시만 검사하고 실행하지 않습니다.
 ```bash
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 # 모델 6개 × 시나리오 11개
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2 --dry-run # 모델 호출 없이 계획만 출력
-npm run verify:probe        # 이 Claude Code 빌드에 없는 도구를 다시 확인 (모델 호출)
-npm run verify:report       # 가장 최근 실행 요약
+node scripts/verify/report.mjs '.verify-runs/2026-09-25T09-55-54-058Z-9bdbc340'
+```
+```bash
+npm run verify:doc -- '.verify-runs/2026-09-25T09-55-54-058Z-9bdbc340'
+```
+소스 사본에 자격 증명·설정·이전 실행 증거를 넣지 않습니다. private 설정에는 임시 브리지 키가 있고 원본 transcript에는 민감한 정보가 있을 수 있습니다. 공유 전 검토하세요.
+실행 디렉터리 안의 경로는 그 디렉터리 기준 상대 경로로 표시합니다. 이 문서에서 ~와 $HOME은 홈 디렉터리, $TMPDIR은 사용자별 임시 디렉터리이며 Claude 프로젝트 디렉터리 이름 안의 -HOME / -TMPDIR은 각각 이를 뜻합니다.
+- claude-opus-5.5 V01 print: transcript slots/claude-opus-5.5__V01/transcript-print.jsonl; response IDs msg_d10c0c10616a4dc5a203769781481d24; log range slots/claude-opus-5.5__V01/bridge.log bytes 159-2586
+- claude-opus-5.5 V01 unicode: transcript slots/claude-opus-5.5__V01/home/.claude/projects/-TMPDIR-verify-essential-r54TVL-workspace/82d07bf1-7bea-4b24-8dc8-1000fdf12b67.jsonl; response IDs msg_e430d28d5ee445e383e737ec6b3fbd25; log range slots/claude-opus-5.5__V01/bridge.log bytes 2586-5283
+- claude-opus-5.5 V01 clear: transcript slots/claude-opus-5.5__V01/home/.claude/projects/-TMPDIR-verify-essential-r54TVL-workspace/e1bafa46-6c23-42fc-b4a3-52daea54ef72.jsonl; response IDs msg_b90a648a40824acf84ca4ffc86bb3fc3; log range slots/claude-opus-5.5__V01/bridge.log bytes 5283-8114
+- claude-opus-5.5 V02 coding: transcript slots/claude-opus-5.5__V02/transcript-coding.jsonl; response IDs msg_2f4f4c4743264e4f8e4b3e5a91fa0133, msg_96bb2bb16fa24104b6722acbed9c7650, msg_d5592624186d4be69644b5b1e6f33e2a, msg_bd0018af38204b038a4b10a9fbf1a79f, msg_e74b4887b9b64af285a523f847e0bdb1; log range slots/claude-opus-5.5__V02/bridge.log bytes 159-16107
+- claude-opus-5.5 V03 lookup: transcript slots/claude-opus-5.5__V03/home/.claude/projects/-TMPDIR-verify-essential-AefuDm-workspace/6b8b4656-72c9-495b-8b63-f8d3b4c09765.jsonl; response IDs msg_4e5074af6c894d9dbe75a2219852aace, msg_9dd81fc87d694b5b8ec583cf6bcb50cb, msg_ee767bcf95da4b61ad34e8d2d37437d5; log range slots/claude-opus-5.5__V03/bridge.log bytes 159-8301
+- claude-opus-5.5 V03 recall: transcript slots/claude-opus-5.5__V03/home/.claude/projects/-TMPDIR-verify-essential-AefuDm-workspace/6b8b4656-72c9-495b-8b63-f8d3b4c09765.jsonl; response IDs msg_08ff956ed98943f88b5a9312063dc1d4; log range slots/claude-opus-5.5__V03/bridge.log bytes 8301-12252
+- claude-opus-5.5 V04 source: transcript slots/claude-opus-5.5__V04/home/.claude/projects/-TMPDIR-verify-essential-k8C50K-workspace/dd81ba5a-c1f7-4adc-b321-07fcdbf79e66.jsonl; response IDs msg_f039c1d0de5d48c4b98fed0d9de40e3a; log range slots/claude-opus-5.5__V04/bridge.log bytes 155-2592
+- claude-opus-5.5 V04 target: transcript slots/claude-opus-5.5__V04/home/.claude/projects/-TMPDIR-verify-essential-k8C50K-workspace/dd81ba5a-c1f7-4adc-b321-07fcdbf79e66.jsonl; response IDs msg_093b984884d64ee2806c690c66433d0a; log range slots/claude-opus-5.5__V04/bridge.log bytes 2592-6501
+- claude-opus-5.5 V05 interrupt: transcript slots/claude-opus-5.5__V05/home/.claude/projects/-TMPDIR-verify-essential-ANT3Kr-workspace/5e720bd1-6b2e-49cb-a14a-f49fe56d575d.jsonl; response IDs msg_2a8fca228eec414ea42411a2fa572abb; log range unknown
+- claude-opus-5.5 V05 recovery: transcript slots/claude-opus-5.5__V05/home/.claude/projects/-TMPDIR-verify-essential-ANT3Kr-workspace/5e720bd1-6b2e-49cb-a14a-f49fe56d575d.jsonl; response IDs msg_dd70741cda074242b128917630d23fe0; log range slots/claude-opus-5.5__V05/bridge.log bytes 5227-8255
+- claude-opus-5.5 V06 seed: transcript slots/claude-opus-5.5__V06/home/.claude/projects/-TMPDIR-verify-essential-fCg0M4-workspace/a15d7df1-3e5a-492b-a79c-3774796759e5.jsonl; response IDs msg_37fd28b25cb34254af1bda8aee710d76; log range slots/claude-opus-5.5__V06/bridge.log bytes 159-2588
+- claude-opus-5.5 V06 compact: transcript slots/claude-opus-5.5__V06/home/.claude/projects/-TMPDIR-verify-essential-fCg0M4-workspace/a15d7df1-3e5a-492b-a79c-3774796759e5.jsonl; response IDs msg_884e2c2067334211a76175715f08a001; log range slots/claude-opus-5.5__V06/bridge.log bytes 2588-5306
+- claude-opus-5.5 V06 recall: transcript slots/claude-opus-5.5__V06/home/.claude/projects/-TMPDIR-verify-essential-fCg0M4-workspace/a15d7df1-3e5a-492b-a79c-3774796759e5.jsonl; response IDs msg_9d35d2b7d15c4d8a952df585ccda4440; log range slots/claude-opus-5.5__V06/bridge.log bytes 5306-8378
+- claude-opus-5.5 V06 resume: transcript slots/claude-opus-5.5__V06/home/.claude/projects/-TMPDIR-verify-essential-fCg0M4-workspace/a15d7df1-3e5a-492b-a79c-3774796759e5.jsonl; response IDs msg_697d88634d074ccd859503e0f94c5d35; log range slots/claude-opus-5.5__V06/bridge-2.log bytes 159-3720
+- claude-sonnet-5 V01 print: transcript slots/claude-sonnet-5__V01/transcript-print.jsonl; response IDs msg_992619fee38f491d8493be6335dfeb25; log range slots/claude-sonnet-5__V01/bridge.log bytes 159-2577
+- claude-sonnet-5 V01 unicode: transcript slots/claude-sonnet-5__V01/home/.claude/projects/-TMPDIR-verify-essential-jKsLWA-workspace/519fa3d1-2e97-4666-9c7d-5978ba9e5c48.jsonl; response IDs msg_c2c8555159c64c68b2ce33a539873b33; log range slots/claude-sonnet-5__V01/bridge.log bytes 2577-5265
+- claude-sonnet-5 V01 clear: transcript slots/claude-sonnet-5__V01/home/.claude/projects/-TMPDIR-verify-essential-jKsLWA-workspace/7aaf4dcd-401b-43fb-9f9f-eae20f3ad45f.jsonl; response IDs msg_8b44582632344bf1bfd3d38176955a48; log range slots/claude-sonnet-5__V01/bridge.log bytes 5265-8087
+- claude-sonnet-5 V02 coding: transcript slots/claude-sonnet-5__V02/transcript-coding.jsonl; response IDs msg_efc0ef64815e4fd9ae84c541bb321260, msg_5649800020cf47b2abfa3e749321ce1b, msg_67141d8e374644b189cf90a4b440995d, msg_9ea045e55a9d4c34aff765f81f8bc74b, msg_de8ea3375cea4fba95cff683c0ee4308; log range slots/claude-sonnet-5__V02/bridge.log bytes 159-16068
+- claude-sonnet-5 V03 lookup: transcript slots/claude-sonnet-5__V03/home/.claude/projects/-TMPDIR-verify-essential-EOa7m6-workspace/43f11334-0e48-4ea8-b466-138a56e1172a.jsonl; response IDs msg_037dbced5d4b4dc49a44fa61e8f23f9a, msg_86ae07a8259a4717b8b55f97f7dbcc38, msg_3ea6f444cb534f5c9d0445eebc2031fd; log range slots/claude-sonnet-5__V03/bridge.log bytes 159-8276
+- claude-sonnet-5 V03 recall: transcript slots/claude-sonnet-5__V03/home/.claude/projects/-TMPDIR-verify-essential-EOa7m6-workspace/43f11334-0e48-4ea8-b466-138a56e1172a.jsonl; response IDs msg_ac56283fcd824ed397cbb6ccb64ebcef; log range slots/claude-sonnet-5__V03/bridge.log bytes 8276-12219
+- claude-sonnet-5 V04 source: transcript slots/claude-sonnet-5__V04/home/.claude/projects/-TMPDIR-verify-essential-PRXM4g-workspace/a485e563-8e62-49bd-ae26-432213ce4da2.jsonl; response IDs msg_bbd517d2857d4f9a98c58806a63abc9a; log range slots/claude-sonnet-5__V04/bridge.log bytes 155-2592
+- claude-sonnet-5 V04 target: transcript slots/claude-sonnet-5__V04/home/.claude/projects/-TMPDIR-verify-essential-PRXM4g-workspace/a485e563-8e62-49bd-ae26-432213ce4da2.jsonl; response IDs msg_e294a46ca95841848c6848cd453170f2; log range slots/claude-sonnet-5__V04/bridge.log bytes 2592-6500
+- claude-sonnet-5 V05 interrupt: transcript slots/claude-sonnet-5__V05/home/.claude/projects/-TMPDIR-verify-essential-uzcDK3-workspace/b50abd9d-9928-439a-a067-24791ec2cbd2.jsonl; response IDs msg_88c94c1d8fb243ed9e1c27d22777081f; log range unknown
+- claude-sonnet-5 V05 recovery: transcript slots/claude-sonnet-5__V05/home/.claude/projects/-TMPDIR-verify-essential-uzcDK3-workspace/b50abd9d-9928-439a-a067-24791ec2cbd2.jsonl; response IDs msg_442304e7a79b4c1f971e6c30ec70adb0; log range slots/claude-sonnet-5__V05/bridge.log bytes 5324-8344
+- claude-sonnet-5 V06 seed: transcript slots/claude-sonnet-5__V06/home/.claude/projects/-TMPDIR-verify-essential-Wgi0m0-workspace/1098b4a9-4a7e-42a4-8ecc-5f0cef7dc479.jsonl; response IDs msg_a1ff87dc1e5945f9b4a23284ade68014; log range slots/claude-sonnet-5__V06/bridge.log bytes 159-2579
+- claude-sonnet-5 V06 compact: transcript slots/claude-sonnet-5__V06/home/.claude/projects/-TMPDIR-verify-essential-Wgi0m0-workspace/1098b4a9-4a7e-42a4-8ecc-5f0cef7dc479.jsonl; response IDs msg_5f9cb8a7f6614142ae7f69316aaa46f3; log range slots/claude-sonnet-5__V06/bridge.log bytes 2579-5290
+- claude-sonnet-5 V06 recall: transcript slots/claude-sonnet-5__V06/home/.claude/projects/-TMPDIR-verify-essential-Wgi0m0-workspace/1098b4a9-4a7e-42a4-8ecc-5f0cef7dc479.jsonl; response IDs msg_5baae364aa494e49b045b9fa92c84b78; log range slots/claude-sonnet-5__V06/bridge.log bytes 5290-8353
+- claude-sonnet-5 V06 resume: transcript slots/claude-sonnet-5__V06/home/.claude/projects/-TMPDIR-verify-essential-Wgi0m0-workspace/1098b4a9-4a7e-42a4-8ecc-5f0cef7dc479.jsonl; response IDs msg_b5e8ae25a4b14257860ed8c06e12a58f; log range slots/claude-sonnet-5__V06/bridge-2.log bytes 159-3711
+- claude-haiku-4.5 V01 print: transcript slots/claude-haiku-4.5__V01/transcript-print.jsonl; response IDs msg_f77550884493484b9c855f776f104d27; log range slots/claude-haiku-4.5__V01/bridge.log bytes 160-2468
+- claude-haiku-4.5 V01 unicode: transcript slots/claude-haiku-4.5__V01/home/.claude/projects/-TMPDIR-verify-essential-387mNz-workspace/0289ed62-2b93-4197-8f7f-6e14e0b2b468.jsonl; response IDs msg_878af0943a534e40a65c3b0aa5796c89; log range slots/claude-haiku-4.5__V01/bridge.log bytes 2468-5449
+- claude-haiku-4.5 V01 clear: transcript slots/claude-haiku-4.5__V01/home/.claude/projects/-TMPDIR-verify-essential-387mNz-workspace/3b5ee945-4c8e-48f2-849f-5eaf49c27dd5.jsonl; response IDs msg_4658f025a0c242b6a751863abf926740; log range slots/claude-haiku-4.5__V01/bridge.log bytes 5449-8564
+- claude-haiku-4.5 V02 coding: transcript slots/claude-haiku-4.5__V02/transcript-coding.jsonl; response IDs msg_127df7d7739f46d4bb6df360b787f0bd, msg_69ee9d74502541d3b255c28a2b96c0cc, msg_f2ddce1d34fa45da9abf467ebb8b99c8, msg_f98fa43189874488af4acf0d8bb47dcb, msg_5fcc4bec12bd4f14a410d6cc4d2907f0; log range slots/claude-haiku-4.5__V02/bridge.log bytes 160-16627
+- claude-haiku-4.5 V03 lookup: transcript slots/claude-haiku-4.5__V03/home/.claude/projects/-TMPDIR-verify-essential-va3cow-workspace/973ec778-e744-453b-9823-02e7585b0fcd.jsonl; response IDs msg_ee89b3bfcad84f3ebf74bbcb1109aec2, msg_587c722b58224925876ef9ece6367471, msg_31800ff1b37a4426bb6bcf29b450c136; log range slots/claude-haiku-4.5__V03/bridge.log bytes 160-9000
+- claude-haiku-4.5 V03 recall: transcript slots/claude-haiku-4.5__V03/home/.claude/projects/-TMPDIR-verify-essential-va3cow-workspace/973ec778-e744-453b-9823-02e7585b0fcd.jsonl; response IDs msg_12e54e7637524fe0a50382e887ac6e08; log range slots/claude-haiku-4.5__V03/bridge.log bytes 9000-12978
+- claude-haiku-4.5 V04 source: transcript slots/claude-haiku-4.5__V04/home/.claude/projects/-TMPDIR-verify-essential-PKEPbF-workspace/d7e66cd9-901e-42e7-92d5-48f419c0a36f.jsonl; response IDs msg_5236d6d0f8244b52b7d3476b04b7786b; log range slots/claude-haiku-4.5__V04/bridge.log bytes 155-2592
+- claude-haiku-4.5 V04 target: transcript slots/claude-haiku-4.5__V04/home/.claude/projects/-TMPDIR-verify-essential-PKEPbF-workspace/d7e66cd9-901e-42e7-92d5-48f419c0a36f.jsonl; response IDs msg_9c91ee3995f54e919ad627e378083ed2; log range slots/claude-haiku-4.5__V04/bridge.log bytes 2592-6483
+- claude-haiku-4.5 V05 interrupt: transcript slots/claude-haiku-4.5__V05/home/.claude/projects/-TMPDIR-verify-essential-gBfgs6-workspace/0a59b78f-7861-45ea-bc93-064a422804e3.jsonl; response IDs msg_722b4eda844e48ac9b9e32feb843797c; log range unknown
+- claude-haiku-4.5 V05 recovery: transcript slots/claude-haiku-4.5__V05/home/.claude/projects/-TMPDIR-verify-essential-gBfgs6-workspace/0a59b78f-7861-45ea-bc93-064a422804e3.jsonl; response IDs msg_e6d117226e52454fbb5f6984d0e4b002; log range slots/claude-haiku-4.5__V05/bridge.log bytes 5616-8890
+- claude-haiku-4.5 V06 seed: transcript slots/claude-haiku-4.5__V06/home/.claude/projects/-TMPDIR-verify-essential-bhD6BL-workspace/9e97264f-cd0d-4a79-a193-6a9aa44ddd62.jsonl; response IDs msg_1eb468e6d6db43f185fb4a22edfa529e; log range slots/claude-haiku-4.5__V06/bridge.log bytes 160-2873
+- claude-haiku-4.5 V06 compact: transcript slots/claude-haiku-4.5__V06/home/.claude/projects/-TMPDIR-verify-essential-bhD6BL-workspace/9e97264f-cd0d-4a79-a193-6a9aa44ddd62.jsonl; response IDs msg_439876c9249b425e94c7d722bff7ffb1; log range slots/claude-haiku-4.5__V06/bridge.log bytes 2873-5879
+- claude-haiku-4.5 V06 recall: transcript slots/claude-haiku-4.5__V06/home/.claude/projects/-TMPDIR-verify-essential-bhD6BL-workspace/9e97264f-cd0d-4a79-a193-6a9aa44ddd62.jsonl; response IDs msg_642b986f1eb940e883f08d40b82e6b72; log range slots/claude-haiku-4.5__V06/bridge.log bytes 5879-9235
+- claude-haiku-4.5 V06 resume: transcript slots/claude-haiku-4.5__V06/home/.claude/projects/-TMPDIR-verify-essential-bhD6BL-workspace/9e97264f-cd0d-4a79-a193-6a9aa44ddd62.jsonl; response IDs msg_bd0efc85315a4c6480661476306b18ce; log range slots/claude-haiku-4.5__V06/bridge-2.log bytes 160-3963
+- gpt-6-astra V01 print: transcript slots/gpt-6-astra__V01/transcript-print.jsonl; response IDs msg_5020d184fe2c40f48000846ae3c55103; log range slots/gpt-6-astra__V01/bridge.log bytes 155-2590
+- gpt-6-astra V01 unicode: transcript slots/gpt-6-astra__V01/home/.claude/projects/-TMPDIR-verify-essential-IUV77v-workspace/838dabd3-6e01-4e2c-97f8-cb372324d82a.jsonl; response IDs msg_a046bae8150048afa8e2de64e843f1f5; log range slots/gpt-6-astra__V01/bridge.log bytes 2590-5295
+- gpt-6-astra V01 clear: transcript slots/gpt-6-astra__V01/home/.claude/projects/-TMPDIR-verify-essential-IUV77v-workspace/999be008-5aac-40a0-93af-31a4d9e84591.jsonl; response IDs msg_757c905d05894eb89ebce2c47f74e4fb; log range slots/gpt-6-astra__V01/bridge.log bytes 5295-8134
+- gpt-6-astra V02 coding: transcript slots/gpt-6-astra__V02/transcript-coding.jsonl; response IDs msg_bc86652e3d8149ac9ff71c84d8c83d13, msg_2eb27cbb74d34ad7ace3df31bd32cdc9, msg_5f615c0babdb4ee5b2c18db93c0d4cdd, msg_bc36a8497d2d4aa9adb08f4b4bbf0889, msg_638e9370bc6c422081c290b5ed5dc8ce, msg_52b4f0f15f81460884acf84ca6dfbc91, msg_c413dac0e2f14df0aae62754a9fbcc06; log range slots/gpt-6-astra__V02/bridge.log bytes 155-23352
+- gpt-6-astra V03 lookup: transcript slots/gpt-6-astra__V03/home/.claude/projects/-TMPDIR-verify-essential-m5ii4b-workspace/cc3847b4-112d-4e17-a669-7fc6f6d8655b.jsonl; response IDs msg_d43378763b76489c92fcc2edcfd512ca, msg_6199700037c0405d86068992f47c4c9b, msg_4dc7e2d3915942a4aad9daff36d8c36a; log range slots/gpt-6-astra__V03/bridge.log bytes 155-8323
+- gpt-6-astra V03 recall: transcript slots/gpt-6-astra__V03/home/.claude/projects/-TMPDIR-verify-essential-m5ii4b-workspace/cc3847b4-112d-4e17-a669-7fc6f6d8655b.jsonl; response IDs msg_083679121d454c37958f30535ae474ae; log range slots/gpt-6-astra__V03/bridge.log bytes 8323-12282
+- gpt-6-astra V04 source: transcript slots/gpt-6-astra__V04/home/.claude/projects/-TMPDIR-verify-essential-K7hbzL-workspace/d93298a1-1c2f-4e3a-8800-2c93b543b3f0.jsonl; response IDs msg_57e78e5c68344152a7da56609a9842f7; log range slots/gpt-6-astra__V04/bridge.log bytes 154-2583
+- gpt-6-astra V04 target: transcript slots/gpt-6-astra__V04/home/.claude/projects/-TMPDIR-verify-essential-K7hbzL-workspace/d93298a1-1c2f-4e3a-8800-2c93b543b3f0.jsonl; response IDs msg_34edc99fdb2745aca923bc0026cc6e7b; log range slots/gpt-6-astra__V04/bridge.log bytes 2583-6508
+- gpt-6-astra V05 interrupt: transcript slots/gpt-6-astra__V05/home/.claude/projects/-TMPDIR-verify-essential-ULLe12-workspace/3484c4dc-6019-4835-8568-4088be281801.jsonl; response IDs msg_defc1d22ccc34765989dc797886171f4; log range unknown
+- gpt-6-astra V05 recovery: transcript slots/gpt-6-astra__V05/home/.claude/projects/-TMPDIR-verify-essential-ULLe12-workspace/3484c4dc-6019-4835-8568-4088be281801.jsonl; response IDs msg_6efae6a378be4b398800d8a281eb78d8; log range slots/gpt-6-astra__V05/bridge.log bytes 5318-8358
+- gpt-6-astra V06 seed: transcript slots/gpt-6-astra__V06/home/.claude/projects/-TMPDIR-verify-essential-Bbh0ss-workspace/d523ce45-f28e-404c-b93b-670632503f9b.jsonl; response IDs msg_6606af8fa5ca4018b05f7d77c46341e0; log range slots/gpt-6-astra__V06/bridge.log bytes 155-2592
+- gpt-6-astra V06 compact: transcript slots/gpt-6-astra__V06/home/.claude/projects/-TMPDIR-verify-essential-Bbh0ss-workspace/d523ce45-f28e-404c-b93b-670632503f9b.jsonl; response IDs msg_0b45c0bef0d549ee830ed8d4224cb241; log range slots/gpt-6-astra__V06/bridge.log bytes 2592-5323
+- gpt-6-astra V06 recall: transcript slots/gpt-6-astra__V06/home/.claude/projects/-TMPDIR-verify-essential-Bbh0ss-workspace/d523ce45-f28e-404c-b93b-670632503f9b.jsonl; response IDs msg_424f68ceed834b3a9b2ad3ae9e0e1258; log range slots/gpt-6-astra__V06/bridge.log bytes 5323-8403
+- gpt-6-astra V06 resume: transcript slots/gpt-6-astra__V06/home/.claude/projects/-TMPDIR-verify-essential-Bbh0ss-workspace/d523ce45-f28e-404c-b93b-670632503f9b.jsonl; response IDs msg_0de24965c9e14a8e89449742ce7592ae; log range slots/gpt-6-astra__V06/bridge-2.log bytes 155-3724
+- gpt-6-sol V01 print: transcript slots/gpt-6-sol__V01/transcript-print.jsonl; response IDs msg_fb6a7d6ac9714c6e9f2d4af160868a3d; log range slots/gpt-6-sol__V01/bridge.log bytes 153-2573
+- gpt-6-sol V01 unicode: transcript slots/gpt-6-sol__V01/home/.claude/projects/-TMPDIR-verify-essential-4VO1CE-workspace/4d01a28e-857c-4ba6-8ad4-ce300667e292.jsonl; response IDs msg_e9c9e40f666949f8866a8e45252a4fe5; log range slots/gpt-6-sol__V01/bridge.log bytes 2573-5263
+- gpt-6-sol V01 clear: transcript slots/gpt-6-sol__V01/home/.claude/projects/-TMPDIR-verify-essential-4VO1CE-workspace/514fc613-9981-4bf1-806a-deb267d5b364.jsonl; response IDs msg_770a8dbd7392420b8bc09cee6ce3b6d8; log range slots/gpt-6-sol__V01/bridge.log bytes 5263-8087
+- gpt-6-sol V02 coding: transcript slots/gpt-6-sol__V02/transcript-coding.jsonl; response IDs msg_fb78818fdc76466da0f6df9d8a3a8116, msg_8f543accd3db41cba0a5d4a2500d609b, msg_216e801031874020b1ebd0cf0d6f6a53, msg_395321dad44d4129b6b9eaba89b8ae4b, msg_ad1138fde68a42c79851f2c429f34e2e, msg_31af7cf80f49481ab847d51e9a210ffb, msg_cdedb4ca7b224ca68373c3d117d322b9; log range slots/gpt-6-sol__V02/bridge.log bytes 153-23266
+- gpt-6-sol V03 lookup: transcript slots/gpt-6-sol__V03/home/.claude/projects/-TMPDIR-verify-essential-eUur8D-workspace/bdcb94d8-3246-4569-83d0-3322fcc07d09.jsonl; response IDs msg_d3108a71eb544c0f802f6c439fd38fce, msg_bf82b3f32e6d4b528f0aad25ccda76e1, msg_12b325ca07494a4dbf23cd5a65cb1bae; log range slots/gpt-6-sol__V03/bridge.log bytes 153-8282
+- gpt-6-sol V03 recall: transcript slots/gpt-6-sol__V03/home/.claude/projects/-TMPDIR-verify-essential-eUur8D-workspace/bdcb94d8-3246-4569-83d0-3322fcc07d09.jsonl; response IDs msg_3ead3b6fc9e649c5a38cf41ecc7b64f3; log range slots/gpt-6-sol__V03/bridge.log bytes 8282-12229
+- gpt-6-sol V04 source: transcript slots/gpt-6-sol__V04/home/.claude/projects/-TMPDIR-verify-essential-buCCXe-workspace/148ef4b0-ae66-46ed-a9b9-360927121e1e.jsonl; response IDs msg_a6da6392620e4a73b1ee078f39a82aef; log range slots/gpt-6-sol__V04/bridge.log bytes 155-2592
+- gpt-6-sol V04 target: transcript slots/gpt-6-sol__V04/home/.claude/projects/-TMPDIR-verify-essential-buCCXe-workspace/148ef4b0-ae66-46ed-a9b9-360927121e1e.jsonl; response IDs msg_88c761e0d481497fa3203c62065b7a54; log range slots/gpt-6-sol__V04/bridge.log bytes 2592-6502
+- gpt-6-sol V05 interrupt: transcript slots/gpt-6-sol__V05/home/.claude/projects/-TMPDIR-verify-essential-IYD11T-workspace/ea6e0bdb-c388-45fc-8d6b-283cc8590ccb.jsonl; response IDs msg_f07ef1f6f3a44790b51d49f8db38d41c; log range unknown
+- gpt-6-sol V05 recovery: transcript slots/gpt-6-sol__V05/home/.claude/projects/-TMPDIR-verify-essential-IYD11T-workspace/ea6e0bdb-c388-45fc-8d6b-283cc8590ccb.jsonl; response IDs msg_3accd274c8ba4421b48758c989453d0a; log range slots/gpt-6-sol__V05/bridge.log bytes 5217-8245
+- gpt-6-sol V06 seed: transcript slots/gpt-6-sol__V06/home/.claude/projects/-TMPDIR-verify-essential-o7f2Hk-workspace/dd8c5313-404c-4f5f-b806-286ab06137ca.jsonl; response IDs msg_d4b4b78a3f134a689a36ee3a20d96d71; log range slots/gpt-6-sol__V06/bridge.log bytes 153-2575
+- gpt-6-sol V06 compact: transcript slots/gpt-6-sol__V06/home/.claude/projects/-TMPDIR-verify-essential-o7f2Hk-workspace/dd8c5313-404c-4f5f-b806-286ab06137ca.jsonl; response IDs msg_2ab6d3563d384b569fb63813d2630789; log range slots/gpt-6-sol__V06/bridge.log bytes 2575-5294
+- gpt-6-sol V06 recall: transcript slots/gpt-6-sol__V06/home/.claude/projects/-TMPDIR-verify-essential-o7f2Hk-workspace/dd8c5313-404c-4f5f-b806-286ab06137ca.jsonl; response IDs msg_f1a20696c3b04570ba1e70bc271a1373; log range slots/gpt-6-sol__V06/bridge.log bytes 5294-8359
+- gpt-6-sol V06 resume: transcript slots/gpt-6-sol__V06/home/.claude/projects/-TMPDIR-verify-essential-o7f2Hk-workspace/dd8c5313-404c-4f5f-b806-286ab06137ca.jsonl; response IDs msg_4a4b1eb30e0444b290d744655612913b; log range slots/gpt-6-sol__V06/bridge-2.log bytes 153-3707
+- gpt-6-luna V01 print: transcript slots/gpt-6-luna__V01/transcript-print.jsonl; response IDs msg_e64049e1f80d4098863bed4c3d2ae2bf; log range slots/gpt-6-luna__V01/bridge.log bytes 154-2581
+- gpt-6-luna V01 unicode: transcript slots/gpt-6-luna__V01/home/.claude/projects/-TMPDIR-verify-essential-RYV60m-workspace/7eb51502-d1b1-458a-8e20-7fd8618e6772.jsonl; response IDs msg_9d418ac9db26426bb4e9f7838f127f10; log range slots/gpt-6-luna__V01/bridge.log bytes 2581-5279
+- gpt-6-luna V01 clear: transcript slots/gpt-6-luna__V01/home/.claude/projects/-TMPDIR-verify-essential-RYV60m-workspace/68246974-64f9-4421-a7cd-03184cc48809.jsonl; response IDs msg_1335e9d78d94441fb8a6436b7e3b0fc0; log range slots/gpt-6-luna__V01/bridge.log bytes 5279-8110
+- gpt-6-luna V02 coding: transcript slots/gpt-6-luna__V02/transcript-coding.jsonl; response IDs msg_081c4baf7c774c9495a87894694b7fe8, msg_27f66f4a864d40858c1313f846dbfc18, msg_174db516b5ed44999ab96df21a66a4e7, msg_34f2120915824de48cbaabfd12f8b426, msg_ed6752956e5c4e5e88a219de25ad8617, msg_af804c5c93924206bfa2e1145a8c3b1c, msg_87ce4dc123384ea4bc58d5148d24e705; log range slots/gpt-6-luna__V02/bridge.log bytes 154-23310
+- gpt-6-luna V03 lookup: transcript slots/gpt-6-luna__V03/home/.claude/projects/-TMPDIR-verify-essential-oO0d64-workspace/de214d14-b66e-45ee-8388-367a20e55469.jsonl; response IDs msg_9c4bda99711943aca29b5d55e5becb3d, msg_10c4245c6bdb4ba0b9781923940f0f6f, msg_d51ca3043e1a44eb9a3771ef3eb6c542; log range slots/gpt-6-luna__V03/bridge.log bytes 154-8302
+- gpt-6-luna V03 recall: transcript slots/gpt-6-luna__V03/home/.claude/projects/-TMPDIR-verify-essential-oO0d64-workspace/de214d14-b66e-45ee-8388-367a20e55469.jsonl; response IDs msg_0940afcfad0e4b3388fc4e44d8bdc16b; log range slots/gpt-6-luna__V03/bridge.log bytes 8302-12255
+- gpt-6-luna V04 source: transcript slots/gpt-6-luna__V04/home/.claude/projects/-TMPDIR-verify-essential-PXSnOU-workspace/ed977a8d-756e-40e0-aae5-c1edc1d66a5e.jsonl; response IDs msg_a396d3eb2941432baa79cac0b564c43b; log range slots/gpt-6-luna__V04/bridge.log bytes 155-2592
+- gpt-6-luna V04 target: transcript slots/gpt-6-luna__V04/home/.claude/projects/-TMPDIR-verify-essential-PXSnOU-workspace/ed977a8d-756e-40e0-aae5-c1edc1d66a5e.jsonl; response IDs msg_29c1c69ea60f41b3b8e7d2ecf930198c; log range slots/gpt-6-luna__V04/bridge.log bytes 2592-6509
+- gpt-6-luna V05 interrupt: transcript slots/gpt-6-luna__V05/home/.claude/projects/-TMPDIR-verify-essential-J5rYpP-workspace/6eb9fdc7-c5f3-4063-b579-5797a7bae9d0.jsonl; response IDs msg_188503d099fe4d1eb576014d0a9c28ad; log range unknown
+- gpt-6-luna V05 recovery: transcript slots/gpt-6-luna__V05/home/.claude/projects/-TMPDIR-verify-essential-J5rYpP-workspace/6eb9fdc7-c5f3-4063-b579-5797a7bae9d0.jsonl; response IDs msg_05d8869219c94363b3a6bb222e13bc1c; log range slots/gpt-6-luna__V05/bridge.log bytes 5313-8347
+- gpt-6-luna V06 seed: transcript slots/gpt-6-luna__V06/home/.claude/projects/-TMPDIR-verify-essential-1TzWFk-workspace/6ffcf93d-4db9-4003-a177-42ec627db2c2.jsonl; response IDs msg_871db826ac6b4c128db2fece1da1f19a; log range slots/gpt-6-luna__V06/bridge.log bytes 154-2583
+- gpt-6-luna V06 compact: transcript slots/gpt-6-luna__V06/home/.claude/projects/-TMPDIR-verify-essential-1TzWFk-workspace/6ffcf93d-4db9-4003-a177-42ec627db2c2.jsonl; response IDs msg_88d1f949edbe426bb0e0fe2371eebbf8; log range slots/gpt-6-luna__V06/bridge.log bytes 2583-5308
+- gpt-6-luna V06 recall: transcript slots/gpt-6-luna__V06/home/.claude/projects/-TMPDIR-verify-essential-1TzWFk-workspace/6ffcf93d-4db9-4003-a177-42ec627db2c2.jsonl; response IDs msg_612dad9cf33b4d839c06536b542384d8; log range slots/gpt-6-luna__V06/bridge.log bytes 5308-8380
+- gpt-6-luna V06 resume: transcript slots/gpt-6-luna__V06/home/.claude/projects/-TMPDIR-verify-essential-1TzWFk-workspace/6ffcf93d-4db9-4003-a177-42ec627db2c2.jsonl; response IDs msg_3e30686609be46ffb725a6af40c630aa; log range slots/gpt-6-luna__V06/bridge-2.log bytes 154-3715
+
+미리보기: 실행 파일·인증·연결 검사와 SDK 메타데이터 조회 없음.
+```bash
+CLAUDE_CODE_BIN="$HOME/.local/share/claude/versions/2.1.282" PENDING_TOOL_WAIT_MS='30000' npm run verify -- --model-concurrency '1' --timeout-scale '2' --models 'claude-opus-5.5,claude-sonnet-5,claude-haiku-4.5,gpt-6-astra,gpt-6-sol,gpt-6-luna' --scenarios 'V01,V02,V03,V04,V05,V06' --dry-run
+```
+선택 사항인 새 실제 실행: 실제 Copilot 사용량을 소비합니다. 동결된 작업 트리 소스와 기록된 의존성/실행 파일을 먼저 맞추세요. dirty 커밋만으로 실행한 코드를 복원할 수 없습니다. 명령은 기본값과 다른 기록된 런타임 예산을 그대로 지정합니다. 이 명령은 새 실행을 만들며 저장 증거를 덮어쓰지 않습니다.
+```bash
+CLAUDE_CODE_BIN="$HOME/.local/share/claude/versions/2.1.282" PENDING_TOOL_WAIT_MS='30000' npm run verify -- --model-concurrency '1' --timeout-scale '2' --models 'claude-opus-5.5,claude-sonnet-5,claude-haiku-4.5,gpt-6-astra,gpt-6-sol,gpt-6-luna' --scenarios 'V01,V02,V03,V04,V05,V06'
 ```
 
-### 이 실행의 설정
+## 한계
 
-| 설정 | 값 | 적용 대상 |
-| --- | --- | --- |
-| `--timeout-scale` | 2 | 아래 하네스 대기 시간에 곱하는 배율 |
-| `PENDING_TOOL_WAIT_MS` | 30000 ms (30 s) | 브리지 설정. 각 브리지가 Copilot이 도구 호출을 등록하기를 기다리는 시간. 기본값 10000 ms. 배율 적용 안 함. |
-| `--model-concurrency` | 3 | 동시에 실행하는 모델 수 |
-| `--scenario-concurrency` | 2 | 모델마다 동시에 실행하는 시나리오 수 |
-| `bridgeHealthMs` | 240000 ms (240 s) | 슬롯 브리지가 정상 응답할 때까지 대기 |
-| `planTurnMs` | 180000 ms (180 s) | v02의 plan 모드 Claude Code 실행 |
-| `backgroundLaunchMs` | 240000 ms (240 s) | v11의 `--background` 실행 |
-| `foregroundLaunchMs` | 360000 ms (360 s) | v11의 `-p` 실행 |
-| `persistentLaunchMs` | 240000 ms (240 s) | v11에서 데몬을 거치는 `agents` 실행 |
-| `detachedOutputMs` | 480000 ms (480 s) | v11에서 백그라운드 에이전트의 출력 파일 대기 |
-| `scenarioMs.v01-repo-recon` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v02-surgical-edit` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v03-test-fix-loop` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v04-shell-ops` | 840000 ms (840 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v05-multi-step` | 600000 ms (600 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v06-subagent` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v07-mcp-playwright` | 600000 ms (600 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v08-hooks-memory` | 660000 ms (660 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v09-session-resume` | 600000 ms (600 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v10-long-context` | 480000 ms (480 s) | 이 시나리오의 Claude Code 실행 1회마다 |
-| `scenarioMs.v11-daemon-background` | 840000 ms (840 s) | 쓰지 않음. v11은 위의 v11 대기 시간을 따름 |
-
-`--timeout-scale`은 이 표의 하네스 대기 시간에만 곱합니다. `PENDING_TOOL_WAIT_MS`, 하네스의 고정 대기(status·stop·`claude agents`·정리 명령, 폴링, v03의 테스트 재실행, SIGKILL 전 5초 유예 등), 런처와 데몬 자체의 시작 제한에는 배율을 적용하지 않습니다.
-
-## 실행 기록
-
-이 문서는 `scripts/verify/report.mjs`가 실행 `2026-09-23T09-11-26-241Z`의 `summary.json`과 `slots.jsonl`로 만듭니다. 이 두 파일은 실행한 컴퓨터에만 있고 커밋하지 않습니다. 결과, 설정, 코드 기록은 그 실행에서 가져옵니다. 시나리오 설명과 기능 목록은 문서를 생성할 때의 `scripts/verify/`에서 가져옵니다. 이전 실행과 일회성 실측은 [VERIFICATION_HISTORY_KO.md](VERIFICATION_HISTORY_KO.md)에 있습니다.
-
-- 정책: strict-all-pass-v1
-- 범위: full (전체 매트릭스 66개 슬롯)
-- 예상: 66 / 실제: 66
-- 결과: PASS
-- PASS가 되려면 다음을 모두 만족해야 합니다. 기록한 매트릭스에 빠지거나 중복되거나 예상 밖인 슬롯이 없고, 모든 슬롯이 통과하고, 사용자의 Claude Code 설정 파일이 바뀌지 않고, 실행이 끝날 때의 코드가 시작할 때와 같아야 합니다.
-- 시작과 종료 시 코드: commit: bed30cebc49b155b09c2795618b7e28ad044aae5; dirty: false; fingerprint: sha256 verification-code-v1 1fa37d3abcd284e9d1481fafef02c211d976e63fabeaa8d64d4879a159fb5bc7; files: 41
-- 사용자 설정 파일: 바뀌지 않음
-
-코드 지문(fingerprint)은 `src/`, `bin/`, `scripts/verify/`의 코드 파일과 패키지 매니페스트로 계산한 SHA-256 해시입니다.
+여섯 케이스는 gate 통과 시 private CLI 실행·Unicode/clear·코딩 도구·선언된 MCP 복구·모델/effort 전환·활성 응답 중단·명시적 압축/콜드 재개를 다룹니다. 최대 context·자동 압축 한계·모든 순간의 프로세스 격리·제공자 내부·임의 플러그인/훅/서브에이전트·권한 UI·미디어·production 런처/공유 데몬·LiteLLM을 증명하지 않습니다. production 오프라인 테스트는 별도이며 결과는 기록된 코드·실행 파일·호스트·모델·설정에만 해당합니다.

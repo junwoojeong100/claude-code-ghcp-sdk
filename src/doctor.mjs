@@ -3,8 +3,11 @@ import { spawnSync } from "node:child_process";
 import { detectProvider } from "./provider-detection.mjs";
 import { supportedNodeVersion, versionAtLeast } from "./version.mjs";
 
+// Bounded: a version probe that hangs must not hang the whole report. SIGKILL,
+// because spawnSync waits for the child to exit after its timeout signal, and a
+// probe that ignores SIGTERM would otherwise hold the report indefinitely.
 function commandVersion(command, args = ["--version"]) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
+  const result = spawnSync(command, args, { encoding: "utf8", killSignal: "SIGKILL", timeout: 10_000 });
   return {
     ok: result.status === 0,
     version: result.status === 0 ? result.stdout.trim() || result.stderr.trim() : null,

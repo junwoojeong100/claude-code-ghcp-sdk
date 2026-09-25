@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve a symlinked launcher (npm link, ~/.local/bin) to its checkout.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+  [[ "$SCRIPT_PATH" == /* ]] || SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
+done
+ROOT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 source "$ROOT_DIR/bin/resolve-claude.sh"
 
 # Keep the native fullscreen TUI when provider settings are supplied by file.
@@ -22,8 +29,12 @@ Gateway options:
   --litellm-model MODEL   LiteLLM model alias (default: claude-sonnet-5)
   -h, --help              Show this help
 
-Set LITELLM_API_KEY in the environment. The launcher writes provider settings
-to a mode-0600 temporary file and removes it when Claude Code exits.
+Set LITELLM_API_KEY in the environment. The launcher writes provider settings,
+key included, to a mode-0600 file. A print-mode run (-p without --background
+or --bg) removes it when Claude Code exits. Other launches keep it, because
+/background restarts a job from it later, in
+${XDG_STATE_HOME:-~/.local/state}/claude-code-ghcp-sdk/litellm-settings; each
+launch other than print mode first removes files there older than 7 days.
 EOF
 }
 
@@ -98,14 +109,44 @@ command -v node >/dev/null 2>&1 || {
 }
 CLAUDE_BIN="$(resolve_claude_code_bin "$ROOT_DIR")"
 
-RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-litellm.XXXXXX")"
-SETTINGS_FILE="$RUNTIME_DIR/settings.json"
+# Only print mode runs start to finish inside this process. Claude Code's
+# daemon respawns a /background or --background job with --settings <path>
+# after this launcher has exited, so deleting that file here killed the job
+# with "Settings file not found" (bin/claude-ghcp keeps its files for the same
+# reason). The file holds the LiteLLM key: it stays private to this user and is
+# reaped by age, since nothing knows when a background job is finally done.
+KEEP_SETTINGS=1
+BACKGROUND=0
+for argument in ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}; do
+  case "$argument" in
+    -p|--print) KEEP_SETTINGS=0 ;;
+    --background|--bg) BACKGROUND=1 ;;
+  esac
+done
+if ((BACKGROUND)); then
+  KEEP_SETTINGS=1
+fi
 
-cleanup() {
-  rm -f "$SETTINGS_FILE"
-  rmdir "$RUNTIME_DIR" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
+if ((KEEP_SETTINGS == 0)); then
+  RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-litellm.XXXXXX")"
+  SETTINGS_FILE="$RUNTIME_DIR/settings.json"
+  cleanup() {
+    rm -f "$SETTINGS_FILE"
+    rmdir "$RUNTIME_DIR" 2>/dev/null || true
+  }
+  trap cleanup EXIT INT TERM
+else
+  STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+  # A relative path would resolve against whichever directory respawns the job.
+  [[ "$STATE_HOME" == /* ]] || STATE_HOME="$HOME/.local/state"
+  SETTINGS_DIR="$STATE_HOME/claude-code-ghcp-sdk/litellm-settings"
+  (umask 077 && mkdir -p "$SETTINGS_DIR")
+  chmod 700 "$STATE_HOME/claude-code-ghcp-sdk" "$SETTINGS_DIR"
+  find "$SETTINGS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +$((7 * 24 * 60)) -delete 2>/dev/null || true
+  SETTINGS_FILE="$SETTINGS_DIR/$(
+    node -e 'console.log(require("node:crypto").randomBytes(12).toString("hex"))'
+  ).json"
+fi
 
 node "$ROOT_DIR/src/write-litellm-settings.mjs" \
   "$SETTINGS_FILE" \

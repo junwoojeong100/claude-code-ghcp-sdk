@@ -18,22 +18,21 @@ import { DEFAULT_TIMEOUTS } from "./timeouts.mjs";
 
 export const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-// A cold bridge boot makes three upstream Copilot round-trips inside
-// manager.start() -- client.start(), listModels(), listSessions() -- before it
-// ever reaches server.listen. Every slot killed at 45s left a 0-byte log, so
-// none of them had got that far.
-//
-// This is a ceiling only because probeHealth aborts. A bare fetch carries no
-// deadline of its own -- against a port that is bound but silent one was still
-// pending at 20s, with undici's header timeout the only thing that would ever
-// end it -- and waitForHealth compares the clock between probes, never during
-// one, so a single probe used to outlast the whole budget. With the abort the
-// worst case is the budget plus one unfinished iteration (a 2s probe and a
-// 200ms poll): 122.2s at the default scale. waitForHealth's isAlive check gives up on a
-// genuinely dead child in about a second, so the ceiling is only ever spent on
-// a bridge that is alive but slow. It is not free in the schedule: planRun
-// models no health wait at all, so wall clock now runs further ahead of the
-// estimate than it did.
+// Bridge knobs a live result could depend on but that /health does not report,
+// so a run always uses the shipped defaults. The timeout budgets stay: the
+// runner records them and compares them with each bridge's /health.
+export const UNRECORDED_BRIDGE_KNOBS = Object.freeze(["MAX_BODY_BYTES", "MAX_REPLAY_BYTES", "MAX_STATES", "MAX_TOOL_RESULTS",
+  "RETIRED_IDLE_MS", "ALLOW_NON_LOOPBACK", "COPILOT_SDK_DEFAULT_CONNECTION"]);
+
+/** Child-only isolation: keep Copilot credentials and recorded runtime budgets. */
+export function cleanVerificationEnv(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) =>
+    !/^(?:ANTHROPIC_|CLAUDE|BRIDGE_|GHCP_|OPENAI_|AZURE_OPENAI_)/.test(key) &&
+    !["ENABLE_TOOL_SEARCH", "NODE_OPTIONS", ...UNRECORDED_BRIDGE_KNOBS].includes(key)));
+}
+
+// Cold startup includes SDK initialization. Each health request is bounded too,
+// so an unresponsive loopback port cannot defeat the overall startup budget.
 const HEALTH_TIMEOUT_MS = DEFAULT_TIMEOUTS.bridgeHealthMs;
 const HEALTH_POLL_MS = 200;
 // Well above a loopback /health round-trip (milliseconds) and well below the
@@ -134,7 +133,7 @@ export function resolveClaudeBin({ rootDir = ROOT_DIR, env = process.env } = {})
 }
 
 export function claudeVersion(bin = resolveClaudeBin()) {
-  const result = spawnSync(bin, ["--version"], { encoding: "utf8" });
+  const result = spawnSync(bin, ["--version"], { encoding: "utf8", env: cleanVerificationEnv(), timeout: 10000 });
   return (result.stdout ?? "").trim().split(/\s+/)[0] || "unknown";
 }
 
@@ -151,10 +150,10 @@ export async function pickFreePort() {
   return port;
 }
 
-async function probeHealth(port) {
+async function probeHealth(port, timeoutMs) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs))),
     });
     if (!res.ok) return null;
     return await res.json();
@@ -163,13 +162,14 @@ async function probeHealth(port) {
   }
 }
 
-export async function waitForHealth(port, { timeoutMs, isAlive }) {
+export async function waitForHealth(port, { timeoutMs = HEALTH_TIMEOUT_MS, isAlive, signal } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (isAlive && !isAlive()) return null;
-    const health = await probeHealth(port);
-    if (health?.ok) return health;
-    await new Promise((resolve) => setTimeout(resolve, HEALTH_POLL_MS));
+    if (signal?.aborted || (isAlive && !isAlive())) return null;
+    const health = await probeHealth(port, Math.min(HEALTH_PROBE_TIMEOUT_MS, deadline - Date.now()));
+    if (health?.ok && !signal?.aborted && (!isAlive || isAlive())) return health;
+    const remaining = deadline - Date.now();
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(HEALTH_POLL_MS, remaining)));
   }
   return null;
 }
@@ -183,7 +183,7 @@ export function frontendModelFor(model, { rootDir = ROOT_DIR } = {}) {
   const result = spawnSyncCapture(
     process.execPath,
     [path.join(rootDir, "src", "model-cli.mjs"), "frontend", model],
-    { cwd: rootDir },
+    { cwd: rootDir, env: cleanVerificationEnv(), timeout: 10000 },
   );
   if (result.status !== 0) {
     throw new BridgeStartupError(
@@ -208,117 +208,86 @@ export function readTail(filePath, bytes = 4000) {
   }
 }
 
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function portReleased(port) {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+  });
+}
+
 export async function startBridge({
-  model,
-  logPath,
-  rootDir = ROOT_DIR,
-  env = process.env,
-  logLevel = "error",
-  healthTimeoutMs = HEALTH_TIMEOUT_MS,
+  model, logPath, rootDir = ROOT_DIR, env = process.env, logLevel = "error",
+  healthTimeoutMs = HEALTH_TIMEOUT_MS, cleanupTimeoutMs = 7000, signal,
+  spawnProcess = spawn,
 }) {
   if (!model) throw new BridgeStartupError("startBridge requires a model.");
-
+  if (signal?.aborted) throw new BridgeStartupError("Slot aborted before bridge startup.");
+  const startedAt = Date.now();
   const port = await pickFreePort();
   const token = randomBytes(24).toString("hex");
   const frontendModel = frontendModelFor(model, { rootDir });
-
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const logFd = fs.openSync(logPath, "a");
-
-  const child = spawn(process.execPath, [path.join(rootDir, "src", "server.mjs")], {
-    cwd: rootDir,
-    stdio: ["ignore", logFd, logFd],
-    env: {
-      ...env,
-      HOST: "127.0.0.1",
-      PORT: String(port),
-      BRIDGE_API_KEY: token,
-      BRIDGE_INSTANCE_ID: `verify-${model}-${port}`,
-      GHCP_MODEL: model,
-      LOG_LEVEL: logLevel,
-    },
-  });
-
-  let exited = null;
-  child.once("exit", (code, signal) => {
-    exited = { code, signal };
-  });
-
-  const health = await waitForHealth(port, {
-    timeoutMs: healthTimeoutMs,
-    isAlive: () => exited === null,
-  });
-
-  if (!health) {
-    try { child.kill("SIGKILL"); } catch {}
-    try { fs.closeSync(logFd); } catch {}
-    throw new BridgeStartupError(
-      exited
-        ? `Bridge for ${model} exited (code=${exited.code} signal=${exited.signal}) before becoming healthy.`
-        : `Bridge for ${model} was not healthy within ${healthTimeoutMs}ms.`,
-      { model, log: readTail(logPath, 2000) },
-    );
-  }
-
-  return {
-    model,
-    frontendModel,
-    port,
-    token,
-    baseUrl: `http://127.0.0.1:${port}`,
-    logPath,
-    health,
-    pid: child.pid,
-    isAlive: () => exited === null,
-    async stop() {
-      if (exited) {
-        try { fs.closeSync(logFd); } catch {}
-        return exited;
-      }
-      child.kill("SIGTERM");
-      const timer = setTimeout(() => {
-        try { child.kill("SIGKILL"); } catch {}
-      }, 5000);
-      const result = await once(child, "exit").catch(() => [null, null]);
-      clearTimeout(timer);
-      try { fs.closeSync(logFd); } catch {}
-      return { code: result?.[0] ?? null, signal: result?.[1] ?? null };
-    },
+  const instanceId = `verify-${model}-${port}-${randomBytes(6).toString("hex")}`;
+  const grouped = process.platform !== "win32";
+  fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
+  const logFd = fs.openSync(logPath, "wx", 0o600);
+  let child, exited = null, spawnError = null, stopping, overflow = false;
+  const groupAlive = () => {
+    if (!child?.pid) return false;
+    if (!grouped) return exited === null;
+    try { process.kill(-child.pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; }
   };
-}
-
-/**
- * Confirm the bridge really serves the requested model before anything runs.
- *
- * `?all=true` is required: CLAUDE_CODE_BUILT_IN_MODELS are filtered out of the
- * default discovery response (src/model-map.mjs), so several of the primary
- * models are invisible without it.
- */
-export async function assertModelServed(bridge) {
-  const res = await fetch(`${bridge.baseUrl}/v1/models?all=true`, {
-    headers: { authorization: `Bearer ${bridge.token}` },
-  });
-  if (!res.ok) {
-    throw new BridgeStartupError(
-      `Model discovery failed for ${bridge.model}: HTTP ${res.status}`,
-      { model: bridge.model },
-    );
+  const killOwned = (sig) => {
+    if (!child?.pid) return;
+    if (grouped) { try { process.kill(-child.pid, sig); return; } catch {} }
+    if (!exited) { try { child.kill(sig); } catch {} }
+  };
+  let monitor;
+  const stop = () => stopping ??= (async () => {
+    const begin = Date.now();
+    clearInterval(monitor);
+    signal?.removeEventListener("abort", onAbort);
+    killOwned("SIGTERM");
+    while (groupAlive() && Date.now() - begin < Math.min(5000, cleanupTimeoutMs / 2)) await pause(25);
+    if (groupAlive()) killOwned("SIGKILL");
+    while (groupAlive() && Date.now() - begin < cleanupTimeoutMs) await pause(25);
+    const groupGone = !groupAlive();
+    const released = await portReleased(port);
+    try { fs.closeSync(logFd); } catch {}
+    if (!groupGone) child?.unref();
+    return { ok: groupGone && released, pid: child?.pid ?? null, processGroup: grouped ? child?.pid ?? null : null,
+      groupGone, portReleased: released, port, code: exited?.code ?? null, signal: exited?.signal ?? null,
+      spawnError: spawnError?.message ?? null, logOverflow: overflow, durationMs: Date.now() - begin };
+  })();
+  const onAbort = () => { void stop(); };
+  try {
+    child = spawnProcess(process.execPath, [path.join(rootDir, "src", "server.mjs")], {
+      cwd: rootDir, detached: grouped, windowsHide: true, stdio: ["ignore", logFd, logFd],
+      env: { ...cleanVerificationEnv(env), HOST: "127.0.0.1", PORT: String(port),
+        BRIDGE_API_KEY: token, BRIDGE_INSTANCE_ID: instanceId, BRIDGE_VERIFY_OBSERVE: "1",
+        BRIDGE_ALLOW_UNAUTHENTICATED: "0", GHCP_MODEL: model, LOG_LEVEL: logLevel },
+    });
+    child.once("error", (error) => { spawnError = error; });
+    child.once("exit", (code, sig) => { exited = { code, signal: sig }; });
+  } catch (error) { spawnError = error; }
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  monitor = setInterval(() => {
+    try { if (fs.statSync(logPath).size > 16 * 1024 * 1024) { overflow = true; void stop(); } } catch {}
+  }, 250);
+  const health = await waitForHealth(port, { timeoutMs: Math.max(1, healthTimeoutMs - (Date.now() - startedAt)),
+    isAlive: () => !spawnError && !exited && !overflow, signal });
+  if (!health || health.instanceId !== instanceId) {
+    const cleanup = await stop();
+    throw new BridgeStartupError(spawnError ? `Bridge spawn failed: ${spawnError.message}` :
+      `Bridge for ${model} did not become healthy with its owned instance ID within ${healthTimeoutMs}ms.`,
+    { model, cleanup, log: readTail(logPath, 2000) });
   }
-  const ids = ((await res.json())?.data ?? []).map((entry) => entry.id);
-
-  // Discovery advertises Copilot model ids; `frontendModel` is the alias
-  // Claude Code is launched with. The two differ wherever a dot is illegal in
-  // the frontend id -- `claude-haiku-4.5` is advertised, `claude-haiku-4-5` is
-  // what Claude Code is told to use -- so insisting on the alias alone marked
-  // a perfectly healthy bridge as dead for a whole model.
-  const accepted = [bridge.model, bridge.frontendModel].filter(Boolean);
-  if (!accepted.some((id) => ids.includes(id))) {
-    throw new BridgeStartupError(
-      `Bridge does not serve ${accepted.join(" or ")} (advertises ${ids.length} models).`,
-      { model: bridge.model },
-    );
-  }
-  return ids;
+  return { model, frontendModel, port, token, baseUrl: `http://127.0.0.1:${port}`, logPath, health,
+    pid: child.pid, metadata: { instanceId, pid: child.pid, processGroup: grouped ? child.pid : null,
+      observationEnabled: true, rootDir, startedAt: new Date(startedAt).toISOString() },
+    isAlive: () => !exited && !spawnError && !overflow, stop };
 }
 
 /**
@@ -329,14 +298,9 @@ export function writeLaunchSettings({ bridge, settingsPath, rootDir = ROOT_DIR, 
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   const result = spawnSyncCapture(
     process.execPath,
-    [
-      path.join(rootDir, "src", "write-launch-settings.mjs"),
-      settingsPath,
-      bridge.baseUrl,
-      bridge.token,
-      bridge.frontendModel,
-    ],
-    { cwd: rootDir, env },
+    [path.join(rootDir, "src", "write-launch-settings.mjs"), settingsPath, bridge.baseUrl, bridge.frontendModel],
+    // The token never enters argv (process table); set after cleaning, which strips GHCP_*.
+    { cwd: rootDir, env: { ...cleanVerificationEnv(env), GHCP_BRIDGE_TOKEN: bridge.token }, timeout: 10000 },
   );
   if (result.status !== 0) {
     throw new BridgeStartupError(

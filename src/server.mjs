@@ -27,6 +27,12 @@ import {
   testFaultError,
   UpstreamError,
 } from "./upstream-errors.mjs";
+import {
+  emitVerificationDiagnostic,
+  observeVerificationResponse,
+  verificationCompactSummarySha256,
+  verificationRequest,
+} from "./verification-observer.mjs";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MESSAGES_PATH = "/v1/messages";
@@ -48,6 +54,7 @@ const host = process.env.HOST || "127.0.0.1";
 const port = readPositiveIntegerEnv("PORT", 4142);
 const apiKey = process.env.BRIDGE_API_KEY;
 const allowUnauthenticated = process.env.BRIDGE_ALLOW_UNAUTHENTICATED === "1";
+const verifyObservation = process.env.BRIDGE_VERIFY_OBSERVE === "1";
 const instanceId = process.env.BRIDGE_INSTANCE_ID || null;
 const preferredModel = process.env.GHCP_MODEL || "claude-sonnet-5";
 const copilotHome = resolveCopilotHome(process.env.COPILOT_HOME);
@@ -133,6 +140,7 @@ const manager = new SessionManager({
   maxStates,
   maxToolResults,
   onDiagnostic: emitDiagnostic,
+  verifyObservation,
   pendingToolWaitMs,
   sessionOperationTimeoutMs,
   turnTimeoutMs,
@@ -265,6 +273,11 @@ const server = http.createServer(async (req, res) => {
   // Only the path and query matter; a neutral base also works for an IPv6 bind host.
   const requestUrl = new URL(req.url || "/", "http://localhost");
   const requestPath = requestUrl.pathname;
+  const responseId = `msg_${requestId.replaceAll("-", "")}`;
+  let streaming = false;
+  if (verifyObservation && req.method === "POST" && requestPath === MESSAGES_PATH) {
+    observeVerificationResponse(res, { requestId, responseId, streaming: () => streaming }, emitDiagnostic);
+  }
 
   if (req.method === "HEAD" && requestPath === "/api/hello") {
     res.writeHead(200).end();
@@ -289,6 +302,16 @@ const server = http.createServer(async (req, res) => {
       instanceId,
       preferredModel,
       modelCount: manager.listModels().length,
+      ...(verifyObservation ? { timeouts: {
+        turnTimeoutMs: manager.turnTimeoutMs,
+        maxTurnDurationMs: manager.maxTurnDurationMs,
+        sessionOperationTimeoutMs: manager.sessionOperationTimeoutMs,
+        pendingToolWaitMs: manager.pendingToolWaitMs,
+        abortTimeoutMs: manager.abortTimeoutMs,
+        cleanupTimeoutMs: manager.cleanupTimeoutMs,
+        stateIdleTtlMs: manager.stateIdleTtlMs,
+        mcpDiscoveryTimeoutMs: manager.mcpDiscoveryTimeoutMs,
+      } } : {}),
     });
     return;
   }
@@ -336,7 +359,6 @@ const server = http.createServer(async (req, res) => {
   req.once("aborted", abortRequest);
   res.once("close", abortRequest);
   let keepAlive;
-  let streaming = false;
   retirement.begin();
 
   try {
@@ -367,9 +389,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     streaming = Boolean(body.stream);
+    if (verifyObservation) {
+      emitVerificationDiagnostic(emitDiagnostic, verificationRequest(body, req.headers, { requestId, responseId }));
+    }
     let stream;
     let resolvedModel;
-    const responseId = `msg_${requestId.replaceAll("-", "")}`;
+    let progressObserved = false;
     const inputTokens = estimateTokens(body);
     const ensureStream = (model = resolvedModel) => {
       if (!stream) {
@@ -403,7 +428,22 @@ const server = http.createServer(async (req, res) => {
       responseId,
       onReady: ({ model }) => { resolvedModel = model; },
       onEvent: (event) => {
-        if (streaming && !event.agentId) ensureStream().handleSdkEvent(event);
+        if (!streaming || event.agentId) return;
+        ensureStream().handleSdkEvent(event);
+        // Only root text is written through by AnthropicSseStream. Reasoning,
+        // tool deltas, keepalives and the final response are not readiness.
+        if (verifyObservation && !progressObserved && !res.destroyed &&
+            !res.writableEnded && !abortController.signal.aborted &&
+            event.type === "assistant.message_delta" &&
+            typeof event.data?.deltaContent === "string" && event.data.deltaContent.length > 0) {
+          progressObserved = true;
+          emitVerificationDiagnostic(emitDiagnostic, {
+            event: "bridge.verify_progress",
+            requestId,
+            responseId,
+            kind: event.type,
+          });
+        }
       },
       signal: abortController.signal,
     });
@@ -431,6 +471,7 @@ const server = http.createServer(async (req, res) => {
       stopReason: anthropicStopReason(result.message, result.usage),
       // anthropicContent writes one tool_use block per surviving request.
       toolUses: result.message.toolRequests?.length ?? 0,
+      ...(verifyObservation ? { compactSummarySha256: verificationCompactSummarySha256(result.message.content) } : {}),
     });
   } catch (error) {
     const failure = error.name === "AbortError"
@@ -487,9 +528,24 @@ server.listen(port, host, () => {
   );
 });
 
+// manager.stop() ends in the SDK's client.stop(), which waits without limit on
+// a session.detach a wedged runtime never answers. Everything before it is
+// bounded by the abort and cleanup budgets, and the SDK's own runtime shutdown
+// by 2 x 10s, so only a hang reaches this deadline.
+const shutdownDeadlineMs = Math.min(
+  manager.abortTimeoutMs + 5 * manager.cleanupTimeoutMs + 20_000,
+  2_147_483_647,
+);
+
 async function shutdown() {
+  const deadline = setTimeout(() => {
+    emitDiagnostic({ event: "bridge.shutdown_forced", deadlineMs: shutdownDeadlineMs });
+    process.exit(1);
+  }, shutdownDeadlineMs);
+  deadline.unref();
   server.close();
   await manager.stop().catch(() => {});
+  clearTimeout(deadline);
   process.exit(0);
 }
 

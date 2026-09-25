@@ -1,438 +1,252 @@
-/**
- * Headless Claude Code sessions and stream-json reading.
- *
- * Claude Code is a terminal program, so the harness drives it the way CI does:
- * `-p` with `--output-format stream-json`. That stream is the primary evidence
- * for every scenario -- which tools ran, what came back, and which backend
- * actually served the turn.
- */
-
+/** Bounded print-mode CLI processes and ordered root stream-json evidence. */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { isDeepStrictEqual } from "node:util";
+import { cleanVerificationEnv } from "./bridge.mjs";
 
-/**
- * Strip every inherited ANTHROPIC_* and CLAUDE* variable from the child's
- * environment.
- *
- * Two different contaminations hide here, and both produce a run that looks
- * healthy while measuring the wrong thing:
- *
- *  - ANTHROPIC_BASE_URL / _AUTH_TOKEN / _MODEL point the child at whatever
- *    gateway the launching shell uses, so the bridge is never exercised.
- *  - CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION and the
- *    CLAUDE_CODE_MESSAGING_* pair make the child enrol as a nested agent of
- *    the launching session. It then inherits that session's tool policy --
- *    observed here as a child with no Glob, Grep, TodoWrite or BashOutput but
- *    with the parent's exotic tools attached.
- *
- * The settings file is the only permitted source of connection configuration,
- * and the child must believe it was started from a plain shell.
- */
 export function sanitizeEnv(env = process.env) {
-  const clean = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (/^(ANTHROPIC_|CLAUDE)/.test(key)) continue;
-    clean[key] = value;
-  }
+  const clean = cleanVerificationEnv(env);
+  // A nested node --test otherwise inherits its parent's binary IPC reporter.
+  // NODE_OPTIONS can also inject code or change the independent test command.
+  delete clean.NODE_TEST_CONTEXT;
+  delete clean.NODE_OPTIONS;
   return clean;
 }
 
-function parseStreamLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed[0] !== "{") return null;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-}
+// Confirmed against the installed CLI's --help. --bare disables auto-memory,
+// hooks, CLAUDE.md discovery, plugin sync and background prefetches; empty
+// setting sources and strict empty MCP prevent external configuration loading.
+export const ISOLATION_ARGS = Object.freeze([
+  "--bare", "--disable-slash-commands", "--include-hook-events", "--setting-sources", "",
+  "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--no-chrome",
+]);
 
-/**
- * Run one headless turn.
- *
- * Resolves rather than rejects on timeout or non-zero exit: an unhappy run is
- * data a driver has to judge, not an exception to unwind.
- */
-export function runHeadless({
-  prompt,
-  cwd,
-  settingsPath,
-  frontendModel,
-  configDir,
-  claudeBin,
-  timeoutSeconds,
-  extraArgs = [],
-  transcriptPath,
-  env = process.env,
-  // "stream-json" sends the prompt as a user-message envelope instead of raw
-  // text, which is the input half of the stream protocol. Only the output half
-  // is exercised otherwise, and the two are separate code paths.
-  inputFormat = "text",
-  replayUserMessages = false,
-}) {
-  // The prompt goes in on stdin, never in argv.
-  //
-  // A prompt in argv is visible to anything that reads the process table. A
-  // scenario that asks the model to stop a named background process quotes
-  // that name in its prompt, so `pkill -f "node ticker.mjs"` -- an entirely
-  // reasonable way to do what was asked -- matched the *claude* process of
-  // every peer slot whose command line carried the same words, and SIGTERMed
-  // them mid-turn. Five slots died inside one second that way. Off argv, a
-  // slot's command line says nothing about what the slot is doing.
-  const args = [
-    "--settings", settingsPath,
-    "--model", frontendModel,
-    "--output-format", "stream-json",
-    "--verbose",
-    ...(inputFormat === "stream-json" ? ["--input-format", "stream-json"] : []),
-    ...(replayUserMessages ? ["--replay-user-messages"] : []),
-    ...extraArgs,
-    "-p",
-  ];
-
-  const childEnv = {
-    ...sanitizeEnv(env),
-    CLAUDE_CONFIG_DIR: configDir,
-    CI: "1",
-    FORCE_COLOR: "0",
-  };
-
+export function runHeadless({ prompt, cwd, settingsPath, frontendModel, configDir,
+  claudeBin, timeoutSeconds, extraArgs = [], transcriptPath, env = process.env,
+  isolationArgs = ISOLATION_ARGS, childEnv = {}, signal }) {
+  const args = ["--settings", settingsPath, "--model", frontendModel,
+    "--output-format", "stream-json", "--verbose", ...isolationArgs, ...extraArgs, "-p"];
   return new Promise((resolve) => {
     const startedAt = Date.now();
-    const child = spawn(claudeBin, args, {
-      cwd,
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      // Own process group, so a timeout can take the tool subprocesses with it.
-      detached: true,
-    });
-
-    // A closed stdin is how print mode knows the prompt is complete. If the
-    // child is already gone, the write fails and the close handler reports it.
-    //
-    // Under stream-json input the same prompt goes in as a user-message
-    // envelope. That is a different parser on the far side, not a different
-    // spelling of the same one.
-    const payload =
-      inputFormat === "stream-json"
-        ? `${JSON.stringify({
-            type: "user",
-            message: { role: "user", content: [{ type: "text", text: prompt }] },
-          })}\n`
-        : prompt;
-    child.stdin.on("error", () => {});
-    child.stdin.end(payload, "utf8");
-
-    const events = [];
-    const rawLines = [];
-    let stdoutBuf = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { process.kill(-child.pid, "SIGTERM"); } catch { try { child.kill("SIGTERM"); } catch {} }
-      setTimeout(() => {
-        try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} }
-      }, 5000);
-    }, timeoutSeconds * 1000);
-
-    child.stdout.on("data", (chunk) => {
-      stdoutBuf += chunk.toString("utf8");
-      let index;
-      while ((index = stdoutBuf.indexOf("\n")) !== -1) {
-        const line = stdoutBuf.slice(0, index);
-        stdoutBuf = stdoutBuf.slice(index + 1);
-        if (!line.trim()) continue;
-        rawLines.push(line);
-        const event = parseStreamLine(line);
-        if (event) events.push(event);
-      }
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-      if (stderr.length > 200_000) stderr = stderr.slice(-100_000);
-    });
-
-    const finish = (code, signal, spawnError = null) => {
+    const fields = { events: [], stderr: "", exitCode: null, signal: null,
+      timedOut: false, spawnError: null, ioError: null, parseErrors: 0,
+      transcriptPath, command: [claudeBin, ...args], pid: null };
+    let child, timer, killTimer, drainTimer, settled = false, stopping = false, closed = false;
+    let stopReason = null, escalated = false;
+    const groupAlive = () => {
+      if (!child?.pid) return false;
+      if (!grouped) return child.exitCode === null && child.signalCode === null;
+      try { process.kill(-child.pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; }
+    };
+    const onAbort = () => { fields.ioError ??= "CLI aborted"; stop("abort"); };
+    let raw = "", bytes = 0;
+    const decoder = new StringDecoder("utf8");
+    const grouped = process.platform !== "win32";
+    const killOwned = (signal) => {
+      if (!child?.pid) return;
+      if (grouped) { try { process.kill(-child.pid, signal); return; } catch {} }
+      if (child.exitCode === null && child.signalCode === null) { try { child.kill(signal); } catch {} }
+    };
+    const finish = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      if (stdoutBuf.trim()) {
-        rawLines.push(stdoutBuf);
-        const event = parseStreamLine(stdoutBuf);
-        if (event) events.push(event);
+      clearTimeout(timer); clearTimeout(killTimer); clearTimeout(drainTimer);
+      signal?.removeEventListener("abort", onAbort);
+      const groupGone = !groupAlive();
+      fields.cleanup = { ok: closed && groupGone, pid: fields.pid, pgid: grouped ? fields.pid : null,
+        groupGone, exitCode: fields.exitCode, signal: fields.signal, forced: stopping,
+        escalated, reason: stopReason, scope: "owned process group; independently detached descendants are not observed" };
+      raw += decoder.end();
+      for (const line of raw.split("\n").filter((line) => line.trim())) {
+        try {
+          const event = JSON.parse(line);
+          if (!event || typeof event !== "object" || Array.isArray(event)) throw new Error("not an event");
+          fields.events.push(event);
+        } catch { fields.parseErrors += 1; }
       }
       if (transcriptPath) {
         try {
           fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
-          fs.writeFileSync(transcriptPath, rawLines.join("\n") + "\n", "utf8");
-        } catch {}
+          fs.writeFileSync(transcriptPath, raw, { mode: 0o600 });
+        } catch (error) { fields.ioError ??= `transcript: ${error.code ?? error.message}`; }
       }
-      resolve(
-        new HeadlessRun({
-          events,
-          stderr,
-          exitCode: code,
-          signal,
-          timedOut,
-          spawnError,
-          durationMs: Date.now() - startedAt,
-          command: [claudeBin, ...args],
-        }),
-      );
+      resolve(new HeadlessRun({ ...fields, durationMs: Date.now() - startedAt }));
     };
-
-    child.once("error", (error) => finish(null, null, error.message));
-    child.once("close", (code, signal) => finish(code, signal));
+    const stop = (reason = "transport_error") => {
+      if (stopping || settled) return;
+      stopping = true; stopReason = reason;
+      if (!child?.pid) { finish(); return; }
+      killOwned("SIGTERM");
+      killTimer = setTimeout(() => {
+        escalated = true;
+        killOwned("SIGKILL");
+        drainTimer = setTimeout(() => {
+          child?.stdout?.destroy(); child?.stderr?.destroy(); child?.unref(); finish();
+        }, 1000);
+      }, 1000);
+    };
+    if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 86400) {
+      fields.spawnError = "invalid timeoutSeconds"; finish(); return;
+    }
+    try {
+      child = spawn(claudeBin, args, { cwd,
+        env: { ...sanitizeEnv(env), ...childEnv, CLAUDE_CONFIG_DIR: configDir, CI: "1", FORCE_COLOR: "0" },
+        stdio: ["pipe", "pipe", "pipe"], detached: grouped });
+      fields.pid = child.pid ?? null;
+    } catch (error) { fields.spawnError = error.message; finish(); return; }
+    child.stdin.on("error", (error) => { fields.ioError ??= `stdin: ${error.code ?? error.message}`; });
+    child.stdin.end(prompt, "utf8"); // Conversation-only values never enter argv.
+    child.stdout.on("data", (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 4 * 1024 * 1024) { fields.ioError = "stdout exceeded 4 MiB"; stop(); return; }
+      raw += decoder.write(chunk);
+    });
+    child.stderr.on("data", (chunk) => { fields.stderr = (fields.stderr + chunk.toString("utf8")).slice(-200_000); });
+    for (const stream of [child.stdout, child.stderr]) stream.on("error", (error) => {
+      fields.ioError = error.message; stop();
+    });
+    child.once("error", (error) => { fields.spawnError = error.message; finish(); });
+    child.once("close", (code, exitSignal) => {
+      closed = true;
+      fields.exitCode = code; fields.signal = exitSignal;
+      if (groupAlive()) { stop("descendant_cleanup"); return; }
+      finish();
+    });
+    timer = setTimeout(() => { fields.timedOut = true; stop("deadline"); }, timeoutSeconds * 1000);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 
-/* ------------------------------------------------------------------ *
- * Stream reading
- * ------------------------------------------------------------------ */
+const root = (event) => event.parent_tool_use_id == null;
+const textOf = (content) => typeof content === "string" ? content : Array.isArray(content)
+  ? content.map((part) => typeof part === "string" ? part : part?.text ?? "").join("\n") : "";
+
+/** Finite nonnegative usage, with genuine aggregate input and output activity. */
+export function usageReport(usage) {
+  const required = ["input_tokens", "output_tokens"];
+  const optional = ["cache_read_input_tokens", "cache_creation_input_tokens"];
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return { ok: false, missing: true, invalid: [] };
+  const missing = required.some((key) => !Object.hasOwn(usage, key));
+  const keys = [...required, ...optional].filter((key) => Object.hasOwn(usage, key));
+  const invalid = keys.filter((key) => typeof usage[key] !== "number" || !Number.isFinite(usage[key]) || usage[key] < 0);
+  const input = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  const output = usage.output_tokens;
+  if (!missing && !invalid.length && !Number.isFinite(input)) invalid.push("input total");
+  return { ok: !missing && invalid.length === 0 && input > 0 && output > 0, missing, input, output, invalid };
+}
 
 export class HeadlessRun {
-  constructor(fields) {
-    Object.assign(this, fields);
-  }
+  constructor(fields = {}) { Object.assign(this, { events: [], stderr: "", ...fields }); }
+  get init() { return this.events.find((event) => root(event) && event.type === "system" && event.subtype === "init") ?? null; }
+  get results() { return this.events.filter((event) => root(event) && event.type === "result"); }
+  get result() { return this.results.length === 1 ? this.results[0] : null; }
 
-  get init() {
-    return this.events.find((e) => e.type === "system" && e.subtype === "init") ?? null;
-  }
-
-  get result() {
-    return this.events.find((e) => e.type === "result") ?? null;
-  }
-
-  /**
-   * Content blocks this session produced itself.
-   *
-   * A subagent's blocks ride the same stream, tagged with the `Agent` call that
-   * spawned them. They are that agent's output, not this session's answer, so
-   * they never count as the session having said something.
+  /** A message ID may deliver one block per record or a repeated full record.
+   * Union those blocks while retaining first-observed ordering. Identical tool
+   * blocks repeated in that SAME response are replay, not another invocation;
+   * conflicting inputs, duplicate IDs within a record or across responses fail.
    */
-  get mainBlocks() {
-    return this.events
-      .filter((e) => e.type === "assistant" && !e.parent_tool_use_id)
-      .flatMap((e) => e.message?.content ?? []);
+  get stream() {
+    const messages = [], uses = [], results = [], errors = [], missing = [];
+    const byMessage = new Map(), byTool = new Map();
+    let position = 0;
+    for (const [eventIndex, event] of this.events.entries()) {
+      if (!root(event)) continue;
+      const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
+      if (event.type === "assistant") {
+        const id = event.message?.id;
+        const validId = typeof id === "string" && id.length > 0;
+        if (!validId) missing.push(`assistant message.id at event ${eventIndex}`);
+        const key = validId ? id : `missing-${eventIndex}`;
+        let message = byMessage.get(key);
+        if (!message) {
+          message = { id: validId ? id : null, index: eventIndex, blocks: [], tools: [], stopReasons: [] };
+          messages.push(message); byMessage.set(key, message);
+        }
+        if (event.error || event.aborted || event.supersedes?.length) errors.push(`assistant error/abort/replacement at ${eventIndex}`);
+        if (event.message?.stop_reason != null) message.stopReasons.push(event.message.stop_reason);
+        const recordIds = new Set();
+        for (const block of blocks) {
+          position += 1;
+          if (block.type === "tool_use") {
+            if (recordIds.has(block.id)) errors.push(`duplicate tool ID in record: ${block.id}`);
+            recordIds.add(block.id);
+            const prior = byTool.get(block.id);
+            if (prior) {
+              if (prior.messageId !== key || !isDeepStrictEqual(prior.block, block)) errors.push(`conflicting/duplicate tool ID: ${block.id}`);
+              continue;
+            }
+            const use = { id: block.id, name: block.name, input: block.input ?? {}, position,
+              eventIndex, messageId: key, block };
+            byTool.set(block.id, use); uses.push(use); message.tools.push(use);
+          }
+          if (!message.blocks.some((prior) => isDeepStrictEqual(prior.block, block))) {
+            message.blocks.push({ block, position, eventIndex });
+          }
+        }
+      } else if (event.type === "user") {
+        const returned = blocks.filter((block) => block.type === "tool_result");
+        for (const block of returned) results.push({
+          id: block.tool_use_id, isError: block.is_error === true, content: textOf(block.content),
+          metadata: returned.length === 1 ? event.tool_use_result : undefined,
+          eventIndex, position: ++position,
+        });
+      }
+    }
+    return { messages, uses, results, errors, missing };
   }
-
-  /** Assistant prose only: tool arguments are evidence, not an answer. */
-  get text() {
-    return this.mainBlocks
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n");
-  }
-
-  /**
-   * What the session finally said: its prose after its last tool call.
-   *
-   * The result envelope cannot be trusted for this. A turn that dispatches an
-   * async subagent can finish with `result.result` still holding the preamble
-   * the model wrote while dispatching it -- "the scout will report back" --
-   * while the report it actually wrote afterwards never reaches the envelope.
-   * Judging that text as the answer failed two models for a report they had
-   * in fact delivered. The stream carries every block in order, so read the
-   * answer from the stream and keep the envelope as a fallback.
-   */
+  get toolUses() { return this.stream.uses; }
+  get toolResults() { return this.stream.results; }
+  get mainBlocks() { return this.stream.messages.flatMap((message) => message.blocks).sort((a, b) => a.position - b.position).map(({ block }) => block); }
   get answer() {
+    // Never fall back to the result envelope: it is not a root model response.
     const blocks = this.mainBlocks;
     const lastCall = blocks.map((block) => block.type).lastIndexOf("tool_use");
-    const finalProse = blocks
-      .slice(lastCall + 1)
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
-    if (finalProse) return finalProse;
-    const result = this.result;
-    if (typeof result?.result === "string" && result.result.trim()) return result.result;
-    return this.text;
+    return blocks.slice(lastCall + 1).filter((block) => block.type === "text").map((block) => block.text).join("\n").trim();
   }
-
-  get thinkingBlocks() {
-    return this.events
-      .filter((e) => e.type === "assistant")
-      .flatMap((e) => e.message?.content ?? [])
-      .filter((block) => block.type === "thinking" || block.type === "redacted_thinking");
-  }
-
-  get toolUses() {
-    return this.events
-      .filter((e) => e.type === "assistant")
-      .flatMap((e) => e.message?.content ?? [])
-      .filter((block) => block.type === "tool_use")
-      .map((block) => ({ id: block.id, name: block.name, input: block.input ?? {} }));
-  }
-
-  get toolResults() {
-    return this.events
-      .filter((e) => e.type === "user")
-      .flatMap((e) => e.message?.content ?? [])
-      .filter((block) => block.type === "tool_result")
-      .map((block) => ({
-        id: block.tool_use_id,
-        isError: block.is_error === true,
-        content: renderToolResult(block.content),
-      }));
-  }
-
-  toolNames() {
-    return [...new Set(this.toolUses.map((use) => use.name))];
-  }
-
-  usedTool(...names) {
-    const wanted = names.map((n) => n.toLowerCase());
-    return this.toolUses.some((use) => wanted.includes(String(use.name).toLowerCase()));
-  }
-
-  usesOf(name) {
-    const wanted = String(name).toLowerCase();
-    return this.toolUses.filter((use) => String(use.name).toLowerCase() === wanted);
-  }
-
-  usedToolMatching(pattern) {
-    return this.toolUses.some((use) => pattern.test(String(use.name)));
-  }
-
-  /** Tool calls that ran before any result came back: real parallelism. */
-  parallelBatches() {
-    const batches = [];
-    for (const event of this.events) {
-      if (event.type !== "assistant") continue;
-      const uses = (event.message?.content ?? []).filter((b) => b.type === "tool_use");
-      if (uses.length > 1) batches.push(uses.map((u) => u.name));
-    }
-    return batches;
-  }
-
-  /** Every tool_use must be answered exactly once. A gap is a wire-level bug. */
+  get usage() { return this.result?.usage; }
+  get inputTokens() { return usageReport(this.usage).input ?? null; }
+  get sessionId() { return this.result?.session_id ?? this.init?.session_id ?? null; }
+  toolNames() { return [...new Set(this.toolUses.map((use) => use.name))]; }
+  usesOf(name) { return this.toolUses.filter((use) => use.name === name); }
   pairingReport() {
-    const uses = this.toolUses;
-    const results = this.toolResults;
-    const resultIds = new Set(results.map((r) => r.id));
-    const unanswered = uses.filter((use) => !resultIds.has(use.id)).map((use) => use.name);
-    const useIds = new Set(uses.map((use) => use.id));
-    const orphaned = results.filter((r) => !useIds.has(r.id)).map((r) => r.id);
-    return { uses: uses.length, results: results.length, unanswered, orphaned, ok: unanswered.length === 0 && orphaned.length === 0 };
-  }
-
-  get modelUsage() {
-    return this.result?.modelUsage ?? {};
-  }
-
-  get usage() {
-    return this.result?.usage ?? {};
-  }
-
-  get inputTokens() {
-    const usage = this.usage;
-    return (
-      (usage.input_tokens ?? 0) +
-      (usage.cache_read_input_tokens ?? 0) +
-      (usage.cache_creation_input_tokens ?? 0)
-    );
-  }
-
-  get sessionId() {
-    return this.result?.session_id ?? this.init?.session_id ?? null;
-  }
-
-  get mcpServers() {
-    return this.init?.mcp_servers ?? [];
-  }
-
-  /**
-   * The schema-validated object a --json-schema turn produced.
-   *
-   * Claude Code validates and retries against the schema itself, so a parsed
-   * object here means the whole validator path survived the bridge. The
-   * envelope has carried it under more than one key across versions, and the
-   * string form is the fallback when only the prose made it.
-   */
-  get structuredOutput() {
-    const result = this.result;
-    for (const candidate of [result?.structured_output, result?.structuredOutput]) {
-      if (candidate && typeof candidate === "object") return candidate;
+    const { uses, results, messages, errors } = this.stream;
+    const problems = [...errors];
+    const unanswered = [], orphaned = [];
+    for (const use of uses) {
+      if (typeof use.id !== "string" || !use.id) problems.push("missing tool_use id");
+      const matches = results.filter((result) => result.id === use.id);
+      if (!matches.length) unanswered.push(use.id);
+      if (matches.length > 1) problems.push(`duplicate result: ${use.id}`);
+      for (const result of matches) {
+        if (result.position <= use.position) problems.push(`result before call: ${use.id}`);
+        if (messages.some((message) => message.id !== use.messageId && message.index > use.eventIndex && message.index < result.eventIndex)) {
+          problems.push(`next response before tool result: ${use.id}`);
+        }
+      }
     }
-    if (typeof result?.result === "string") {
-      try {
-        const parsed = JSON.parse(result.result);
-        if (parsed && typeof parsed === "object") return parsed;
-      } catch {}
+    for (const result of results) if (!uses.some((use) => use.id === result.id)) orphaned.push(result.id);
+    const resultIndex = this.events.findIndex((event) => root(event) && event.type === "result");
+    if (resultIndex >= 0 && this.events.some((event, index) => index > resultIndex && root(event) && ["assistant", "user"].includes(event.type))) {
+      problems.push("content after result envelope");
     }
-    return null;
+    return { uses: uses.length, results: results.length, unanswered, orphaned, problems,
+      ok: !unanswered.length && !orphaned.length && !problems.length };
   }
-
-  /**
-   * User messages the CLI echoed back under --replay-user-messages.
-   *
-   * A replay only exists if the input envelope was parsed, so its presence is
-   * the one piece of evidence that the stream-json INPUT path ran rather than
-   * the plain-text one.
-   */
-  get replayedUserMessages() {
-    return this.events.filter((event) => event.type === "user" && event.isReplay === true);
-  }
-
-  get permissionDenials() {
-    return this.result?.permission_denials ?? [];
-  }
-
-  /** Did a turn actually complete? A crash or timeout is not a verdict. */
   get completed() {
-    return this.result !== null && !this.timedOut;
+    return this.exitCode === 0 && this.signal == null && !this.timedOut && !this.spawnError && !this.ioError && !this.parseErrors &&
+      this.results.length === 1 && this.result.subtype === "success" && this.result.is_error === false;
   }
-
   get failureHint() {
-    if (this.timedOut) return `timed out after ${Math.round(this.durationMs / 1000)}s`;
-    if (this.spawnError) return `spawn failed: ${this.spawnError}`;
-    if (!this.result) {
-      const tail = this.stderr.trim().split("\n").slice(-3).join(" | ");
-      return `no result event (exit=${this.exitCode}${tail ? `, stderr: ${tail}` : ""})`;
-    }
-    if (this.result.is_error) return `result reported error: ${String(this.result.result ?? "").slice(0, 200)}`;
+    if (this.timedOut) return "CLI timed out";
+    if (this.spawnError || this.ioError) return String(this.spawnError || this.ioError);
+    if (this.exitCode !== 0 || this.signal) return `CLI exit=${this.exitCode} signal=${this.signal ?? "none"}`;
+    if (this.parseErrors) return `invalid stream-json records: ${this.parseErrors}`;
+    if (this.results.length !== 1) return `expected one result envelope, received ${this.results.length}`;
+    if (this.result.subtype !== "success" || this.result.is_error !== false) return `unsuccessful result: ${this.result.subtype}`;
     return null;
   }
-}
-
-function renderToolResult(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => (typeof part === "string" ? part : part?.text ?? ""))
-      .join("\n");
-  }
-  return content == null ? "" : String(content);
-}
-
-/**
- * Confirm the Copilot model named in modelUsage is the one the slot asked for.
- *
- * The displayed label is a frontend alias and cannot be trusted for this;
- * modelUsage is what the turn actually billed.
- */
-export function servedModels(run) {
-  return Object.keys(run.modelUsage ?? {});
-}
-
-export function servedExpectedModel(run, { model, frontendModel }) {
-  const served = servedModels(run);
-  if (served.length === 0) return { ok: false, served, reason: "modelUsage was empty" };
-  // The `[1m]` window hint is not part of the model's identity; compare
-  // without it so a launch id with the hint matches a usage key without it.
-  const bare = (id) => id.toLowerCase().replace(/\[(?:1m|\d+k)\]$/, "");
-  const wanted = [model, frontendModel].filter(Boolean).map(bare);
-  const match = served.some((id) => {
-    const lower = bare(id);
-    return wanted.some((w) => lower === w || lower.endsWith(`/${w}`) || lower.includes(w));
-  });
-  return match
-    ? { ok: true, served }
-    : { ok: false, served, reason: `modelUsage names ${served.join(", ")}, expected ${model}` };
 }

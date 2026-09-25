@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,19 +13,20 @@ import {
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+function runWriter(args, env) {
+  return spawnSync(
+    process.execPath,
+    [path.join(rootDir, "src", "write-launch-settings.mjs"), ...args],
+    { encoding: "utf8", env: { ...process.env, GHCP_NATIVE_TOOL_SEARCH: "0", ...env } },
+  );
+}
+
 function writeSettings(model, env = {}) {
   const fixtureDir = mkdtempSync(path.join(tmpdir(), "claude-ghcp-settings-"));
   const settingsPath = path.join(fixtureDir, "settings.json");
-  const result = spawnSync(
-    process.execPath,
-    [
-      path.join(rootDir, "src", "write-launch-settings.mjs"),
-      settingsPath,
-      "http://127.0.0.1:4142",
-      "test-token",
-      model,
-    ],
-    { encoding: "utf8", env: { ...process.env, GHCP_NATIVE_TOOL_SEARCH: "0", ...env } },
+  const result = runWriter(
+    [settingsPath, "http://127.0.0.1:4142", model],
+    { GHCP_BRIDGE_TOKEN: "test-token", ...env },
   );
 
   try {
@@ -151,5 +152,33 @@ test("blanks the subagent model for Claude family launches", () => {
     const settings = writeSettings(model, { CLAUDE_CODE_SUBAGENT_MODEL: "gpt-6-luna" });
     assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, "");
     assert.equal(settings.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP, "1");
+  }
+});
+
+// argv is readable by every local user through the process table, so the
+// bridge token reaches the writer only through its environment.
+test("takes the bridge token from GHCP_BRIDGE_TOKEN only", () => {
+  const settings = writeSettings("claude-sonnet-5", { GHCP_BRIDGE_TOKEN: "env-only-token" });
+  assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "env-only-token");
+  assert.equal(settings.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:4142");
+  assert.equal(settings.env.ANTHROPIC_MODEL, "claude-sonnet-5[1m]");
+});
+
+test("rejects a positional token and a missing or blank GHCP_BRIDGE_TOKEN", (t) => {
+  const fixtureDir = mkdtempSync(path.join(tmpdir(), "claude-ghcp-settings-"));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+  const settingsPath = path.join(fixtureDir, "settings.json");
+  const cases = [
+    // The old four-argument call: it must fail loudly rather than write a file.
+    [[settingsPath, "http://127.0.0.1:4142", "argv-token", "claude-sonnet-5"], { GHCP_BRIDGE_TOKEN: "env-token" }],
+    [[settingsPath, "http://127.0.0.1:4142", "claude-sonnet-5"], { GHCP_BRIDGE_TOKEN: undefined }],
+    [[settingsPath, "http://127.0.0.1:4142", "claude-sonnet-5"], { GHCP_BRIDGE_TOKEN: "  " }],
+  ];
+  for (const [args, env] of cases) {
+    const result = runWriter(args, env);
+    assert.equal(result.status, 2, JSON.stringify(args));
+    assert.match(result.stderr, /Usage: GHCP_BRIDGE_TOKEN=\.\.\. node src\/write-launch-settings\.mjs <output> <base-url> <frontend-model>/);
+    assert.doesNotMatch(result.stderr, /argv-token|env-token/);
+    assert.equal(existsSync(settingsPath), false);
   }
 });

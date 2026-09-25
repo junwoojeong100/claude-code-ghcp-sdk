@@ -32,10 +32,6 @@ export function extractReasoningEffort(body) {
   return normalized === "ultracode" ? "xhigh" : normalized;
 }
 
-export function lastMessage(messages = []) {
-  return messages.findLast((message) => message?.role !== "system");
-}
-
 function lastMessageIndex(messages = []) {
   return messages.findLastIndex((message) => message?.role !== "system");
 }
@@ -277,6 +273,19 @@ function anthropicUsage(inputTokens, message, usage) {
   };
 }
 
+// Claude Code keeps message_start's input estimate unless message_delta reports
+// more than zero, so a fully cached turn moves one cached token to input and
+// the merged total still matches the JSON usage.
+function streamedUsage(inputTokens, message, usage) {
+  const counted = anthropicUsage(inputTokens, message, usage);
+  const cache = counted.input_tokens > 0 ? null
+    : counted.cache_read_input_tokens ? "cache_read_input_tokens"
+      : counted.cache_creation_input_tokens ? "cache_creation_input_tokens" : null;
+  if (!cache) return counted;
+  const { [cache]: cached, ...rest } = counted;
+  return { ...rest, input_tokens: 1, ...(cached > 1 ? { [cache]: cached - 1 } : {}) };
+}
+
 export function writeJsonMessage(
   res,
   { id, model, message, inputTokens, usage },
@@ -342,6 +351,8 @@ export class AnthropicSseStream {
         content: [],
         stop_reason: null,
         stop_sequence: null,
+        // A message interrupted before message_delta keeps this usage, and
+        // Claude Code anchors its context count on it.
         usage: { input_tokens: this.inputTokens, output_tokens: 0 },
       },
     });
@@ -391,7 +402,7 @@ export class AnthropicSseStream {
         stop_reason: anthropicStopReason(message, usage),
         stop_sequence: null,
       },
-      usage: anthropicUsage(this.inputTokens, message, usage),
+      usage: streamedUsage(this.inputTokens, message, usage),
     });
     event(this.res, "message_stop", { type: "message_stop" });
     this.res.end();

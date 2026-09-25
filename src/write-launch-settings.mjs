@@ -1,10 +1,14 @@
 import { writeGatewaySettings } from "./claude-gateway-env.mjs";
 import { launchModelFor, primaryModelPicker } from "./model-map.mjs";
 
-const [outputPath, baseUrl, token, frontendModel] = process.argv.slice(2);
-if (!outputPath || !baseUrl || !token || !frontendModel) {
+// The token comes only from the environment: argv is readable by every local
+// user through the process table. A fourth argument is an old caller still
+// passing the token there, so it fails instead of leaking.
+const [outputPath, baseUrl, frontendModel, ...extra] = process.argv.slice(2);
+const token = process.env.GHCP_BRIDGE_TOKEN;
+if (!outputPath || !baseUrl || !frontendModel || extra.length || !token?.trim()) {
   console.error(
-    "Usage: node src/write-launch-settings.mjs <output> <base-url> <token> <frontend-model>",
+    "Usage: GHCP_BRIDGE_TOKEN=... node src/write-launch-settings.mjs <output> <base-url> <frontend-model>",
   );
   process.exit(2);
 }

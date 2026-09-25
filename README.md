@@ -36,10 +36,15 @@ npm install
 
 ### 2. Sign in to GitHub Copilot
 
-Install the Copilot CLI if `copilot` is not on your PATH, then sign in:
+If `command -v copilot` prints nothing, install the Copilot CLI:
 
 ```bash
 npm install -g @github/copilot
+```
+
+Then sign in:
+
+```bash
 copilot login
 ```
 
@@ -52,18 +57,32 @@ You do not need an Anthropic API key.
 ./bin/ghcp-models
 ```
 
-Both commands should succeed, and `ghcp-models` should list the model you want to use.
+Stay in the repository root for the remaining commands.
+
+- `ghcp-doctor` prints a JSON report. It passes when `node`, `npm`, `claude` and `copilot` each show `"ok": true` and `compatibility.node.supported` is `true`; otherwise it exits with status 1. Install or update whatever shows `false`, then run it again. A version check that does not answer within 10 seconds shows `false` too. Without Claude Code it prints `Claude Code executable not found…` instead of the report. It does not check `curl` or Git. `npm run doctor` runs the same check.
+- `ghcp-models` connects to Copilot and prints one line per model; the model you want should be listed. If it prints an error instead, run `copilot login` again and retry. A successful list checks account access, not whether a model can answer a prompt.
 
 ### 4. Run Claude Code
 
+Start with the default model, Claude Sonnet 5:
+
 ```bash
-# Start with the default model, Claude Sonnet 5
 ./bin/claude-ghcp
+```
 
-# Start with another model
+In Claude Code, ask `Reply with OK`. A reply confirms that a request completed through this setup; it does not verify every feature below. Prompts use your Copilot allowance. Use `/exit` to return to the shell. The shared bridge stays running; see [The background bridge](#the-background-bridge) before stopping it.
+
+If startup fails, read the error and run `./bin/ghcp-doctor` again. For an unavailable model, choose an ID from `./bin/ghcp-models`. If Claude Code opens but a request fails, see [Diagnostics](docs/DIAGNOSTICS.md).
+
+**Optional alternatives — choose one, not additional setup steps.** An interactive session with another model:
+
+```bash
 ./bin/claude-ghcp --ghcp-model gpt-6-sol
+```
 
-# Print mode (-p): answer one prompt, then exit
+Print mode (`-p`), which answers one prompt and exits:
+
+```bash
 ./bin/claude-ghcp --ghcp-model claude-haiku-4.5 -p "Describe the structure of this repository"
 ```
 
@@ -76,21 +95,12 @@ To run from any directory, add this repository's `bin` directory to your PATH. F
 ```bash
 echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc
 exec zsh
-command -v claude   # <clone-path>/claude-code-ghcp-sdk/bin/claude
+command -v claude
 ```
 
-For other shells, add the same line to that shell's configuration file. `claude` then runs the Direct SDK launcher:
+The last command should print `<clone-path>/claude-code-ghcp-sdk/bin/claude`. For other shells, add the same line to that shell's configuration file. A symlink to a launcher, for example in `~/.local/bin` or from `npm link`, works as well: the launchers follow it back to this checkout.
 
-```bash
-claude
-claude --ghcp-model claude-haiku-4.5
-
-# Change the default model
-export GHCP_MODEL=claude-haiku-4.5
-
-# Run Claude Code with its original provider
-claude-current
-```
+`claude` then runs the Direct SDK launcher, for example `claude` or `claude --ghcp-model claude-haiku-4.5`. `export GHCP_MODEL=claude-haiku-4.5` changes the default model, and `claude-current` runs Claude Code with its original provider.
 
 ## Models
 
@@ -107,9 +117,9 @@ In `/model` each row reads `GitHub Copilot · <label> (<ID>)`. The list shows on
 
 Other models in your Copilot catalogue work with `--ghcp-model` when your policy allows them, but they are not verified. `./bin/ghcp-models` lists them.
 
-The window column is the context size Claude Code plans for. Copilot accepts fewer input tokens than that on five of the six models; see [Long conversations](#long-conversations).
+The window column is the context size Claude Code plans for, not a measured Copilot input limit. The runtime may impose a lower limit; see [Long conversations](#long-conversations).
 
-The effort levels are what the Copilot catalogue listed on 2026-09-24; `./bin/ghcp-models --json` shows what your account gets now. Set a level with `--effort <level>` or `/effort`. If the model does not list that level, the bridge uses the nearest lower level it does list, or the model's lowest level when none is lower: `none` on Claude Opus 5.5 runs as `low`. A model without reasoning effort gets no effort value.
+**Reasoning effort: catalogue snapshot, 2026-09-24.** These per-model lists are observations, not hardcoded capabilities or a test result. The bridge uses the supported levels it reads from the SDK catalogue at startup. `./bin/ghcp-models --json` connects to Copilot to show your account's current catalogue; it does not refresh an already-running bridge. Set a level with `--effort <level>` or `/effort`. If the model does not list that level, the bridge uses the nearest lower level it does list, or the model's lowest level when none is lower: `none` on Claude Opus 5.5 runs as `low`. A model without reasoning effort gets no effort value.
 
 Ultracode (`--effort ultracode`) reaches Copilot as `xhigh`, and a model that does not list `xhigh` gets its nearest lower level instead. It needs Claude Code 2.1.203 or later and can spend more GitHub Copilot AI Credits than a standard call.
 
@@ -125,10 +135,11 @@ Every `claude-ghcp` launch except print mode shares one bridge that runs in the 
 
 - Print mode (`-p`) gets a private bridge that stops when the command exits. `-p` together with `--background` or `agents` uses the shared bridge.
 - `./bin/claude-ghcp-status` shows whether the bridge is running, its PID and port, the model it was first started with, and how many replaced bridges are still running (`retired`).
-- `./bin/claude-ghcp-stop` stops the bridge and every replaced bridge, and deletes `bridge.log` and all per-launch settings files. Sessions and `/background` jobs that still use them stop working, so run it when you are done.
+- `./bin/claude-ghcp-stop` stops the bridge and every replaced bridge, and deletes `bridge.log` and the bridge's per-launch settings files (not the `claude-litellm` ones described under [Your settings are left alone](#your-settings-are-left-alone)). Sessions and `/background` jobs that still use them stop working, so run it when you are done. If it cannot stop the current bridge, it still removes those files, then reports the error.
 - A different `--ghcp-model` reuses the running bridge. A launch with a different bridge configuration starts a new one: changed bridge code or dependencies, another checkout of this repository, a different `--bridge-port`, or a different bridge environment variable such as `TURN_IDLE_TIMEOUT_MS`. The full list is in [Architecture](docs/ARCHITECTURE.md#persistent-bridge-and-retirement).
 - The replaced bridge keeps serving the sessions already open on it. It exits once their launchers have exited and it has had no request for `RETIRED_IDLE_MS` (default 1 hour). It is stopped at once instead when it comes from an older version of this repository that cannot keep serving after being replaced, or when the new launch pins the port it is using.
 - The bridge's files (`bridge.log`, its registry and the per-launch settings files) live in `$GHCP_DAEMON_DIR` if set, otherwise in `~/Library/Caches/claude-code-ghcp-sdk` on macOS and `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk` on Linux. The bridge runs in that directory, not in the project that started it.
+- If a launch fails with `Persistent bridge PID … did not answer /health, so no second bridge was started beside it`, the registered bridge is still running but not answering. Run `./bin/claude-ghcp-stop`, then launch again. A registry whose PID now belongs to some other program is replaced without touching that program ([details](docs/ARCHITECTURE.md#persistent-bridge-and-retirement)).
 
 ### After updating this checkout
 
@@ -142,14 +153,14 @@ Use `--resume` to choose a different saved conversation. Resuming keeps Claude C
 
 ### Long conversations
 
-Claude Code decides when to compact a conversation, as it always does. On every model except GPT-6 Astra, Copilot's input limit is lower than the point where Claude Code auto-compacts, so a long conversation reaches Copilot's limit first.
+Claude Code decides when to compact a conversation, as it always does. A Copilot runtime input limit can be lower than the advertised context window, so a long conversation may reach it before Claude Code auto-compacts.
 
 - When Copilot would start compacting or dropping history on its own, the bridge ends the turn with a 400 `invalid_request_error` whose message starts with `prompt is too long`. Claude Code then compacts its own transcript and continues. This hand-off is [not verified](#not-verified).
 - If Copilot reports a context-limit error itself, the bridge returns 500 `api_error`, not the `prompt is too long` error that Claude Code compacts on. Run `/compact` if a long conversation keeps failing this way.
 - Do not turn off auto-compaction to get a larger window.
 - Cached input is counted once, so Claude Code's context meter is not inflated.
 
-Per-model input limits: [Architecture](docs/ARCHITECTURE.md#model-discovery-and-context).
+How advertised windows and runtime limits differ: [Architecture](docs/ARCHITECTURE.md#model-discovery-and-context).
 
 ### Rate limits and timeouts
 
@@ -157,7 +168,7 @@ When Copilot rate-limits a request or its upstream fails, the Copilot runtime re
 
 A turn fails with 500 `api_error` after 5 minutes without model progress (`TURN_IDLE_TIMEOUT_MS`) or after 30 minutes in total (`TURN_MAX_DURATION_MS`). If either limit is reached while Copilot is waiting to retry a 429 or 5xx, the turn fails as 429 or 529 instead, so Claude Code retries it.
 
-The background bridge writes a content-free line to `bridge.log` for every failed Messages request (`bridge.request_failed`) and every completed turn (`bridge.turn_completed`, with the requested and served models and token counts). All status codes: [Upstream Errors](docs/ARCHITECTURE.md#upstream-errors). All log events: [Logging](docs/ARCHITECTURE.md#logging).
+The background bridge writes operational summaries to `bridge.log` for failed Messages requests (`bridge.request_failed`) and completed turns (`bridge.turn_completed`, including requested models, SDK-reported models and token counts). These summaries omit conversation contents, but other lines can include upstream error text. Review the combined log before sharing it. See [Upstream Errors](docs/DIAGNOSTICS.md#upstream-errors) for status codes and [Logging](docs/DIAGNOSTICS.md#logging) for events and privacy limits.
 
 ## LiteLLM (optional)
 
@@ -180,7 +191,7 @@ To connect, run a gateway, or look up what differs from Direct SDK, see the [Lit
 |---|---|
 | Run Claude Code on Copilot models (Direct SDK) | `./bin/claude-ghcp` or `./bin/claude` |
 | List the Copilot models your account can use | `./bin/ghcp-models` |
-| Check the environment | `./bin/ghcp-doctor` |
+| Check the environment | `./bin/ghcp-doctor` or `npm run doctor` |
 | Show the background bridge | `./bin/claude-ghcp-status` |
 | Stop the background bridge and every replaced bridge | `./bin/claude-ghcp-stop` |
 | Run Claude Code through a LiteLLM gateway | `./bin/claude-litellm` |
@@ -197,7 +208,7 @@ Command-line options win over environment variables. The launchers read exported
 | `--ghcp-model` / `GHCP_MODEL` | `claude-sonnet-5` | Launch model for Direct SDK |
 | `--bridge-port` / `GHCP_BRIDGE_PORT` | a free port | Fixes the bridge's loopback port |
 | `GHCP_NATIVE_TOOL_SEARCH` | `0` | `1` turns on Claude Code's own MCP tool search. By default every tool is sent with its full schema |
-| `GHCP_DAEMON_DIR` | see [The background bridge](#the-background-bridge) | Directory of the background bridge |
+| `GHCP_DAEMON_DIR` | see [The background bridge](#the-background-bridge) | Directory of the background bridge. A relative path is resolved against the directory you launch from. A value starting with `~` is refused, because it is not expanded |
 | `CLAUDE_CODE_BIN` | the first `claude` on PATH that is not one of this repository's launchers | The real Claude Code executable the launchers run |
 | `COPILOT_CLI_PATH` | unset | Runs an existing Copilot CLI instead of the runtime bundled with the SDK. Another runtime is not verified |
 | `MAX_BODY_BYTES`, `MAX_REPLAY_BYTES` | `268435456` (256 MiB) each | Largest request body and largest replayed history. Raising them uses more memory and does not enlarge a model's window |
@@ -217,56 +228,41 @@ The launchers never write `~/.claude/settings.json` or your project settings. Ea
 - The Direct file also sets the `/model` list, sets `CLAUDE_CODE_ATTRIBUTION_HEADER=0` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, and clears `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. It clears `ENABLE_TOOL_SEARCH` unless `GHCP_NATIVE_TOOL_SEARCH=1`.
 - The `claude-litellm` file clears `ENABLE_TOOL_SEARCH` and sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
 
-Everything else still loads: theme, permissions, hooks, plugins, skills, MCP servers and project settings. Managed (organization) settings rank above command-line settings in Claude Code, so an enforced provider selector, `availableModels` list or MCP tool search setting still applies. This repository does not test that.
+Everything else still loads: theme, permissions, hooks, plugins, skills, MCP servers and project settings. Managed (organization) settings rank above command-line settings in Claude Code, so an enforced provider selector, `availableModels` list or MCP tool search setting still applies. This repository does not test that. The launchers do not change `PATH` either; Claude Code gets the one you launched with.
 
-Print mode and `claude-litellm` delete that file when they exit. Other Direct launches keep it in the bridge directory, because Claude Code restarts a `/background` job from it later. When those files are removed: [Files the bridge keeps](docs/ARCHITECTURE.md#files-the-bridge-keeps).
+A print-mode run (`-p` without `--background`) deletes that file when it exits. Every other launch keeps it, because Claude Code restarts a `/background` job from it later: `claude-ghcp` keeps it in the bridge directory, and `claude-litellm` in `${XDG_STATE_HOME:-~/.local/state}/claude-code-ghcp-sdk/litellm-settings`. The `claude-litellm` file contains your LiteLLM key, and `claude-ghcp-stop` does not remove it: delete that directory yourself to remove stored keys (a `/background` job still using a file then cannot restart). When those files are removed: [Files the bridge keeps](docs/ARCHITECTURE.md#files-the-bridge-keeps).
 
 The bridge also keeps the Copilot CLI's own MCP servers (from `~/.copilot/mcp-config.json`, workspace files, installed Copilot plugins, and the built-in `github-mcp-server`) from starting in its sessions, without changing their configuration. Claude Code's MCP servers are unaffected. See [Copilot Runtime MCP Servers](docs/ARCHITECTURE.md#copilot-runtime-mcp-servers).
 
 ## What works and what does not
 
-### Verified
+### What the essential suite checks
 
-The last full matrix run passed **66 of 66 slots** on 2026-09-23 (KST), on commit `bed30ce`, with Claude Code 2.1.280: six models × 11 scenarios. A slot is one model running one scenario. Per-scenario results: [Verification results](docs/VERIFICATION.md).
+The essential suite runs six scenarios on all six [primary models](#models): **36 cases**. The list below is what each case must show to pass. It is not a result: whether the latest run passed, and with which versions and code, is in the **[recorded result](docs/VERIFICATION.md)**.
 
-What a pass shows:
+- **V01 — Launch and isolation:** print/TUI startup, exact Unicode reply, six-model picker, and a fresh conversation after `/clear`.
+- **V02 — Coding:** complete Read results, real foreground test failures, source-only Edit, a retest in which all three tests pass, and an independent harness rerun.
+- **V03 — MCP:** an expected lookup error followed by a successful hidden-value lookup, then tool-free recall in the same process.
+- **V04 — Model/effort:** switch models within a conversation and check requested, resolved and SDK-reported model IDs plus the actual SDK effort setting.
+- **V05 — Interrupt:** Escape interrupts an active stream and reaches the SDK abort path; the same process then answers a new question.
+- **V06 — Compact/resume:** native `/compact`, then exact recall from a new SDK session that was sent the compacted history instead of the original prompt; normal exit; and recall after a new CLI and private bridge resume the exact saved session.
+- **Whole run:** all 36 cases, source/settings integrity and owned-process cleanup must pass. Missing evidence is blocked, confirmed violations fail, and focused runs cannot establish a full pass.
 
-- Each slot ran the real Claude Code binary against the bridge, the Copilot SDK and a real Copilot model. Nothing was mocked.
-- Each slot had its own workspace and Claude Code configuration directory.
-- Slots were judged on files on disk, git history, hook logs and Claude Code's record of which tools ran. The model's answer was checked for values planted in the test data, plus two other things: in the multi-step scenario a claim that every step is done must match the files, and in the hooks scenario the answer must say the command was blocked.
-- The 11 scenarios cover searching a repository; an exact Edit and a new file after a plan-mode turn; a test-fix loop; a background shell process, a git commit and a worktree; a four-step plan across source, text, markdown and notebook files that ends by reading a PDF and an image; a project subagent; a Playwright MCP server; CLAUDE.md rules, hooks, commands, skills, a plugin and a scheduled task; session resume and fork; long-context retrieval; and the launcher with its background bridge and a background agent.
+The model checks rely on **SDK-reported model IDs**, not on the provider's internal model implementation. [Testing](docs/TESTING.md) explains the checks and evidence. Production offline regressions remain for translation, model mapping, errors, cancellation, session/subagent isolation, runtime MCP blocking and launchers; they are not live results.
 
-The passing run did not use the default settings. It used `--timeout-scale 2` (default 1), 3 model workers × 2 scenario workers (default 6 × 2), and `PENDING_TOOL_WAIT_MS=30000`. That variable sets how long the bridge waits for Copilot to register a tool call. Its bridge default is 10000, and the 30000 reached every bridge the run started.
-
-The matrix has not been re-run since `bed30ce`. The code changes below came later. `npm test` covers each of them. One-off live checks, recorded in [Verification history](docs/VERIFICATION_HISTORY.md), also cover the subagent model and the upstream 429 and 503 handling. No matrix run covers them.
-
-- Interactive sessions use the background bridge, and a replaced bridge keeps serving its open sessions (`ceecc8e`).
-- Copilot rate limits and outages map to 429/529 (`9c68f01`), including turns cut short during a Copilot retry wait (`9f1649a`).
-- Subagents and Explore that name no model stay on the launch model (`f6c1827`).
-- Each streamed content block is closed before the next one starts (`279caa6`).
-- User text sent next to a tool result is folded into that result (`b53208d`).
-- Request fields the bridge accepts but ignores are listed in `bridge.degraded_controls` and `GET /health` (`7775be6`).
-- Every completed turn writes a content-free log line (`24989f1`).
-- Bridge credentials are compared in constant time (`9adbc28`).
-- The bridge starts when this checkout is reached through a symlinked directory, such as `/tmp` on macOS (`909fbc1`).
+Media from run `2026-09-25T09-55-54-058Z-9bdbc340`: an [edited replay video](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4) (61 s) and stills of [V01](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-02-v01-unicode-answer.png), [V04](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-03-v04-model-switch.png), [V05](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-04-v05-interrupt-continue.png), [V06](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-05-v06-cold-resume.png) and the [results card](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-01-results-summary.png). They were rendered from that run’s sealed PTY recordings with paths and tokens masked. They show what the cases look like and are not verification evidence; [manifest.json](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/manifest.json) lists the source recordings, time ranges, edits and hashes. That run’s outcome is in the [recorded result](docs/VERIFICATION.md).
 
 ### Not verified
 
-The matrix does not exercise these, so treat them as unproven:
+The essential suite does not cover:
 
-- Automatic compaction, and the context-limit error that hands a long conversation to it. Five of the six models depend on this in long conversations.
-- Copilot rate-limit and outage handling (429/529). Only `npm test` with injected faults and a one-off probe cover it.
-- Interactive terminal sessions, including `/rewind` and Esc cancellation. Every slot runs Claude Code without its interactive UI: in print mode (`-p`), and in the launcher scenario also with `--background` and `agents --json --all`.
-- Permission prompts. No slot answers one: slots run with permission checks bypassed, except one plan-mode turn and the launcher scenario, which uses `acceptEdits`.
-- Which Copilot model served a turn. The check reads the model name Claude Code requested, not the model Copilot reports in `bridge.turn_completed`.
-- WebFetch, and dynamic workflows that start many subagents. The subagent scenario delegates to one subagent.
-- Running skills, plugin commands and scheduled jobs. The checks confirm they load or are created, not that they run.
-- A bridge restart in the middle of a session. The resume scenario keeps one bridge running across its three processes.
-- The LiteLLM path.
-- Models outside the six in [Models](#models).
-- Other machines, and Linux. The run used one macOS (darwin arm64) machine.
+- Long-context retrieval, maximum context capacity, automatic compaction or context-limit recovery.
+- Live rate-limit/outage recovery (429/529), `/rewind` or permission prompts.
+- Subagents, ToolSearch, arbitrary MCP integrations, WebFetch, skills, hooks, plugins, scheduled jobs, notebook or media workflows.
+- Session forks, in-flight recovery across bridge crashes, shared-daemon retirement, background agents or the launcher path itself. The runner owns private bridges directly; V06 checks a clean restart, not crash recovery.
+- LiteLLM, models outside the six, or other host/runtime combinations not recorded in the result.
 
-The generated list: [Not verified by this run](docs/VERIFICATION.md#not-verified-by-this-run).
+See [Verification results](docs/VERIFICATION.md) for the limits of the recorded run. Implementation support in [Compatibility](docs/COMPATIBILITY.md) does not add live coverage.
 
 ### Not supported
 
@@ -287,32 +283,34 @@ Feature by feature: [Compatibility](docs/COMPATIBILITY.md#feature-lookup).
 | Use case | Fit |
 |---|---|
 | Personal experiments and research | Suitable |
-| Coding in the Claude Code UI with Copilot models | Works for the verified scenarios. Check your own tool combinations first |
-| Long sessions and unattended automation | Not yet. Compaction, rate-limit recovery and interactive sessions are not verified end to end |
+| Coding in the Claude Code UI with Copilot models | Check the recorded V01–V06 outcomes and your own tool combinations first |
+| Long sessions and unattended automation | Not established by this bounded suite; rate-limit recovery, automatic compaction and endurance remain outside its scope |
 | A gateway shared by a team | Not suitable. Every request runs on one person's Copilot seat |
 | Work that needs official support or an SLA | Not suitable |
 
 ## Running the checks
 
-```bash
-# Unit and structural tests. No model calls, free.
-npm test
+From the repository root, start offline. Neither command calls a model:
 
-# The full live matrix with the settings of the last passing run.
-# Spends real GitHub Copilot AI Credits. The passing run took 479 s.
-PENDING_TOOL_WAIT_MS=30000 npm run verify -- \
-  --timeout-scale 2 --model-concurrency 3 --scenario-concurrency 2
+```bash
+npm test
+npm run verify -- --dry-run
 ```
 
-Plain `npm run verify` uses the defaults: 6 model workers, `--timeout-scale 1` and a `PENDING_TOOL_WAIT_MS` of 10000. No six-model full run with those defaults has passed. Other flags, focused runs, how a run is judged and how to publish `docs/VERIFICATION.md`: [Validation Scope](docs/ARCHITECTURE.md#validation-scope).
+Tests should finish with no failures. Dry-run prints the expected **36 cases** without launching Claude Code, a bridge or a model. `npm run verify:plan` is the same runner's dry-run.
+
+For live integration evidence, follow [Testing](docs/TESTING.md): run all six models and scenarios with `PENDING_TOOL_WAIT_MS=30000`, `--model-concurrency 1` and `--timeout-scale 2`, then inspect the exact artifact directory printed by the runner. A local mock-API preflight checks the installed CLI first. The subsequent live cases spend GitHub Copilot AI Credits; 36 cases involve more than 36 API requests. `--models` and `--scenarios` subsets are for debugging, not a substitute for the full run.
+
+Plain `npm run verify` selects the full matrix with one model worker, `--timeout-scale 1` and the bridge's default `PENDING_TOOL_WAIT_MS=10000` unless exported. No command promises a pass. The [result](docs/VERIFICATION.md) records the settings actually used.
 
 ## Documentation
 
 | To learn | Read |
 |---|---|
-| How the bridge works, its security boundaries and how it is validated | [Architecture](docs/ARCHITECTURE.md) |
+| How the bridge works and its security boundaries | [Architecture](docs/ARCHITECTURE.md) |
+| How to read logs and diagnose errors | [Diagnostics](docs/DIAGNOSTICS.md) |
+| How to run checks, inspect failures and generate a report | [Testing](docs/TESTING.md) |
 | Whether a specific Claude Code feature works | [Compatibility](docs/COMPATIBILITY.md) |
-| Per-scenario results of the last full run | [Verification results](docs/VERIFICATION.md) |
-| Earlier runs and one-off live checks | [Verification history](docs/VERIFICATION_HISTORY.md) |
+| Latest recorded core-scenario results by model | [Verification results](docs/VERIFICATION.md) |
 | How to use or run a LiteLLM gateway | [LiteLLM guide](docs/LITELLM.md) |
 | Every environment variable and its default | [`.env.example`](.env.example) |

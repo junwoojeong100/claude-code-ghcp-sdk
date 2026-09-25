@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 
@@ -23,14 +23,20 @@ const implementationFiles = [
 ];
 
 export function daemonPaths(env = process.env) {
-  const base =
+  // The bridge runs with this directory as its cwd and reads leases/ from it,
+  // so a relative value is resolved here, once, against the caller's cwd.
+  if (env.GHCP_DAEMON_DIR?.startsWith("~")) {
+    throw new Error(`GHCP_DAEMON_DIR is not expanded, so it must not start with ~: ${env.GHCP_DAEMON_DIR}`);
+  }
+  const base = path.resolve(
     env.GHCP_DAEMON_DIR ||
-    (process.platform === "darwin"
-      ? path.join(os.homedir(), "Library", "Caches", "claude-code-ghcp-sdk")
-      : path.join(
-          env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"),
-          "claude-code-ghcp-sdk",
-        ));
+      (process.platform === "darwin"
+        ? path.join(os.homedir(), "Library", "Caches", "claude-code-ghcp-sdk")
+        : path.join(
+            env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"),
+            "claude-code-ghcp-sdk",
+          )),
+  );
   return {
     base,
     lock: path.join(base, "bridge.lock"),
@@ -153,7 +159,7 @@ async function health(registry) {
       `http://127.0.0.1:${registry.port}/health`,
       { signal: AbortSignal.timeout(1_000) },
     );
-    return response.ok ? response.json() : null;
+    return response.ok ? await response.json() : null;
   } catch {
     return null;
   }
@@ -194,46 +200,111 @@ function removeRegistry(paths) {
   fs.rmSync(paths.registry, { force: true });
 }
 
-async function stopRegistry(paths, registry, { ownedPid } = {}) {
+// The command line a live PID runs now, or null when ps cannot say.
+function processCommand(pid) {
+  const result = spawnSync("ps", ["-ww", "-p", String(pid), "-o", "command="], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+// When a live PID started, or null when ps cannot say. lstart is local time in
+// the C locale's `date` format, which Date.parse reads in the same zone. Only
+// macOS fixes it at fork; procps derives it from /proc/stat btime, which moves
+// with every wall-clock step, so elsewhere the registered bridge could read as
+// a later one.
+function processStartMs(pid) {
+  if (process.platform !== "darwin") return null;
+  const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+    timeout: 5_000,
+  });
+  const ms = result.status === 0 ? Date.parse(result.stdout.trim()) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// The checkout whose src/server.mjs a command line runs under node, as
+// ensureDaemon spawns it, or null. bin/resolve-claude.sh is what tells a
+// checkout (a worktree or second clone shares the default daemon directory)
+// from any other project's src/server.mjs.
+function bridgeCheckout(command) {
+  const match = command.match(/^(?:.*?\/)?node[\w.-]* (.+)\/src\/server\.mjs$/);
+  return match && fs.existsSync(path.join(match[1], "bin", "resolve-claude.sh"))
+    ? match[1]
+    : null;
+}
+
+// A registry PID is signalled only once it is known to be a bridge: its
+// /health names the registered instance, or, when /health does not answer, ps
+// shows it running a checkout's src/server.mjs and, on macOS, started no later
+// than the registry was written (createdAt follows the spawn at once). A PID
+// running anything else, or a bridge started after that -- a -p private bridge,
+// the verifier's, another daemon directory's -- was reused after the bridge
+// died, so the registry is stale and is dropped without a signal. A bridge that
+// does not answer is stopped only by claude-ghcp-stop (stopUnverified); ensure
+// refuses to start a second one beside it.
+async function stopRegistry(paths, registry, { ownedPid, stopUnverified = false } = {}) {
   if (!registry) {
     removeRegistry(paths);
     return false;
   }
-  const currentHealth = registry ? await health(registry) : null;
-  const verified =
-    registry &&
-    (ownedPid === registry.pid ||
-      (currentHealth?.instanceId &&
-        currentHealth.instanceId === registry.instanceId));
-  if (pidAlive(registry.pid) && !verified) {
-    throw new Error(
-      "Persistent bridge PID is live but its instance could not be verified; registry was preserved.",
-    );
+  if (!pidAlive(registry.pid)) {
+    removeRegistry(paths);
+    return true;
   }
-  if (verified && pidAlive(registry.pid)) {
-    try {
-      process.kill(registry.pid, "SIGTERM");
-    } catch {}
-    for (let attempt = 0; attempt < 50 && pidAlive(registry.pid); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+  const currentHealth = await health(registry);
+  const verified =
+    ownedPid === registry.pid ||
+    (currentHealth?.instanceId &&
+      currentHealth.instanceId === registry.instanceId);
+  if (!verified) {
+    const command = processCommand(registry.pid);
+    const checkout = command === null ? null : bridgeCheckout(command);
+    if (!pidAlive(registry.pid) || (command !== null && !checkout)) {
+      removeRegistry(paths);
+      return true;
     }
-    if (pidAlive(registry.pid)) {
-      try {
-        process.kill(registry.pid, "SIGKILL");
-      } catch {}
-      for (
-        let attempt = 0;
-        attempt < 20 && pidAlive(registry.pid);
-        attempt += 1
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    }
-    if (pidAlive(registry.pid)) {
+    if (command === null) {
       throw new Error(
-        "Persistent bridge did not stop; registry was preserved for retry.",
+        `Persistent bridge PID ${registry.pid} (port ${registry.port}) is live but ps could not identify it; kept ${paths.registry}. If \`ps -p ${registry.pid} -o command=\` shows node running a checkout's src/server.mjs (this one is ${serverPath}), kill ${registry.pid}; otherwise delete that file. Then launch again.`,
       );
     }
+    const created = Date.parse(registry.createdAt);
+    const started = Number.isFinite(created) ? processStartMs(registry.pid) : null;
+    if (started !== null && started > created + 5_000) {
+      removeRegistry(paths);
+      return true;
+    }
+    if (!stopUnverified) {
+      throw new Error(
+        `Persistent bridge PID ${registry.pid} (port ${registry.port}) runs ${checkout}/src/server.mjs but did not answer /health, so no second bridge was started beside it; kept ${paths.registry}. Run claude-ghcp-stop, then launch again.`,
+      );
+    }
+  }
+  try {
+    process.kill(registry.pid, "SIGTERM");
+  } catch {}
+  for (let attempt = 0; attempt < 50 && pidAlive(registry.pid); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (pidAlive(registry.pid)) {
+    try {
+      process.kill(registry.pid, "SIGKILL");
+    } catch {}
+    for (
+      let attempt = 0;
+      attempt < 20 && pidAlive(registry.pid);
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  if (pidAlive(registry.pid)) {
+    throw new Error(
+      `Persistent bridge PID ${registry.pid} (port ${registry.port}) did not stop after SIGKILL; kept ${paths.registry} for retry. Check \`ps -p ${registry.pid} -o stat=,command=\`, then run claude-ghcp-stop again.`,
+    );
   }
   removeRegistry(paths);
   return true;
@@ -433,22 +504,21 @@ export async function ensureDaemon(
     // bound here: health() spends up to 1s per attempt (AbortSignal.timeout)
     // on top of the 250ms sleep, so the old `attempt < 120` was 30s against a
     // refused port and up to 150s against a bridge that binds the port but
-    // never answers. This is the loop the harness actually exercises -- every
-    // launch but -p sets PERSISTENT_BRIDGE=1, so the launcher call that starts
-    // a daemon comes through here rather than through the launcher's own wait.
+    // never answers. Every launch but -p starts its bridge here rather than
+    // through the launcher's own wait, so this budget is what an interactive
+    // launcher waits: 60s plus at most one overshooting attempt (1s probe +
+    // 250ms sleep), 61.25s, before the 2s modelAvailable() check below. The
+    // live verifier starts src/server.mjs itself and never reaches this loop.
     //
-    // That caller caps the whole launcher at 120s (spawnSync timeout 120_000,
-    // scripts/verify/drivers.mjs). 60s plus at most one overshooting attempt
-    // (1s probe + 250ms sleep) is 61.25s, which leaves ~58s of the cap for the
-    // 2s modelAvailable() check below, write-launch-settings, and Claude Code's
-    // own startup-and-background.
+    // Only the instance spawned here counts: on a pinned port another listener
+    // can answer /health while this child is still booting toward EADDRINUSE.
     const healthDeadline = Date.now() + 60_000;
     while (Date.now() < healthDeadline) {
       if (!pidAlive(child.pid)) {
         removeRegistry(paths);
         throw new Error(`Persistent bridge exited; inspect ${paths.log}.`);
       }
-      if (await health(registry)) {
+      if ((await health(registry))?.instanceId === instanceId) {
         if (!(await modelAvailable(registry, model))) {
           await stopRegistry(paths, registry, { ownedPid: child.pid });
           throw new Error(`GitHub Copilot model is unavailable: ${model}`);
@@ -471,16 +541,25 @@ export async function stopDaemon(env = process.env) {
   const release = await acquireLock(paths);
   try {
     const registry = readDaemonRegistry(paths);
-    const stopped = await stopRegistry(paths, registry);
+    // A bridge that cannot be stopped keeps its registry, but the rest is
+    // still cleaned before the error names it.
+    let stopped = false;
+    let failure = null;
+    try {
+      stopped = await stopRegistry(paths, registry, { stopUnverified: true });
+    } catch (error) {
+      failure = error;
+    }
     // A retired bridge that stays busy never exits by itself, so it ends here
-    // with the rest. One whose PID is live but unverified keeps its record.
+    // with the rest. One that cannot be identified keeps its record.
     for (const file of recordsIn(paths.retired)) {
       const record = readDaemonRegistry({ registry: file });
-      await stopRegistry({ registry: file }, record).catch(() => {});
+      await stopRegistry({ registry: file }, record, { stopUnverified: true }).catch(() => {});
     }
     fs.rmSync(paths.leases, { force: true, recursive: true });
     fs.rmSync(paths.log, { force: true });
     clearSettings(paths);
+    if (failure) throw failure;
     return stopped;
   } finally {
     release();

@@ -1,15 +1,18 @@
 # Puts this repository's bridge (src/server.mjs) behind LiteLLM.
-# Start the bridge first and export both variables, because os.environ/ is
-# resolved when LiteLLM loads this file:
-#   node src/bridge-daemon.mjs ensure claude-sonnet-5 4142
-#   export GHCP_BRIDGE_URL="http://127.0.0.1:4142"
-#   export GHCP_BRIDGE_TOKEN="<token from the ensure output>"
+# Follow docs/LITELLM.md, "Run a Gateway": pin GHCP_BRIDGE_PORT=4142 in your
+# shell profile (step 1), start the bridge with step 2, which exports
+# GHCP_BRIDGE_URL and GHCP_BRIDGE_TOKEN (the "token" field of ensure's JSON),
+# then, from that shell, run the one-time `npm run litellm:setup` and start
+# LiteLLM with `npm run litellm:start` (step 3). The start script loads this
+# file and sets LITELLM_MASTER_KEY. os.environ/ values are read once,
+# when LiteLLM loads this file, so restart LiteLLM whenever the bridge token
+# changes.
 #
 # api_base must be the bridge root: LiteLLM appends /v1/messages itself.
 # The string after anthropic/ is sent as the request body's model.
-# Keep model_name free of [1m]-style suffixes: LiteLLM does not strip them and
-# rejects such an alias upstream with 400 "Invalid model name" (LiteLLM's own
-# behaviour, which this repository does not verify).
+# Keep model_name free of [1m]-style suffixes: LiteLLM itself rejects such an
+# alias with 400 "Invalid model name", so the request never reaches the bridge
+# (LiteLLM's own behaviour, which this repository does not verify).
 
 model_list:
   - model_name: claude-opus-5.5
@@ -51,7 +54,9 @@ model_list:
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   # Required so x-claude-code-session-id and x-claude-code-agent-id reach the
-  # bridge; without them every caller collapses into one session family. It does
-  # not forward a client's x-api-key. Leave forward_llm_provider_auth_headers
-  # unset: that separate setting does, and it overrides the api_key above.
+  # bridge. Without them the bridge cannot tell conversations or subagents
+  # apart and serves all their requests one at a time, as one conversation.
+  # It does not forward a client's x-api-key. Leave
+  # forward_llm_provider_auth_headers unset: that separate setting does, and it
+  # overrides the api_key above.
   forward_client_headers_to_llm_api: true
