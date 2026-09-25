@@ -46,7 +46,7 @@ rows below claims live verification of the production launchers or shared daemon
 | Feature | Status | What differs | Live matrix check |
 |---|---|---|---|
 | Subagents and project agents (`.claude/agents`) | Supported | | no |
-| Explore and subagents that name no model | Supported, differs | They run on the model you launched with. Without the launcher's settings, Claude Code sends Explore to the Opus model when you launch on a GPT model ([Models](../README.md#models)). | no |
+| Explore and subagents that name no model | Supported, differs | When launched with Claude Opus 5.5, Sonnet 5 or Haiku 4.5, they follow the main model as usual. For other launch models, such as GPT-6, they use the launch model; the launcher also prevents Explore from falling back to Opus ([Models](../README.md#models)). | no |
 | CLAUDE.md instructions | Supported | | no |
 | Hooks, including a hook that denies a tool | Supported | | no |
 | Custom slash commands, skills, plugins | Expected | | no |

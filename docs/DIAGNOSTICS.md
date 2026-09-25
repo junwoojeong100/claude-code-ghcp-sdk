@@ -6,8 +6,89 @@ Use this guide to locate a bridge failure and read its log. For running checks,
 see [Testing](TESTING.md); for request and session design, see
 [Architecture](ARCHITECTURE.md).
 
-**On this page:** [Find the evidence](#find-the-evidence) · [Logging](#logging) ·
-[Upstream errors](#upstream-errors)
+**On this page:** [Start with the symptom](#start-with-the-symptom) ·
+[Find the evidence](#find-the-evidence) · [Logging](#logging) ·
+[Upstream errors](#upstream-errors) · [Verification artifacts](#verification-artifacts)
+
+## Start with the symptom
+
+Run this page's `./bin/` and `npm run` commands from the **bridge checkout**, not
+from your working project. To launch Claude Code in another project, stay in that
+project and call the launcher's absolute path.
+
+| Symptom | First action |
+|---|---|
+| Executable not found, unsupported Node, or launch fails before connecting | Run `./bin/ghcp-doctor`; see [Environment check](#environment-check). |
+| Model lookup reports an authentication failure | Check the account and sign-in directory, then use `copilot login` if needed; see [Catalogue and model problems](#catalogue-and-model-problems). |
+| Model lookup reports a missing dependency or connection failure | Fix the installation, PATH, network or proxy named by the error. Re-login is not the default remedy. |
+| Requested model is missing, disallowed, or rejected despite appearing in a fresh list | Check the exact model ID, account policy and possible stale bridge catalogue below. |
+| A request fails, stops streaming or seems stuck | Keep the [bridge log](#find-the-evidence), then match the request and timeout fields under [Read the key fields](#read-the-key-fields). HTTP 200 alone does not prove an SSE request succeeded. |
+| A long conversation fails with `prompt is too long` | Compact the conversation before retrying. Check `bridge.context_budget` and `bridge.context_limit`; the runtime input limit can be lower than the displayed context window. See [Context overflow](ARCHITECTURE.md#context-overflow). |
+| A verification run fails | Open that exact run's [verification artifacts](#verification-artifacts), not the shared daemon's log. Do not stop the shared daemon to clean up a verifier-owned bridge. |
+
+### Environment check
+
+```bash
+./bin/ghcp-doctor
+```
+
+`npm run doctor` runs the same check. The JSON report passes only when `node`,
+`npm`, `claude` and `copilot` each have `"ok": true` and
+`compatibility.node.supported` is `true`. Otherwise it exits with status 1.
+Supported Node versions are `^20.19.0` or `>=22.12.0`.
+
+- Each version probe has a 10-second timeout; a hung probe also reports `false`.
+  Fix the failed executable or version, then run the check again.
+- If the wrapper cannot find Claude Code, it prints `Claude Code executable not
+  found…` before any JSON report. Install Claude Code or set `CLAUDE_CODE_BIN` to
+  the real executable, not a launcher from this repository.
+- The check does not test `curl`, Git, Copilot sign-in or a model's ability to
+  answer. A passing report is an environment check, not an integration result.
+
+`currentProvider` is informational, not a pass condition. It reads only the saved
+`~/.claude/settings.json`, including that file's `env` object, not the process
+environment. It does not combine shell variables, project or managed settings,
+or the per-launch routing settings. It therefore does **not** identify the
+effective provider of a running GHCP session.
+
+### Catalogue and model problems
+
+```bash
+./bin/ghcp-models --json
+```
+
+This queries Copilot for the account's current catalogue. A successful list
+confirms catalogue access, not that a model can answer a prompt.
+
+- **Authentication error:** check which account and `COPILOT_HOME` you use for
+  login and the bridge. Run `copilot login` when sign-in needs repair.
+- **Installation or connectivity error:** fix the missing executable/dependency,
+  network or proxy reported by the error. Do not re-login just because a
+  catalogue query failed.
+- **Missing or policy-restricted model:** choose an exact available ID allowed
+  by your account/organization. Re-login does not grant model access.
+
+If this fresh list contains the model but the persistent bridge rejects it, the
+bridge may still have the catalogue it read at startup. `ghcp-models` does not
+refresh a running bridge. First check that both use the same account and
+`COPILOT_HOME`; prefer an absolute path or `~/...` for that variable (see
+[`.env.example`](../.env.example)).
+
+To deliberately restart the shared bridge, **finish all affected sessions and
+`/background` jobs, and preserve the logs you need first**. The stop command stops
+the current and retired bridges in the selected `GHCP_DAEMON_DIR`, deletes
+`bridge.log` and their per-launch settings, and breaks any sessions or jobs still
+using them. It does not remove `claude-litellm` settings. File retention is
+[documented separately](ARCHITECTURE.md#files-the-bridge-keeps).
+
+```bash
+./bin/claude-ghcp-stop
+```
+
+Then relaunch from your working project with the launcher's absolute path; the
+new bridge reads the catalogue again. This is not verifier cleanup. Restarting
+Claude Code to load a changed `/model` picker is a separate step: it reloads the
+CLI's launch settings, but can reuse a bridge with an older SDK catalogue.
 
 ## Find the evidence
 
@@ -23,61 +104,6 @@ The daemon directory is `GHCP_DAEMON_DIR`, or
 `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk` elsewhere. Persistent bridge
 logs are created with mode `0600`. Other stored files and their lifetimes are in
 [Files the bridge keeps](ARCHITECTURE.md#files-the-bridge-keeps).
-
-For a verification failure, `<run dir>` is the directory on the runner's
-`artifacts:` and `report:` lines (`.verify-runs/<timestamp>/` unless you passed
-`--out`). Use that exact directory explicitly when rendering the report; do not
-pick the newest run. Start with `summary.json` for preflight, run-level integrity
-and cleanup issues. Preflight exercises the installed Claude Code against a
-bounded local mock Messages API, without Copilot calls; unavailable capabilities
-block affected slots rather than proving a model failure.
-
-Find the model/scenario slot's `reason`, failed `checks` and `evidence.phases` in
-`slots.jsonl`, then follow the recorded paths:
-
-- Print phases write `transcript-<phase>.jsonl` in `slots/<model>__Vxx/`.
-- Native launches write `terminal-<launchId>.log`, the raw PTY output, and
-  `terminal-events-<launchId>.jsonl`, the input and output receipts (kind,
-  purpose, sequence and byte counts, never the input bytes). An Escape
-  interruption row (V05 and the preflight interruption check) also stores the
-  rendered screen text, which shows the typed prompt and any partial reply, and,
-  when the native transcript recorded the interruption, that record with its
-  `cwd` and session ID, so review this file like the raw log before sharing.
-  Answer evidence comes from the native session transcript at the recorded
-  `transcriptPath`, not from terminal display text.
-- A native launch on a 160×48 terminal, the size the verifier uses, also writes
-  `terminal-output-<launchId>.jsonl`, an output-only recording (schema
-  `ghcp-terminal-output` v1). Its output frames are byte-identical to the raw log,
-  and the driver adds phase markers such as `seed` or `recall`. It records no
-  input stream (keystrokes), arguments, settings file or environment, but its
-  output frames are whatever the terminal displayed, including the TUI echo of
-  every typed prompt and the model's replies, so review it like the raw log
-  before sharing. Its footer says whether capture was complete, incomplete or
-  truncated (at 8 MiB or 50,000 frames). If a capture error stops the recording
-  before the footer is written, the file has no footer and the renderer rejects
-  it. The footer describes capture only: the recording is not answer evidence
-  and never affects a verdict. A launch on any other terminal size is not
-  recorded.
-- `cleanup-<pid>.json` records native process cleanup: exit code, signal,
-  whether the close was forced or escalated to `SIGKILL`, and the owned PIDs
-  still alive (`remainingPids`). The PTY helper tracks descendants by PID and
-  `ps` start time and never signals a PID whose start time changed. It finds
-  descendants by sampling `ps` about every 0.25 s, so a process that detaches
-  into a new session and loses its parent between samples is not observed, and
-  `ok` can be true while it is still running. PIDs it was not permitted to
-  signal are listed in `signalDeniedPids`; one that is still alive makes `ok`
-  false.
-- Match phase response IDs to `bridge.log`; V06 also uses `bridge-2.log` after
-  normal CLI exit and cleanup of the first private bridge.
-- Saved v2 source copies under `sources/files/`, `sources/manifest.json` and
-  `artifact-manifest.json` support source/hash validation and raw-evidence
-  rechecking. A stored `pass` label alone is not sufficient.
-
-Failure summaries may shorten details; the original slot row and files retain
-more. All 36 slots plus integrity, isolation and cleanup gates are required for
-a full pass. [Testing](TESTING.md#read-the-result-and-generate-documents)
-explains the result gates and workspace retention; the latest recorded outcome
-is in [Verification Results](VERIFICATION.md).
 
 ## Logging
 
@@ -101,28 +127,6 @@ attachments or credentials. That is not a blanket guarantee about the whole log:
   diagnostics. Review all retained files before sharing.
 
 `npm test` checks diagnostic event and field names. Treat them as an interface.
-For V01–V06 completed responses, the verifier correlates root assistant
-`message.id` values with `bridge.turn_completed.responseId`. Requested/resolved
-models, every SDK-reported `servedModels` entry, reported usage and stop reasons
-must agree with that phase and response. V04's source phase intentionally uses a
-different model; V05's interrupted phase requires cancellation/abort evidence
-instead of successful completion. Unrelated auxiliary requests cannot supply
-missing evidence. This confirms SDK-reported model IDs, not the provider's
-internal implementation; missing evidence blocks a pass.
-
-The verifier enables **`BRIDGE_VERIFY_OBSERVE=1`**, which is off by default. Its
-request/response observations use IDs, counts and content digests rather than raw
-prompts, tool contents, headers or credentials; the events are listed under
-[Event reference](#event-reference). V06 uses them to check the compaction
-handoff: every `bridge.verify_model_state.sessionId` in the post-compact recall
-must differ from those of the seed and compact requests, and no recall
-`bridge.verify_request` may carry the seed prompt's digest in `userTextHashes`.
-Model/effort observations call SDK `session.rpc.model.getCurrent()` with a
-5-second bound; `current` is the actual SDK-reported state, not a copy of
-requested settings. An unavailable, invalid or timed-out read stays missing
-evidence. Observation failures do not turn a model response into a different
-response. This narrower logging policy does not redact native transcripts,
-settings or other combined log entries; review those before sharing.
 
 ### Read the key fields
 
@@ -256,3 +260,88 @@ declare tools, in the listed order, before they reach Copilot. The kinds are
 upstream failures, and `context_limit`, which raises the bridge's own
 `prompt is too long` error. Keep it unset for live verification; the V01–V06
 matrix does not validate this mapping.
+
+## Verification artifacts
+
+For a verification failure, `<run dir>` is the directory on the runner's
+`artifacts:` and `report:` lines (`.verify-runs/<timestamp>/` unless you passed
+`--out`). Use that exact directory explicitly when rendering the report; do not
+pick the newest run. Start with `summary.json` for preflight, run-level integrity
+and cleanup issues. Preflight exercises the installed Claude Code against a
+bounded local mock Messages API, without Copilot calls; unavailable capabilities
+block affected slots rather than proving a model failure.
+
+The verifier owns its private bridges and cleanup records. Do not use
+`claude-ghcp-stop` for them: it targets the shared daemon, not these processes.
+
+Find the model/scenario slot's `reason`, failed `checks` and `evidence.phases` in
+`slots.jsonl`, then follow the recorded paths:
+
+- Print phases write `transcript-<phase>.jsonl` in `slots/<model>__Vxx/`.
+- Native launches write `terminal-<launchId>.log`, the raw PTY output, and
+  `terminal-events-<launchId>.jsonl`, the input and output receipts (kind,
+  purpose, sequence and byte counts, never the input bytes). An Escape
+  interruption row (V05 and the preflight interruption check) also stores the
+  rendered screen text, which shows the typed prompt and any partial reply, and,
+  when the native transcript recorded the interruption, that record with its
+  `cwd` and session ID, so review this file like the raw log before sharing.
+  Answer evidence comes from the native session transcript at the recorded
+  `transcriptPath`, not from terminal display text.
+- A native launch on a 160×48 terminal, the size the verifier uses, also writes
+  `terminal-output-<launchId>.jsonl`, an output-only recording (schema
+  `ghcp-terminal-output` v1). Its output frames are byte-identical to the raw log,
+  and the driver adds phase markers such as `seed` or `recall`. It records no
+  input stream (keystrokes), arguments, settings file or environment, but its
+  output frames are whatever the terminal displayed, including the TUI echo of
+  every typed prompt and the model's replies, so review it like the raw log
+  before sharing. Its footer says whether capture was complete, incomplete or
+  truncated (at 8 MiB or 50,000 frames). If a capture error stops the recording
+  before the footer is written, the file has no footer and the renderer rejects
+  it. The footer describes capture only: the recording is not answer evidence
+  and never affects a verdict. A launch on any other terminal size is not
+  recorded.
+- `cleanup-<pid>.json` records native process cleanup: exit code, signal,
+  whether the close was forced or escalated to `SIGKILL`, and the owned PIDs
+  still alive (`remainingPids`). The PTY helper tracks descendants by PID and
+  `ps` start time and never signals a PID whose start time changed. It finds
+  descendants by sampling `ps` about every 0.25 s, so a process that detaches
+  into a new session and loses its parent between samples is not observed, and
+  `ok` can be true while it is still running. PIDs it was not permitted to
+  signal are listed in `signalDeniedPids`; one that is still alive makes `ok`
+  false.
+- Match phase response IDs to `bridge.log`; V06 also uses `bridge-2.log` after
+  normal CLI exit and cleanup of the first private bridge.
+- Saved v2 source copies under `sources/files/`, `sources/manifest.json` and
+  `artifact-manifest.json` support source/hash validation and raw-evidence
+  rechecking. A stored `pass` label alone is not sufficient.
+
+Failure summaries may shorten details; the original slot row and files retain
+more. All 36 slots plus integrity, isolation and cleanup gates are required for
+a full pass. [Testing](TESTING.md#read-the-result-and-generate-documents)
+explains the result gates and workspace retention; the latest recorded outcome
+is in [Verification Results](VERIFICATION.md).
+
+### Correlate verification evidence
+
+For V01–V06 completed responses, the verifier correlates root assistant
+`message.id` values with `bridge.turn_completed.responseId`. Requested/resolved
+models, every SDK-reported `servedModels` entry, reported usage and stop reasons
+must agree with that phase and response. V04's source phase intentionally uses a
+different model; V05's interrupted phase requires cancellation/abort evidence
+instead of successful completion. Unrelated auxiliary requests cannot supply
+missing evidence. This confirms SDK-reported model IDs, not the provider's
+internal implementation; missing evidence blocks a pass.
+
+The verifier enables **`BRIDGE_VERIFY_OBSERVE=1`**, which is off by default. Its
+request/response observations use IDs, counts and content digests rather than raw
+prompts, tool contents, headers or credentials; the events are listed under
+[Event reference](#event-reference). V06 uses them to check the compaction
+handoff: every `bridge.verify_model_state.sessionId` in the post-compact recall
+must differ from those of the seed and compact requests, and no recall
+`bridge.verify_request` may carry the seed prompt's digest in `userTextHashes`.
+Model/effort observations call SDK `session.rpc.model.getCurrent()` with a
+5-second bound; `current` is the actual SDK-reported state, not a copy of
+requested settings. An unavailable, invalid or timed-out read stays missing
+evidence. Observation failures do not turn a model response into a different
+response. This narrower logging policy does not redact native transcripts,
+settings or other combined log entries; review those before sharing.

@@ -2,18 +2,15 @@
 
 > **언어 / Language:** [English](README.md) | 한국어
 
-이 저장소는 Claude Code가 GitHub Copilot 모델을 쓰게 해 주는 로컬 브리지입니다. Claude Code는 Anthropic Messages API 요청을 브리지로 보내고, 브리지는 GitHub Copilot SDK(`@github/copilot-sdk`, 1.0.14로 고정)를 통해 이 요청을 Copilot 모델에서 실행합니다. Claude Code는 브리지에 직접 연결할 수도 있고, 앞에 둔 LiteLLM 프록시를 거칠 수도 있습니다. Claude Code의 UI, 도구 실행, 권한, 훅, MCP 서버, 스킬은 그대로 동작합니다.
+로컬 브리지를 통해 Claude Code에서 GitHub Copilot 모델을 사용합니다. 브리지는 Anthropic Messages API 요청을 GitHub Copilot SDK(`@github/copilot-sdk`, 1.0.14로 고정)로 전달하며, Claude Code의 UI, 로컬 도구 실행, 권한, 훅, MCP 서버, 스킬은 그대로 둡니다.
 
 **비공식 통합입니다.** Anthropic은 Claude가 아닌 모델을 게이트웨이로 연결하는 방식을 지원하지 않으며, 이 조합은 Anthropic도 GitHub도 지원하지 않습니다. 자세한 내용은 [되는 것과 안 되는 것](#되는-것과-안-되는-것)을 참고하세요.
 
+[빠른 시작](#빠른-시작-direct-sdk) · [기록된 검증 결과](docs/VERIFICATION_KO.md) · [진단 가이드](docs/DIAGNOSTICS_KO.md#증상별-첫-조치)
+
 ## 경로 선택
 
-| 원하는 것 | 경로 | 명령 |
-|---|---|---|
-| 내 Copilot 계정을 조직의 모델 정책 그대로 사용 | **Direct SDK** | `./bin/claude-ghcp` |
-| 이 브리지 앞에 놓인 LiteLLM 게이트웨이를 거쳐 Copilot 모델 사용 | LiteLLM | `./bin/claude-litellm` |
-
-대부분은 Direct SDK를 쓰면 됩니다. LiteLLM 게이트웨이를 반드시 거쳐야 할 때만 LiteLLM을 고르세요. [LiteLLM (선택)](#litellm-선택)을 참고하세요.
+내 Copilot 계정과 조직의 모델 정책을 그대로 쓰는 **Direct SDK를 권장합니다.** 아래 빠른 시작을 따라 하세요. 이 브리지 앞에 LiteLLM 게이트웨이가 필요한 경우에만 [LiteLLM (선택)](#litellm-선택)을 고르세요.
 
 ## 빠른 시작 (Direct SDK)
 
@@ -31,8 +28,10 @@
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
 cd claude-code-ghcp-sdk
-npm install
+npm ci
 ```
+
+설치와 점검은 이 체크아웃에서, 실제 작업은 자신의 프로젝트에서 합니다. 아래 예시의 `/absolute/path/to/claude-code-ghcp-sdk`는 이 체크아웃의 절대 경로(여기서 `pwd`로 확인)로, `/path/to/your-project`는 작업할 프로젝트 디렉터리로 바꾸세요.
 
 ### 2. GitHub Copilot 로그인
 
@@ -52,55 +51,59 @@ Anthropic API 키는 필요하지 않습니다.
 
 ### 3. 환경과 모델 확인
 
+체크아웃 루트에서 실행하세요.
+
 ```bash
 ./bin/ghcp-doctor
 ./bin/ghcp-models
 ```
 
-이후 명령도 저장소 루트에서 실행하세요.
-
-- `ghcp-doctor`는 JSON 보고서를 출력합니다. `node`, `npm`, `claude`, `copilot`이 모두 `"ok": true`이고 `compatibility.node.supported`가 `true`이면 통과이며, 그렇지 않으면 종료 코드 1로 끝납니다. `false`인 항목을 설치하거나 업데이트한 뒤 다시 실행하세요. 10초 안에 답하지 않는 버전 확인도 `false`로 나옵니다. Claude Code가 없으면 보고서 대신 `Claude Code executable not found…`를 출력합니다. `curl`과 Git은 확인하지 않습니다. `npm run doctor`도 같은 점검을 실행합니다.
-- `ghcp-models`는 Copilot에 연결해 모델마다 한 줄씩 출력합니다. 사용할 모델이 목록에 있어야 합니다. 목록 대신 오류가 나오면 `copilot login`을 다시 실행한 뒤 재시도하세요. 목록 조회 성공은 계정 접근 확인이지, 모델이 프롬프트에 답한다는 검증은 아닙니다.
+- `ghcp-doctor`는 Node, npm, Claude Code, Copilot CLI를 점검합니다. 실패한 항목을 해결한 뒤 진행하세요. 보고서 설명은 [환경 점검](docs/DIAGNOSTICS_KO.md#환경-점검)에 있습니다.
+- `ghcp-models`는 계정에서 접근할 수 있는 모델을 나열합니다. 사용할 모델이 있는지 확인하세요. 목록 조회는 계정 접근 확인이지 모델의 응답 검증이 아닙니다. 실패하면 [진단 가이드](docs/DIAGNOSTICS_KO.md#증상별-첫-조치)를 따르세요. 모든 오류에 재로그인이 필요한 것은 아닙니다.
 
 ### 4. Claude Code 실행
 
-기본 모델 Claude Sonnet 5로 시작합니다.
+작업할 프로젝트로 이동한 뒤, 체크아웃의 절대 경로로 런처를 실행하세요. PATH를 바꿀 필요는 없습니다.
 
 ```bash
-./bin/claude-ghcp
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp"
 ```
 
-Claude Code 안에서 `OK라고 답해줘`를 입력하세요. 답이 오면 이 구성으로 요청 하나가 완료된 것입니다. 아래의 모든 기능이 검증된 것은 아닙니다. 프롬프트는 Copilot 사용량을 소비합니다. `/exit`로 셸로 돌아올 수 있습니다. 공유 브리지는 계속 실행되므로, 중지하기 전에 [백그라운드 브리지](#백그라운드-브리지)를 확인하세요.
+시작 모델의 우선순위는 `--ghcp-model` → export된 `GHCP_MODEL` → `claude-sonnet-5`(Claude Sonnet 5)입니다.
 
-시작에 실패하면 오류를 읽고 `./bin/ghcp-doctor`를 다시 실행하세요. 모델을 사용할 수 없다는 오류라면 `./bin/ghcp-models`의 ID를 고르세요. Claude Code는 열리지만 요청이 실패하면 [진단 가이드](docs/DIAGNOSTICS_KO.md)를 참고하세요.
+프롬프트는 Copilot 사용량을 소비합니다. Claude Code 안에서 `OK라고 답해줘`를 입력하세요. 답이 오면 요청 하나가 완료된 것이며, 모든 기능이 검증된 것은 아닙니다. `/exit`로 셸로 돌아올 수 있습니다. 공유 브리지는 계속 실행되므로 중지하기 전에 [백그라운드 브리지](#백그라운드-브리지)를 확인하세요. 시작이나 요청에 실패하면 [진단 가이드](docs/DIAGNOSTICS_KO.md#증상별-첫-조치)를 참고하세요.
 
-**선택 가능한 다른 실행 방식 — 추가 설치 단계가 아니라 둘 중 하나를 고릅니다.** 다른 모델로 대화형 세션을 시작하려면 다음을 실행합니다.
+**선택 가능한 다른 실행 방식 — 추가 설치 단계가 아닙니다.** 다른 모델로 대화형 세션을 시작하려면 다음을 실행하세요.
 
 ```bash
-./bin/claude-ghcp --ghcp-model gpt-6-sol
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp" --ghcp-model gpt-6-sol
 ```
 
-print 모드(`-p`)는 프롬프트 하나에 답하고 종료합니다.
+또는 프롬프트 하나에 답하고 종료하는 print 모드(`-p`)를 쓰세요.
 
 ```bash
-./bin/claude-ghcp --ghcp-model claude-haiku-4.5 -p "이 저장소의 구조를 설명해줘"
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp" --ghcp-model claude-haiku-4.5 -p "이 저장소의 구조를 설명해줘"
 ```
 
 Claude Code 안에서는 `/model`로 [모델](#모델) 표의 6개 모델 사이를 오갈 수 있습니다.
 
 ### 5. 선택: claude를 PATH에 추가
 
-어느 디렉터리에서든 실행하려면 이 저장소의 `bin` 디렉터리를 PATH에 추가하세요. Zsh라면 저장소 루트에서 다음을 실행합니다.
+위의 절대 경로는 어느 디렉터리에서든 쓸 수 있습니다. **체크아웃의 `bin`을 PATH 앞에 추가하면 기존 `claude` 대신 Direct SDK 런처가 실행됩니다.** Zsh에서 이 방식을 쓰려면 다음을 실행하세요.
 
 ```bash
+cd "/absolute/path/to/claude-code-ghcp-sdk"
 echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc
 exec zsh
 command -v claude
 ```
 
-마지막 명령은 `<clone-path>/claude-code-ghcp-sdk/bin/claude`를 출력해야 합니다. 다른 셸은 같은 줄을 그 셸의 설정 파일에 넣으세요. `~/.local/bin`에 둔 링크나 `npm link`처럼 런처를 가리키는 심볼릭 링크로 실행해도 됩니다. 런처는 링크를 따라가 이 체크아웃을 찾습니다.
+마지막 명령은 `<clone-path>/claude-code-ghcp-sdk/bin/claude`를 출력해야 합니다. 다른 셸은 같은 export를 그 셸의 설정 파일에 넣으세요. 원래 공급자로 Claude Code를 실행하려면 `claude-current`를 쓰세요. `export GHCP_MODEL=claude-haiku-4.5`는 `--ghcp-model`을 주지 않았을 때의 시작 모델을 바꿉니다.
 
-이제 `claude`가 Direct SDK 런처를 실행합니다. 예를 들어 `claude`나 `claude --ghcp-model claude-haiku-4.5`로 실행합니다. `export GHCP_MODEL=claude-haiku-4.5`는 기본 모델을 바꾸고, `claude-current`는 원래 공급자로 Claude Code를 실행합니다.
+다른 방법은 체크아웃에서 `npm link`를 실행하는 것입니다. npm의 전역 bin 디렉터리가 PATH에 있어야 하며, `claude-ghcp`, `claude-current` 등 패키지 명령을 등록하지만 **`claude`는 등록하지 않습니다.** 런처는 심볼릭 링크를 따라가 이 체크아웃을 찾습니다. 두 설정을 되돌리는 방법은 [선택한 명령 설정 되돌리기](#선택한-명령-설정-되돌리기)를 참고하세요.
 
 ## 모델
 
@@ -113,13 +116,13 @@ command -v claude
 | GPT-6 Sol | `gpt-6-sol` | 1M | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
 | GPT-6 Luna | `gpt-6-luna` | 1M | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
 
-`/model` 목록에서 각 행은 `GitHub Copilot · <이름> (<ID>)`로 표시됩니다. 목록에는 이 6개 행과 Claude Code 자체의 `Default` 행만 나옵니다. Claude Code 2.1.280에서 `Default`는 Claude Opus 5.5이고, `--ghcp-model` 없이 실행하면 Claude Sonnet 5로 시작합니다.
+`/model` 목록에서 각 행은 `GitHub Copilot · <이름> (<ID>)`로 표시됩니다. 목록에는 이 6개 행과 Claude Code 자체의 `Default` 행만 나옵니다. Claude Code 2.1.280에서 `Default`는 Claude Opus 5.5입니다. 런처의 시작 모델 우선순위(`--ghcp-model`, export된 `GHCP_MODEL`, Claude Sonnet 5 순)와는 별개입니다.
 
-Copilot 카탈로그의 다른 모델도 정책이 허용하면 `--ghcp-model`로 쓸 수 있지만 검증하지 않았습니다. `./bin/ghcp-models`로 목록을 볼 수 있습니다.
+Copilot 카탈로그의 다른 모델도 정책이 허용하면 `--ghcp-model`로 쓸 수 있지만 검증하지 않았습니다. 체크아웃 루트에서 `./bin/ghcp-models`로 목록을 볼 수 있습니다.
 
 컨텍스트 창 열은 Claude Code가 계획하는 컨텍스트 크기이며, 측정한 Copilot 입력 한도가 아닙니다. 런타임의 한도는 이보다 작을 수 있습니다. [긴 대화](#긴-대화)를 참고하세요.
 
-**Reasoning effort: 2026-09-24 카탈로그 관측값입니다.** 모델별 목록은 코드에 고정된 지원 값이나 테스트 결과가 아닙니다. 브리지는 시작할 때 SDK 카탈로그에서 읽은 지원 목록을 씁니다. `./bin/ghcp-models --json`은 Copilot에 연결해 현재 계정의 카탈로그를 보여 주지만, 이미 실행 중인 브리지의 목록을 갱신하지는 않습니다. 값은 `--effort <level>`이나 `/effort`로 지정합니다. 모델 목록에 없는 값이면 브리지는 그보다 낮은 값 중 가장 가까운 값을 쓰고, 더 낮은 값이 없으면 모델의 가장 낮은 값을 씁니다. 예를 들어 Claude Opus 5.5에 `none`을 주면 `low`로 실행합니다. Reasoning effort를 지원하지 않는 모델에는 값을 보내지 않습니다.
+**Reasoning effort: 2026-09-24 카탈로그 관측값입니다.** 모델별 목록은 코드에 고정된 지원 값이나 테스트 결과가 아닙니다. 브리지는 시작할 때 SDK 카탈로그에서 읽은 지원 목록을 씁니다. 체크아웃 루트에서 `./bin/ghcp-models --json`을 실행하면 Copilot에 연결해 현재 계정의 카탈로그를 보여 주지만, 이미 실행 중인 브리지의 목록을 갱신하지는 않습니다. 값은 `--effort <level>`이나 `/effort`로 지정합니다. 모델 목록에 없는 값이면 브리지는 그보다 낮은 값 중 가장 가까운 값을 쓰고, 더 낮은 값이 없으면 모델의 가장 낮은 값을 씁니다. 예를 들어 Claude Opus 5.5에 `none`을 주면 `low`로 실행합니다. Reasoning effort를 지원하지 않는 모델에는 값을 보내지 않습니다.
 
 Ultracode(`--effort ultracode`)는 Copilot에 `xhigh`로 전달되고, 목록에 `xhigh`가 없는 모델에서는 그보다 낮은 값 중 가장 가까운 값으로 바뀝니다. Claude Code 2.1.203 이상이 필요하고, 일반 호출보다 GitHub Copilot AI Credits를 더 쓸 수 있습니다.
 
@@ -131,25 +134,45 @@ Claude Opus 5.5, Sonnet 5, Haiku 4.5가 아닌 모델(예: GPT-6 모델)로 시�
 
 ### 백그라운드 브리지
 
-print 모드를 뺀 모든 `claude-ghcp` 실행은 루프백에서 백그라운드로 도는 브리지 하나를 함께 씁니다. 이 문서에서는 이를 상주 브리지라고 부릅니다(런처 도움말과 영문 문서의 persistent bridge). 대화형 세션, `--background`, `/background`로 넘긴 세션, `agents` 화면이 모두 이 브리지를 씁니다. Claude Code가 끝나도 상주 브리지는 계속 실행되므로 백그라운드 작업이 이어집니다.
+대화형 세션, `--background`, `/background`로 넘긴 세션, `agents` 화면은 루프백 브리지 하나를 함께 씁니다(상주 브리지, 영문 문서의 *persistent bridge*). Claude Code가 끝나도 계속 실행되므로 백그라운드 작업이 이어집니다. print 모드(`-p`)는 종료 시 함께 멈추는 전용 브리지를 쓰지만, `--background`나 `agents`와 함께 쓰면 상주 브리지를 씁니다.
 
-- print 모드(`-p`)는 명령이 끝나면 함께 종료되는 전용 브리지를 받습니다. `-p`를 `--background`나 `agents`와 함께 쓰면 상주 브리지를 씁니다.
-- `./bin/claude-ghcp-status`는 상주 브리지의 실행 여부, PID와 포트, 처음 시작할 때의 모델, 아직 실행 중인 교체된 브리지 수(`retired`)를 보여 줍니다.
-- `./bin/claude-ghcp-stop`은 상주 브리지와 교체된 브리지를 모두 멈추고, `bridge.log`와 브리지의 실행별 설정 파일을 지웁니다([사용자 설정은 건드리지 않습니다](#사용자-설정은-건드리지-않습니다)에서 설명하는 `claude-litellm` 설정 파일은 지우지 않습니다). 이것을 쓰던 세션과 `/background` 작업은 더 이상 동작하지 않으니, 작업을 모두 마친 뒤 실행하세요. 현재 브리지를 멈추지 못해도 이 파일들은 지운 뒤 오류를 알립니다.
-- `--ghcp-model`만 다르면 실행 중인 브리지를 그대로 씁니다. 브리지 설정이 다르면 새 브리지를 시작합니다. 브리지 코드나 의존성이 바뀐 경우, 이 저장소의 다른 체크아웃에서 실행한 경우, `--bridge-port`가 다른 경우, `TURN_IDLE_TIMEOUT_MS` 같은 브리지 환경 변수가 다른 경우가 여기에 해당합니다. 전체 목록은 [아키텍처](docs/ARCHITECTURE_KO.md#상주-브리지와-교체)에 있습니다.
-- 교체된 브리지는 이미 열린 세션을 계속 처리합니다. 그 세션의 런처가 모두 끝나고 `RETIRED_IDLE_MS`(기본 1시간) 동안 요청이 없으면 종료합니다. 교체된 뒤에도 계속 처리하는 기능이 없는 예전 버전의 브리지이거나, 새 실행이 그 브리지가 쓰는 포트를 고정했다면 대신 바로 멈춥니다.
-- 브리지 파일(`bridge.log`, 레지스트리, 실행별 설정 파일)은 `$GHCP_DAEMON_DIR`가 있으면 그곳에, 없으면 macOS에서는 `~/Library/Caches/claude-code-ghcp-sdk`, Linux에서는 `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk`에 둡니다. 브리지는 자신을 시작한 프로젝트가 아니라 이 디렉터리에서 실행됩니다.
-- 실행이 `Persistent bridge PID … did not answer /health, so no second bridge was started beside it` 오류로 실패하면, 등록된 브리지가 실행 중이지만 응답하지 않는 것입니다. `./bin/claude-ghcp-stop`을 실행한 뒤 다시 실행하세요. 레지스트리의 PID가 이제 다른 프로그램의 것이라면 그 프로그램은 건드리지 않고 레지스트리만 바꿉니다([자세히](docs/ARCHITECTURE_KO.md#상주-브리지와-교체)).
+어느 디렉터리에서든 `"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp-status"`로 상태를 확인할 수 있습니다. PID와 포트, 처음 시작할 때의 모델, 아직 실행 중인 교체된 브리지 수(`retired`)를 보여 줍니다.
+
+**중지하기 전에 모든 세션과 백그라운드 작업을 마치고 필요한 로그를 복사해 두세요.** `claude-ghcp-stop`은 공유 브리지와 교체된 브리지를 모두 멈춰, 이를 쓰는 모든 세션과 `/background` 작업을 끊습니다. 현재 브리지 중지에 실패해도 `bridge.log`와 브리지의 실행별 설정 파일을 지웁니다. 사용자 설정, 저장된 대화, `claude-litellm` 설정 파일은 지우지 않습니다. LiteLLM 설정 파일에는 키가 남을 수 있으므로 [사용자 설정은 건드리지 않습니다](#사용자-설정은-건드리지-않습니다)를 확인하세요.
+
+```bash
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp-stop"
+```
+
+브리지 파일은 `$GHCP_DAEMON_DIR`가 있으면 그곳에, 없으면 macOS에서는 `~/Library/Caches/claude-code-ghcp-sdk`, Linux에서는 `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk`에 둡니다. 교체·보관 규칙은 [아키텍처](docs/ARCHITECTURE_KO.md#상주-브리지와-교체), 응답하지 않는 브리지는 [진단 가이드](docs/DIAGNOSTICS_KO.md#증상별-첫-조치)를 참고하세요.
 
 ### 체크아웃을 업데이트한 뒤
 
-실행 중인 브리지는 처음 읽은 코드를 계속 씁니다. 체크아웃을 업데이트하면 다음 실행이 새 브리지를 시작하고, 기존 브리지는 이미 열린 세션을 계속 처리합니다(너무 오래된 브리지는 예외입니다. [백그라운드 브리지](#백그라운드-브리지)를 참고하세요). 대화를 새 코드로 옮기려면 Claude Code를 종료한 뒤, 같은 프로젝트 디렉터리에서 같은 모델로 대화를 재개하세요.
+의존성을 바꾸기 전에 진행 중인 작업을 마치세요. 체크아웃에서 `git status --short`를 확인하고 로컬 변경이 있으면 먼저 보존하세요. 깨끗한 체크아웃에서 업데이트하고 잠금 파일 기준으로 의존성을 설치합니다.
 
 ```bash
-./bin/claude-ghcp --ghcp-model gpt-6-astra --continue
+cd "/absolute/path/to/claude-code-ghcp-sdk"
+git pull --ff-only
+npm ci
 ```
 
-다른 저장된 대화를 고르려면 `--resume`을 쓰세요. 재개해도 Claude Code의 대화 기록은 그대로이고 사용자 설정도 바뀌지 않습니다. 바뀐 `/model` 목록을 불러오려면 세션을 다시 시작하세요.
+실행 중인 브리지는 처음 읽은 코드를 계속 씁니다. 지문에 포함되는 파일(`src/*.mjs`, `package.json`, `package-lock.json`), 체크아웃 경로, 관련 브리지 설정이 바뀌면 다음 실행이 브리지를 교체합니다. README·테스트·런처만 수정하면 교체하지 않으며, `--ghcp-model`만 달라도 브리지를 재사용합니다. 기존 세션은 보통 예전 브리지에 남습니다. 오래된 브리지나 고정 포트 등의 예외는 [아키텍처](docs/ARCHITECTURE_KO.md#상주-브리지와-교체)를 참고하세요.
+
+대화를 업데이트한 코드로 옮기려면 Claude Code를 종료한 뒤 **원래 프로젝트 디렉터리**에서 같은 모델로 재개하세요. 아래 모델 ID는 쓰던 것으로 바꾸세요.
+
+```bash
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp" --ghcp-model gpt-6-astra --continue
+```
+
+저장된 대화를 고르려면 `--continue` 대신 `--resume`을 쓰세요. 재개해도 Claude Code의 대화 기록과 사용자 설정은 보존됩니다. 바뀐 `/model` 목록을 불러오려면 세션을 다시 시작하세요. 이것이 실행 중인 브리지에 캐시된 SDK 카탈로그를 갱신하지는 않습니다.
+
+### 선택한 명령 설정 되돌리기
+
+- `bin`을 PATH에 추가했다면 `~/.zshrc`(또는 사용하는 셸의 설정 파일)에서 그 export를 제거하고 새 터미널을 여세요.
+- `npm link`를 썼다면 `npm unlink -g claude-code-ghcp-sdk`를 실행하세요.
+
+어느 방법도 실행 중인 브리지를 멈추지는 않습니다. 브리지도 멈추려면 모든 작업을 마치고 필요한 로그를 보존한 뒤 [위의 중지 명령](#백그라운드-브리지)을 쓰세요. 이 절차는 Claude/Copilot 사용자 설정과 저장된 대화를 그대로 둡니다.
 
 ### 긴 대화
 
@@ -172,13 +195,16 @@ Copilot이 요청 한도에 걸리거나 업스트림이 실패하면, Copilot �
 
 ## LiteLLM (선택)
 
-가상 키나 요청 로그 때문에 LiteLLM 게이트웨이를 거쳐 Copilot 모델을 써야 할 때만 고르세요. LiteLLM은 이 브리지 앞에 놓일 뿐 브리지를 대신하지 않습니다. 게이트웨이를 거친 모든 요청은 누가 보냈든 브리지 운영자의 Copilot 좌석 하나와 그 조직 정책으로 실행됩니다. 클라이언트에는 이 체크아웃과 Node.js가 필요하지만 `npm install`과 `copilot login`은 필요 없습니다. 6개 모델의 `/model` 목록과 1M 컨텍스트 창은 쓸 수 없고, 이 경로는 [검증하지 않았습니다](#검증하지-않은-것).
+가상 키나 요청 로그 때문에 LiteLLM 게이트웨이를 거쳐 Copilot 모델을 써야 할 때만 고르세요. LiteLLM은 이 브리지 앞에 놓일 뿐 브리지를 대신하지 않습니다. 게이트웨이를 거친 모든 요청은 누가 보냈든 브리지 운영자의 Copilot 좌석 하나와 그 조직 정책으로 실행됩니다. 클라이언트에는 이 체크아웃과 Node.js가 필요하지만 의존성 설치와 `copilot login`은 필요 없습니다. 6개 모델의 `/model` 목록과 1M 컨텍스트 창은 쓸 수 없고, 이 경로는 [검증하지 않았습니다](#검증하지-않은-것).
+
+런처는 실행별 설정 파일에 키를 저장합니다. 사용하기 전에 [사용자 설정은 건드리지 않습니다](#사용자-설정은-건드리지-않습니다)에서 보관·제거 방법을 확인하세요.
 
 ```bash
 export LITELLM_BASE_URL="https://litellm.example.com"
 export LITELLM_API_KEY="<scoped-virtual-key>"
 export LITELLM_MODEL="claude-sonnet-5"
-./bin/claude-litellm
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-litellm"
 ```
 
 연결 방법, 게이트웨이 운영, Direct SDK와 다른 점은 [LiteLLM 가이드](docs/LITELLM_KO.md)를 참고하세요.
@@ -186,6 +212,8 @@ export LITELLM_MODEL="claude-sonnet-5"
 ## 명령과 설정
 
 ### 명령
+
+아래 상대 경로 명령은 **체크아웃 루트** 기준입니다. 다른 프로젝트에서는 [빠른 시작](#4-claude-code-실행)처럼 체크아웃의 절대 경로를 쓰거나, 선택 사항인 PATH/링크 설정을 사용하세요.
 
 | 용도 | 명령 |
 |---|---|
@@ -250,7 +278,11 @@ print 모드 실행(`--background` 없는 `-p`)은 끝날 때 이 파일을 지�
 
 모델 검사는 **SDK가 보고한 모델 ID**를 기준으로 하며 제공자 내부 모델 구현을 독립적으로 증명하지 않습니다. 검사와 근거는 [테스트 가이드](docs/TESTING_KO.md)에 있습니다. 변환, 모델 매핑, 오류, 취소, 세션·서브에이전트 분리, 런타임 MCP 차단, 런처의 production 오프라인 회귀 테스트는 유지하며 실측 결과와 구분합니다.
 
-실행 `2026-09-25T09-55-54-058Z-9bdbc340`의 편집 재생 영상(61초: **[브라우저에서 바로 재생](https://cdn.jsdelivr.net/gh/junwoojeong100/claude-code-ghcp-sdk@13fd4ccd1220c365860d42a1bb0147ad1bc36e25/docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4)** · [저장소 원본 MP4](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4))과 [V01](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-02-v01-unicode-answer.png)·[V04](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-03-v04-model-switch.png)·[V05](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-04-v05-interrupt-continue.png)·[V06](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-05-v06-cold-resume.png) 정지 화면, [결과 카드](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-01-results-summary.png)가 있습니다. 그 실행에 봉인된 PTY 녹화에서 경로와 토큰을 가리고 렌더링했습니다. 케이스가 실제로 어떻게 보이는지 보여 줄 뿐 검증 근거가 아니며, 원본 녹화·시간 구간·편집·해시는 [manifest.json](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/manifest.json)에 있습니다. 재생 링크는 MP4를 추가한 커밋에 고정된 jsDelivr 사본이라 브라우저 기본 동영상 플레이어에서 열리며, GitHub는 저장소 파일을 내려받기로만 제공합니다. 그 실행의 결과는 [기록된 검증 결과](docs/VERIFICATION_KO.md)에 있습니다.
+**편집 재생 영상(61초):** [브라우저에서 바로 재생](https://cdn.jsdelivr.net/gh/junwoojeong100/claude-code-ghcp-sdk@13fd4ccd1220c365860d42a1bb0147ad1bc36e25/docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4) · [저장소 MP4 내려받기](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4). 재생 링크는 커밋에 고정된 jsDelivr 사본이며, GitHub는 저장소 파일을 내려받기로 제공합니다.
+
+정지 화면: [V01](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-02-v01-unicode-answer.png) · [V04](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-03-v04-model-switch.png) · [V05](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-04-v05-interrupt-continue.png) · [V06](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-05-v06-cold-resume.png) · [결과 카드](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-01-results-summary.png).
+
+**출처:** 실행 `2026-09-25T09-55-54-058Z-9bdbc340`에 봉인된 PTY 녹화에서 경로와 토큰을 가리고 렌더링했습니다. 케이스가 어떻게 보이는지 보여 줄 뿐, **검증 근거는 아닙니다.** 원본 녹화·시간 구간·편집·해시는 [manifest.json](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/manifest.json)에 있습니다. 실행 결과는 [기록된 검증 결과](docs/VERIFICATION_KO.md)를 보세요.
 
 ### 검증하지 않은 것
 
@@ -290,9 +322,10 @@ print 모드 실행(`--background` 없는 `-p`)은 끝날 때 이 파일을 지�
 
 ## 검증 실행
 
-저장소 루트에서 오프라인 확인부터 시작하세요. 두 명령 모두 모델을 호출하지 않습니다.
+체크아웃에서 오프라인 확인부터 시작하세요. 두 검사 모두 모델을 호출하지 않습니다.
 
 ```bash
+cd "/absolute/path/to/claude-code-ghcp-sdk"
 npm test
 npm run verify -- --dry-run
 ```

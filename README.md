@@ -2,18 +2,15 @@
 
 > **Language / 언어:** English | [한국어](README_KO.md)
 
-This repository is a local bridge that lets Claude Code use GitHub Copilot models. Claude Code sends Anthropic Messages API requests to the bridge, directly or through a LiteLLM proxy, and the bridge runs them on Copilot models through the GitHub Copilot SDK (`@github/copilot-sdk`, pinned to 1.0.14). Claude Code's UI, tool execution, permissions, hooks, MCP servers and skills stay as they are.
+Run Claude Code with GitHub Copilot models through a local bridge. The bridge translates Anthropic Messages API requests through the GitHub Copilot SDK (`@github/copilot-sdk`, pinned to 1.0.14); Claude Code keeps its UI, local tool execution, permissions, hooks, MCP servers and skills.
 
 **This is an unofficial integration.** Anthropic does not support routing non-Claude models through a gateway, and neither Anthropic nor GitHub supports this combination. See [What works and what does not](#what-works-and-what-does-not).
 
+[Quick start](#quick-start-direct-sdk) · [Recorded results](docs/VERIFICATION.md) · [Diagnostics](docs/DIAGNOSTICS.md#start-with-the-symptom)
+
 ## Choose a path
 
-| You want to | Path | Command |
-|---|---|---|
-| Use your own Copilot account under your organization's model policy | **Direct SDK** | `./bin/claude-ghcp` |
-| Reach Copilot models through a LiteLLM gateway that fronts this bridge | LiteLLM | `./bin/claude-litellm` |
-
-Most users want Direct SDK. Use LiteLLM only when you have to go through a LiteLLM gateway; see [LiteLLM (optional)](#litellm-optional).
+Use **Direct SDK** (recommended) with your own Copilot account and your organization's model policy. Follow the quick start below. Choose [LiteLLM (optional)](#litellm-optional) only if you need a LiteLLM gateway in front of this bridge.
 
 ## Quick start (Direct SDK)
 
@@ -31,8 +28,10 @@ Most users want Direct SDK. Use LiteLLM only when you have to go through a LiteL
 ```bash
 git clone https://github.com/junwoojeong100/claude-code-ghcp-sdk.git
 cd claude-code-ghcp-sdk
-npm install
+npm ci
 ```
+
+Installation and checks run in this checkout; your actual work runs in your own project. In the examples below, replace `/absolute/path/to/claude-code-ghcp-sdk` with this checkout's absolute path (`pwd` here), and `/path/to/your-project` with your project directory.
 
 ### 2. Sign in to GitHub Copilot
 
@@ -52,55 +51,59 @@ You do not need an Anthropic API key.
 
 ### 3. Check the environment and models
 
+From the checkout root:
+
 ```bash
 ./bin/ghcp-doctor
 ./bin/ghcp-models
 ```
 
-Stay in the repository root for the remaining commands.
-
-- `ghcp-doctor` prints a JSON report. It passes when `node`, `npm`, `claude` and `copilot` each show `"ok": true` and `compatibility.node.supported` is `true`; otherwise it exits with status 1. Install or update whatever shows `false`, then run it again. A version check that does not answer within 10 seconds shows `false` too. Without Claude Code it prints `Claude Code executable not found…` instead of the report. It does not check `curl` or Git. `npm run doctor` runs the same check.
-- `ghcp-models` connects to Copilot and prints one line per model; the model you want should be listed. If it prints an error instead, run `copilot login` again and retry. A successful list checks account access, not whether a model can answer a prompt.
+- `ghcp-doctor` checks Node, npm, Claude Code and Copilot CLI. Resolve failed checks before continuing; [Environment check](docs/DIAGNOSTICS.md#environment-check) explains the report.
+- `ghcp-models` lists the models your account can access. Make sure your model is listed. This checks account access, not whether the model can answer a prompt. If it fails, follow [Diagnostics](docs/DIAGNOSTICS.md#start-with-the-symptom); not every error needs a new login.
 
 ### 4. Run Claude Code
 
-Start with the default model, Claude Sonnet 5:
+Move to the project you want to work on, then call the launcher by its absolute path. No PATH change is needed:
 
 ```bash
-./bin/claude-ghcp
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp"
 ```
 
-In Claude Code, ask `Reply with OK`. A reply confirms that a request completed through this setup; it does not verify every feature below. Prompts use your Copilot allowance. Use `/exit` to return to the shell. The shared bridge stays running; see [The background bridge](#the-background-bridge) before stopping it.
+The launch model is chosen in this order: `--ghcp-model` → exported `GHCP_MODEL` → `claude-sonnet-5` (Claude Sonnet 5).
 
-If startup fails, read the error and run `./bin/ghcp-doctor` again. For an unavailable model, choose an ID from `./bin/ghcp-models`. If Claude Code opens but a request fails, see [Diagnostics](docs/DIAGNOSTICS.md).
+Prompts use your Copilot allowance. In Claude Code, ask `Reply with OK`. A reply confirms that one request completed, not that every feature works. Use `/exit` to return to the shell. The shared bridge stays running; see [The background bridge](#the-background-bridge) before stopping it. For startup or request failures, see [Diagnostics](docs/DIAGNOSTICS.md#start-with-the-symptom).
 
-**Optional alternatives — choose one, not additional setup steps.** An interactive session with another model:
+**Optional alternatives — not additional setup steps.** Start an interactive session with another model:
 
 ```bash
-./bin/claude-ghcp --ghcp-model gpt-6-sol
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp" --ghcp-model gpt-6-sol
 ```
 
-Print mode (`-p`), which answers one prompt and exits:
+Or use print mode (`-p`), which answers one prompt and exits:
 
 ```bash
-./bin/claude-ghcp --ghcp-model claude-haiku-4.5 -p "Describe the structure of this repository"
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp" --ghcp-model claude-haiku-4.5 -p "Describe the structure of this repository"
 ```
 
 Inside Claude Code, `/model` switches between the six models listed in [Models](#models).
 
 ### 5. Optional: put claude on PATH
 
-To run from any directory, add this repository's `bin` directory to your PATH. For Zsh, from the repository root:
+The absolute paths above already work from any directory. **Prepending this checkout's `bin` to PATH makes `claude` run Direct SDK instead of your existing `claude` command.** To opt in with Zsh:
 
 ```bash
+cd "/absolute/path/to/claude-code-ghcp-sdk"
 echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc
 exec zsh
 command -v claude
 ```
 
-The last command should print `<clone-path>/claude-code-ghcp-sdk/bin/claude`. For other shells, add the same line to that shell's configuration file. A symlink to a launcher, for example in `~/.local/bin` or from `npm link`, works as well: the launchers follow it back to this checkout.
+The last command should print `<clone-path>/claude-code-ghcp-sdk/bin/claude`. For other shells, add the same export to that shell's configuration file. Use `claude-current` to run Claude Code with its original provider. `export GHCP_MODEL=claude-haiku-4.5` changes the launch default unless you pass `--ghcp-model`.
 
-`claude` then runs the Direct SDK launcher, for example `claude` or `claude --ghcp-model claude-haiku-4.5`. `export GHCP_MODEL=claude-haiku-4.5` changes the default model, and `claude-current` runs Claude Code with its original provider.
+Alternatively, run `npm link` from the checkout, with npm's global bin directory on PATH. It registers `claude-ghcp`, `claude-current` and the other package commands, **not `claude`**. The launchers follow symlinks back to this checkout. To reverse either setup, see [Undo the optional command setup](#undo-the-optional-command-setup).
 
 ## Models
 
@@ -113,13 +116,13 @@ The last command should print `<clone-path>/claude-code-ghcp-sdk/bin/claude`. Fo
 | GPT-6 Sol | `gpt-6-sol` | 1M | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
 | GPT-6 Luna | `gpt-6-luna` | 1M | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
 
-In `/model` each row reads `GitHub Copilot · <label> (<ID>)`. The list shows only these six rows plus Claude Code's own `Default` row. In Claude Code 2.1.280 `Default` is Claude Opus 5.5, while a launch without `--ghcp-model` starts on Claude Sonnet 5.
+In `/model` each row reads `GitHub Copilot · <label> (<ID>)`. The list shows only these six rows plus Claude Code's own `Default` row. In Claude Code 2.1.280 `Default` is Claude Opus 5.5. That is separate from the launcher's priority: `--ghcp-model`, then exported `GHCP_MODEL`, then Claude Sonnet 5.
 
-Other models in your Copilot catalogue work with `--ghcp-model` when your policy allows them, but they are not verified. `./bin/ghcp-models` lists them.
+Other models in your Copilot catalogue work with `--ghcp-model` when your policy allows them, but they are not verified. Run `./bin/ghcp-models` from the checkout root to list them.
 
 The window column is the context size Claude Code plans for, not a measured Copilot input limit. The runtime may impose a lower limit; see [Long conversations](#long-conversations).
 
-**Reasoning effort: catalogue snapshot, 2026-09-24.** These per-model lists are observations, not hardcoded capabilities or a test result. The bridge uses the supported levels it reads from the SDK catalogue at startup. `./bin/ghcp-models --json` connects to Copilot to show your account's current catalogue; it does not refresh an already-running bridge. Set a level with `--effort <level>` or `/effort`. If the model does not list that level, the bridge uses the nearest lower level it does list, or the model's lowest level when none is lower: `none` on Claude Opus 5.5 runs as `low`. A model without reasoning effort gets no effort value.
+**Reasoning effort: catalogue snapshot, 2026-09-24.** These per-model lists are observations, not hardcoded capabilities or a test result. The bridge uses the supported levels it reads from the SDK catalogue at startup. From the checkout root, `./bin/ghcp-models --json` connects to Copilot to show your account's current catalogue; it does not refresh an already-running bridge. Set a level with `--effort <level>` or `/effort`. If the model does not list that level, the bridge uses the nearest lower level it does list, or the model's lowest level when none is lower: `none` on Claude Opus 5.5 runs as `low`. A model without reasoning effort gets no effort value.
 
 Ultracode (`--effort ultracode`) reaches Copilot as `xhigh`, and a model that does not list `xhigh` gets its nearest lower level instead. It needs Claude Code 2.1.203 or later and can spend more GitHub Copilot AI Credits than a standard call.
 
@@ -131,25 +134,45 @@ How the windows, input limits and effort values are set: [Architecture](docs/ARC
 
 ### The background bridge
 
-Every `claude-ghcp` launch except print mode shares one bridge that runs in the background on loopback. The launcher's help and the architecture guide call it the persistent bridge. Interactive sessions, `--background`, sessions you hand off with `/background` and the `agents` view all use it. It keeps running after Claude Code exits, so background jobs keep working.
+Interactive sessions, `--background`, sessions handed off with `/background` and the `agents` view share one loopback bridge (the *persistent bridge*). It stays running after Claude Code exits so background jobs can continue. Print mode (`-p`) uses a private bridge that stops on exit, unless combined with `--background` or `agents`.
 
-- Print mode (`-p`) gets a private bridge that stops when the command exits. `-p` together with `--background` or `agents` uses the shared bridge.
-- `./bin/claude-ghcp-status` shows whether the bridge is running, its PID and port, the model it was first started with, and how many replaced bridges are still running (`retired`).
-- `./bin/claude-ghcp-stop` stops the bridge and every replaced bridge, and deletes `bridge.log` and the bridge's per-launch settings files (not the `claude-litellm` ones described under [Your settings are left alone](#your-settings-are-left-alone)). Sessions and `/background` jobs that still use them stop working, so run it when you are done. If it cannot stop the current bridge, it still removes those files, then reports the error.
-- A different `--ghcp-model` reuses the running bridge. A launch with a different bridge configuration starts a new one: changed bridge code or dependencies, another checkout of this repository, a different `--bridge-port`, or a different bridge environment variable such as `TURN_IDLE_TIMEOUT_MS`. The full list is in [Architecture](docs/ARCHITECTURE.md#persistent-bridge-and-retirement).
-- The replaced bridge keeps serving the sessions already open on it. It exits once their launchers have exited and it has had no request for `RETIRED_IDLE_MS` (default 1 hour). It is stopped at once instead when it comes from an older version of this repository that cannot keep serving after being replaced, or when the new launch pins the port it is using.
-- The bridge's files (`bridge.log`, its registry and the per-launch settings files) live in `$GHCP_DAEMON_DIR` if set, otherwise in `~/Library/Caches/claude-code-ghcp-sdk` on macOS and `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk` on Linux. The bridge runs in that directory, not in the project that started it.
-- If a launch fails with `Persistent bridge PID … did not answer /health, so no second bridge was started beside it`, the registered bridge is still running but not answering. Run `./bin/claude-ghcp-stop`, then launch again. A registry whose PID now belongs to some other program is replaced without touching that program ([details](docs/ARCHITECTURE.md#persistent-bridge-and-retirement)).
+Check it from any directory with `"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp-status"`. The report shows the PID, port, model the bridge started with and number of replaced bridges still running (`retired`).
+
+**Before stopping, finish all sessions and background jobs and copy any logs you need.** `claude-ghcp-stop` stops the shared bridge and every replaced bridge, interrupting all sessions and `/background` jobs that use them. It deletes `bridge.log` and the bridge's per-launch settings files, even if stopping the current bridge fails. It does not delete user settings, saved conversations or the `claude-litellm` settings files, which can retain your key; see [Your settings are left alone](#your-settings-are-left-alone).
+
+```bash
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp-stop"
+```
+
+Bridge files live in `$GHCP_DAEMON_DIR` if set, otherwise in `~/Library/Caches/claude-code-ghcp-sdk` on macOS or `${XDG_CACHE_HOME:-~/.cache}/claude-code-ghcp-sdk` on Linux. For replacement and retention rules, see [Architecture](docs/ARCHITECTURE.md#persistent-bridge-and-retirement); for an unresponsive bridge, see [Diagnostics](docs/DIAGNOSTICS.md#start-with-the-symptom).
 
 ### After updating this checkout
 
-A running bridge keeps the code it loaded. After you update this checkout, the next launch starts a new bridge, and the old one keeps serving the sessions already open on it (unless it is too old for that; see [The background bridge](#the-background-bridge)). To move a conversation onto the new code, exit Claude Code and resume the conversation from the same project directory with the same model:
+Finish active jobs before changing dependencies. Check `git status --short` in the checkout and preserve any local changes first. With a clean checkout, update and install the locked dependencies:
 
 ```bash
-./bin/claude-ghcp --ghcp-model gpt-6-astra --continue
+cd "/absolute/path/to/claude-code-ghcp-sdk"
+git pull --ff-only
+npm ci
 ```
 
-Use `--resume` to choose a different saved conversation. Resuming keeps Claude Code's transcripts and does not touch your user settings. Restart a session to load a changed `/model` list.
+A running bridge keeps the code it loaded. The next launch replaces it when fingerprinted files (`src/*.mjs`, `package.json`, `package-lock.json`), the checkout path or relevant bridge settings change. README, test or launcher-only edits do not trigger replacement; a different `--ghcp-model` also reuses the bridge. Existing sessions normally stay on the old bridge; see [Architecture](docs/ARCHITECTURE.md#persistent-bridge-and-retirement) for exceptions, including older bridges and pinned ports.
+
+To move a conversation onto the updated code, exit Claude Code and resume from the **original project directory**, using the same model (replace the example ID as needed):
+
+```bash
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-ghcp" --ghcp-model gpt-6-astra --continue
+```
+
+Use `--resume` instead of `--continue` to choose a saved conversation. Resuming preserves Claude Code's transcripts and user settings. Restart a session to load a changed `/model` list; this does not refresh the SDK catalogue cached by an already-running bridge.
+
+### Undo the optional command setup
+
+- If you added `bin` to PATH, remove that export from `~/.zshrc` (or your shell's configuration file) and open a new terminal.
+- If you used `npm link`, run `npm unlink -g claude-code-ghcp-sdk`.
+
+Neither step stops a running bridge. To stop it too, first finish all jobs and save any needed logs, then use [the stop command above](#the-background-bridge). These steps leave Claude/Copilot user settings and saved conversations alone.
 
 ### Long conversations
 
@@ -172,13 +195,16 @@ The background bridge writes operational summaries to `bridge.log` for failed Me
 
 ## LiteLLM (optional)
 
-Choose this only when you have to reach Copilot models through a LiteLLM gateway, for example for its virtual keys or request logs. LiteLLM sits in front of this same bridge; it does not replace it. Every request through the gateway runs on the bridge operator's one Copilot seat and organization policy, whoever sends it. The client needs this checkout and Node.js, but not `npm install` or `copilot login`. It gets neither the six-model `/model` list nor the 1M windows, and the path is [not verified](#not-verified).
+Choose this only when you have to reach Copilot models through a LiteLLM gateway, for example for its virtual keys or request logs. LiteLLM sits in front of this same bridge; it does not replace it. Every request through the gateway runs on the bridge operator's one Copilot seat and organization policy, whoever sends it. The client needs this checkout and Node.js, but not dependency installation or `copilot login`. It gets neither the six-model `/model` list nor the 1M windows, and the path is [not verified](#not-verified).
+
+The launcher stores the key in its per-launch settings; read [Your settings are left alone](#your-settings-are-left-alone) for retention and removal before using it.
 
 ```bash
 export LITELLM_BASE_URL="https://litellm.example.com"
 export LITELLM_API_KEY="<scoped-virtual-key>"
 export LITELLM_MODEL="claude-sonnet-5"
-./bin/claude-litellm
+cd "/path/to/your-project"
+"/absolute/path/to/claude-code-ghcp-sdk/bin/claude-litellm"
 ```
 
 To connect, run a gateway, or look up what differs from Direct SDK, see the [LiteLLM guide](docs/LITELLM.md).
@@ -186,6 +212,8 @@ To connect, run a gateway, or look up what differs from Direct SDK, see the [Lit
 ## Commands and configuration
 
 ### Commands
+
+These relative commands are for the **checkout root**. In another project, call the checkout's absolute launcher path as in the [quick start](#4-run-claude-code), or use the optional PATH/link setup.
 
 | Purpose | Command |
 |---|---|
@@ -250,7 +278,11 @@ The essential suite runs six scenarios on all six [primary models](#models): **3
 
 The model checks rely on **SDK-reported model IDs**, not on the provider's internal model implementation. [Testing](docs/TESTING.md) explains the checks and evidence. Production offline regressions remain for translation, model mapping, errors, cancellation, session/subagent isolation, runtime MCP blocking and launchers; they are not live results.
 
-Media from run `2026-09-25T09-55-54-058Z-9bdbc340`: an edited replay video (61 s: **[play in the browser](https://cdn.jsdelivr.net/gh/junwoojeong100/claude-code-ghcp-sdk@13fd4ccd1220c365860d42a1bb0147ad1bc36e25/docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4)** · [repository MP4](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4)) and stills of [V01](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-02-v01-unicode-answer.png), [V04](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-03-v04-model-switch.png), [V05](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-04-v05-interrupt-continue.png), [V06](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-05-v06-cold-resume.png) and the [results card](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-01-results-summary.png). They were rendered from that run’s sealed PTY recordings with paths and tokens masked. They show what the cases look like and are not verification evidence; [manifest.json](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/manifest.json) lists the source recordings, time ranges, edits and hashes. The play link is a jsDelivr copy pinned to the commit that added the MP4, so it opens in the browser’s video player; GitHub offers the repository file only as a download. That run’s outcome is in the [recorded result](docs/VERIFICATION.md).
+**Watch the edited replay (61 s):** [play in the browser](https://cdn.jsdelivr.net/gh/junwoojeong100/claude-code-ghcp-sdk@13fd4ccd1220c365860d42a1bb0147ad1bc36e25/docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4) · [download the repository MP4](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/video.mp4). The playback link is a commit-pinned jsDelivr copy; GitHub offers the repository file as a download.
+
+Stills: [V01](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-02-v01-unicode-answer.png) · [V04](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-03-v04-model-switch.png) · [V05](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-04-v05-interrupt-continue.png) · [V06](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-05-v06-cold-resume.png) · [results card](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/still-01-results-summary.png).
+
+**Provenance:** the visuals were rendered from run `2026-09-25T09-55-54-058Z-9bdbc340`'s sealed PTY recordings, with paths and tokens masked. They show what the cases look like; **they are not verification evidence**. [manifest.json](docs/assets/verification/2026-09-25T09-55-54-058Z-9bdbc340/manifest.json) lists source recordings, time ranges, edits and hashes. For the outcome, read the [recorded result](docs/VERIFICATION.md).
 
 ### Not verified
 
@@ -290,9 +322,10 @@ Feature by feature: [Compatibility](docs/COMPATIBILITY.md#feature-lookup).
 
 ## Running the checks
 
-From the repository root, start offline. Neither command calls a model:
+Start with offline checks in the checkout. Neither check calls a model:
 
 ```bash
+cd "/absolute/path/to/claude-code-ghcp-sdk"
 npm test
 npm run verify -- --dry-run
 ```

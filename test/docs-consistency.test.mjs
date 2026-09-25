@@ -89,6 +89,8 @@ test("COMPATIBILITY statuses agree with the live-matrix column in both languages
     if (status.startsWith("Supported")) assert.notEqual(live, "—", `${feature}: live column`);
     assert.equal(live === "no" || live.startsWith("no:"), liveK === "없음" || liveK.startsWith("없음:"), `${feature}: KO live column`);
     assert.equal(live === "—", liveK === "—", `${feature}: KO live column`);
+    const scenarios = (text) => [...new Set(text.match(/\bV\d{2}\b/g) ?? [])].sort();
+    assert.deepEqual(scenarios(liveK), scenarios(live), `${feature}: KO scenario references`);
   });
 });
 
@@ -205,6 +207,47 @@ test("bridge.shutdown_forced covers a retired bridge's own exit", () => {
   }
   assert.match(block(read("docs/ARCHITECTURE.md"), "**Shutdown.**"), /bridge\.retired_exit/);
   assert.match(block(read("docs/ARCHITECTURE_KO.md"), "**종료.**"), /bridge\.retired_exit/);
+});
+
+test("TESTING states the offline Python prerequisite before npm test", () => {
+  for (const [file, heading, dryRun] of [
+    ["docs/TESTING.md", "## Offline checks and dry-run", /`--dry-run`[^.]*does not require Python/],
+    ["docs/TESTING_KO.md", "## 오프라인 검사와 dry-run", /`--dry-run`[^.]*Python이 필요하지 않습니다/],
+  ]) {
+    const offline = section(read(file), heading);
+    assert.ok(code(offline).includes("npm test"), `${file}: offline test command`);
+    const prerequisites = offline.split("```")[0].replace(/\s+/g, " ");
+    for (const required of ["`npm test`", "Python 3.9", "`python3`", "PATH", "PTY"]) {
+      assert.ok(prerequisites.includes(required), `${file}: ${required} before the command`);
+    }
+    assert.match(prerequisites, dryRun, `${file}: dry-run alone does not need Python`);
+  }
+});
+
+test("TESTING keeps the recommended live command aligned and report writing optional", () => {
+  const commands = [];
+  for (const file of pair("TESTING")) {
+    const markdown = read(file);
+    const blocks = [...markdown.matchAll(/^```bash\n([\s\S]*?)^```\s*$/gm)]
+      .map(([, body]) => body);
+    const live = blocks.find((body) => /npm run verify --/.test(body) && !/--dry-run/.test(body));
+    assert.ok(live, `${file}: live command`);
+    assert.doesNotMatch(live, /CLAUDE_CODE_BIN/, `${file}: optional CLI override is separate`);
+    const command = live.replace(/\\\n\s*/g, " ").trim();
+    assert.match(command, /^PENDING_TOOL_WAIT_MS=30000 npm run verify --\s+--model-concurrency 1\s+--timeout-scale 2$/,
+      `${file}: full recommended run, without a focused selection`);
+    commands.push(command.replace(/\s+/g, " "));
+
+    const report = blocks.find((body) => /npm run verify:report --/.test(body));
+    const write = blocks.find((body) => /npm run verify:doc --/.test(body));
+    assert.ok(report && write, `${file}: inspect and regenerate commands`);
+    assert.notEqual(report, write, `${file}: reading must not overwrite recorded results`);
+    assert.doesNotMatch(report, /verify:doc|--write-docs/, `${file}: read-only report block`);
+    for (const body of [report, write]) {
+      assert.match(body, /npm run verify:(?:report|doc) -- "\$run_dir"/, `${file}: explicit selected run`);
+    }
+  }
+  assert.equal(commands[0], commands[1], "EN and KO recommend the same live options");
 });
 
 test("TESTING names every Escape purpose the verifier writes", () => {
